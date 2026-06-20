@@ -1,0 +1,5 @@
+{
+  "_说明": "在线更新:本机会从下面这个 GitHub 仓库的 Releases 自动检查更新。更新包必须用发布者私钥签名(make-release.sh),公钥已内嵌验签。想关掉把 enabled 改 false。",
+  "repo": "felixgo2140/CodeWhale-GUI",
+  "enabled": true
+}

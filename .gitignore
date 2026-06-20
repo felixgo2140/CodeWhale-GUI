@@ -1,0 +1,22 @@
+# ── 密钥 / 凭证:绝不提交 ──
+*.pem
+*.key
+signing-key*
+public-key*
+secrets/
+**/token
+**/config.toml
+update.json.local
+
+# ── 构建产物 ──
+**/CodeWhale.app/
+codewhale-installer.tar.gz
+*.tar.gz
+dist/
+*.bak
+*.bak-*
+
+# ── 系统 ──
+.DS_Store
+__pycache__/
+*.pyc

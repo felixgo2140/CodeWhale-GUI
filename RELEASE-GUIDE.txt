@@ -1,0 +1,24 @@
+CodeWhale GUI —— 发布在线更新 操作指南
+==========================================
+
+一次性准备(已完成):
+  • 私钥: ~/codewhale-release/signing-key.pem  ← 务必离线备份、绝不外传!泄露=别人能签恶意更新
+  • 公钥: 已内嵌进 server.py(收件人用它验签)
+  • 发版脚本: ~/codewhale-release/make-release.sh
+
+每次发布新版的步骤:
+  1. 改好 ~/codewhale-gui 里的 web/ 或 server.py
+  2. 跑:  ~/codewhale-release/make-release.sh 2.1.0 "这版改了啥"
+     → 在 ~/codewhale-release/dist/2.1.0/ 生成 3 个文件:
+        gui-2.1.0.tar.gz / manifest.json / manifest.json.sig
+  3. 在你的 GitHub 仓库新建一个 Release(tag 如 v2.1.0),把这 3 个文件作为附件上传
+  4. 完事。所有装了你安装包、且 update.json 指向你仓库的用户,启动/每小时会自动检查到,
+     在界面点「↑ 界面 2.1.0」就会下载→验签→校验哈希→替换→重启。
+
+开启面向用户的自动更新:
+  • 编辑安装包里的 update.json:repo 改成你的 "owner/repo",enabled 改 true,然后重打包分享
+  • 收件人装上后就能收到你的更新
+
+安全要点:
+  • 私钥只在你这台机;就算 GitHub 被黑,没私钥也签不出能被接受的更新
+  • 每次更新都验:Ed25519 签名 + SHA-256 + 版本只升不降 + 路径封死在 GUI 目录
