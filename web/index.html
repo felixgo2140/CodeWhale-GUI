@@ -214,7 +214,7 @@
     <div id="sidehead">
       <div id="brand"><span class="logo">🐳</span><span class="bname">CodeWhale</span><span id="version"></span><button id="updbtn" title="CodeWhale 后端有新版,点击更新">↑ 更新</button><button id="guiupdbtn" title="界面有新版,点击下载验签更新">↑ 界面</button></div>
       <button id="newbtn">＋ 新建对话</button>
-      <div id="sidetools"><button class="topbtn" id="skillsbtn">🧩 Skills</button><button class="topbtn" id="mcpbtn">🔌 连接器</button></div>
+      <div id="sidetools"><button class="topbtn" id="skillsbtn">🧩 Skills</button><button class="topbtn" id="mcpbtn">🔌 连接器</button><button class="topbtn" id="updatebtn" title="检查并更新:界面 + CodeWhale 后端">🔄 更新</button></div>
     </div>
     <div id="threads"></div>
     <div id="sidefoot">
@@ -806,10 +806,43 @@ async function openModelSwitch(){
   };
 }
 
+/* ---------- 更新中心(界面 GUI + CodeWhale 后端)---------- */
+async function openUpdate(){
+  openModal("🔄 更新");
+  $("#modalBody").innerHTML=`
+    <div class="lrow"><span class="nm">🖥 界面 (GUI)<span class="sub" id="u_gui"></span></span><span id="u_gui_act" style="flex:0 0 auto">检查中…</span></div>
+    <div class="lrow"><span class="nm">🐳 CodeWhale 后端<span class="sub" id="u_cw"></span></span><span id="u_cw_act" style="flex:0 0 auto">检查中…</span></div>
+    <div style="font-size:11px;color:var(--faint);line-height:1.6;margin-top:8px">界面更新走<b>签名验证</b>(下载 → Ed25519 验签 → 校验 SHA-256 → 替换 → 重启);后端更新跑 codewhale update。更新会重启,会话数据不丢。</div>`;
+  (async()=>{ const a=$("#u_gui_act"), c=$("#u_gui");
+    try{ const d=await api("/api/update/gui/check"); c.textContent=" 当前 "+(d.current||"?");
+      if(d.enabled===false){ a.innerHTML='<span class="st unknown">未配置更新源</span>'; return; }
+      if(d.error){ a.innerHTML='<span class="st err">检查失败</span>'; a.title=d.error; return; }
+      if(d.available){ const b=document.createElement("button"); b.className="btn primary"; b.textContent="↑ 更新到 "+d.latest; b.onclick=()=>applyUpd(b,"/api/update/gui/apply"); a.innerHTML=""; a.appendChild(b); }
+      else a.innerHTML='<span class="st ok">已是最新</span>';
+    }catch(e){ a.innerHTML='<span class="st err">检查失败</span>'; }
+  })();
+  (async()=>{ const a=$("#u_cw_act"), c=$("#u_cw");
+    try{ const d=await (await fetch(url("/api/update/check"))).json(); c.textContent=" 当前 "+(d.current||"?");
+      if(d.error){ a.innerHTML='<span class="st err">检查失败</span>'; return; }
+      if(d.available && d.latest){ const b=document.createElement("button"); b.className="btn primary"; b.textContent="↑ 更新到 "+d.latest; b.onclick=()=>applyUpd(b,"/api/update/apply"); a.innerHTML=""; a.appendChild(b); }
+      else a.innerHTML='<span class="st ok">已是最新</span>';
+    }catch(e){ a.innerHTML='<span class="st err">检查失败</span>'; }
+  })();
+}
+async function applyUpd(btn,endpoint){
+  if(!confirm("开始更新?会下载、校验后替换并重启(几秒,会话数据不丢)。")) return;
+  btn.disabled=true; btn.textContent="⏳ 更新中…";
+  try{ const r=await api(endpoint,{method:"POST",body:"{}"});
+    if(r.ok){ btn.textContent="✓ 重启中…"; setTimeout(()=>location.reload(),4800); }
+    else { btn.disabled=false; btn.textContent="✗ 重试"; alert("更新失败:\n"+(r.error||r.output||"未知错误")); }
+  }catch(e){ btn.disabled=false; btn.textContent="✗ 重试"; alert("更新出错: "+e.message); }
+}
+
 /* ---------- wire up ---------- */
 $("#newbtn").onclick=newThread;
 $("#skillsbtn").onclick=openSkills;
 $("#mcpbtn").onclick=openConnectors;
+$("#updatebtn").onclick=openUpdate;
 $("#modelchip").onclick=openModelSwitch;
 $("#modalClose").onclick=closeModal;
 $("#modal").onclick=e=>{ if(e.target.id==="modal") closeModal(); };

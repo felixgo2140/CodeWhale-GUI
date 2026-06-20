@@ -90,8 +90,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         editMenu.addItem(withTitle: "拷贝", action: Selector(("copy:")), keyEquivalent: "c")
         editMenu.addItem(withTitle: "粘贴", action: Selector(("paste:")), keyEquivalent: "v")
         editMenu.addItem(withTitle: "全选", action: Selector(("selectAll:")), keyEquivalent: "a")
+        // 显示菜单:重新载入(⌘R)——拿到界面更新而不必退出重开
+        let viewItem = NSMenuItem(); mainMenu.addItem(viewItem)
+        let viewMenu = NSMenu(title: "显示"); viewItem.submenu = viewMenu
+        let reloadItem = NSMenuItem(title: "重新载入", action: #selector(reloadPage(_:)), keyEquivalent: "r")
+        reloadItem.target = self                       // 指向本 AppDelegate(它持有 webView)
+        viewMenu.addItem(reloadItem)
         NSApp.mainMenu = mainMenu
     }
+    @objc func reloadPage(_ sender: Any?) { load() }   // 重新加载页面(load() 会带 token 重新拉 :3000)
 
     // 点 Dock 图标:已有窗口就前置,没有就重建 —— 原生"复用窗口",不再开重复窗
     func applicationShouldHandleReopen(_ s: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
