@@ -29,10 +29,10 @@ No Chrome dependency. Universal binary for both Intel and Apple Silicon (~82 KB)
 
 1. Download `codewhale-installer.tar.gz` from [Releases](../../releases) and unpack it;
 2. Double-click `install.command` (first run: if Gatekeeper blocks it, right-click → "Open" → "Open" again, just once);
-3. Pick a **model provider** (DeepSeek / GLM / Kimi / OpenAI / other) → **paste the matching API key**;
-4. It installs and launches automatically; later open from Launchpad / Spotlight by searching "CodeWhale".
+3. **One-click install & auto-launch** — no API key typed into the terminal at any point;
+4. On first launch the "🧠 Model" panel pops up automatically: **pick a provider (DeepSeek / GLM / Kimi / OpenAI …) + paste its API key → switch**, and you're ready.
 
-To switch models afterwards: use "🧠 Model" at the bottom-left of the app anytime.
+Later open from Launchpad / Spotlight by searching "CodeWhale"; to switch model / key, use "🧠 Model" at the bottom-left of the app anytime.
 
 ---
 

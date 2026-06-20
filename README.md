@@ -29,10 +29,10 @@
 
 1. 从 [Releases](../../releases) 下载 `codewhale-installer.tar.gz`,解压;
 2. 双击 `install.command`(首次若提示「身份不明的开发者」→ 右键点它 → 「打开」→ 再「打开」,仅此一次);
-3. 按提示**选模型服务商**(DeepSeek / GLM / Kimi / OpenAI / 其他)→ **粘贴对应 API key**;
-4. 自动装好并打开;以后从启动台 / Spotlight 搜 "CodeWhale" 打开。
+3. **一键装好并自动打开** —— 全程不需要在终端输入任何 API key;
+4. 首次打开会自动弹出「🧠 模型」面板:**选服务商(DeepSeek / GLM / Kimi / OpenAI …)+ 粘贴对应 API key → 切换**,即可开始用。
 
-装完想换模型:app 左下角「🧠 模型」随时切。
+以后从启动台 / Spotlight 搜 "CodeWhale" 打开;想换模型 / 换 key,app 左下角「🧠 模型」随时切。
 
 ---
 

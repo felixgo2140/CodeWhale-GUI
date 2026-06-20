@@ -816,7 +816,7 @@ async function openUpdate(){
   (async()=>{ const a=$("#u_gui_act"), c=$("#u_gui");
     try{ const d=await api("/api/update/gui/check"); c.textContent=" 当前 "+(d.current||"?");
       if(d.enabled===false){ a.innerHTML='<span class="st unknown">未配置更新源</span>'; return; }
-      if(d.error){ a.innerHTML='<span class="st err">检查失败</span>'; a.title=d.error; return; }
+      if(d.error){ const hint=/404|not found|403|401/i.test(d.error)?"更新源拉不到(仓库私有或未发布 Release)":"检查失败"; a.innerHTML='<span class="st err">'+hint+'</span>'; a.title=d.error; return; }
       if(d.available){ const b=document.createElement("button"); b.className="btn primary"; b.textContent="↑ 更新到 "+d.latest; b.onclick=()=>applyUpd(b,"/api/update/gui/apply"); a.innerHTML=""; a.appendChild(b); }
       else a.innerHTML='<span class="st ok">已是最新</span>';
     }catch(e){ a.innerHTML='<span class="st err">检查失败</span>'; }
@@ -886,7 +886,12 @@ inp.addEventListener("keydown",e=>{
 });
 
 renderAuto(); renderShell();
-loadThreads(); loadBalance(); loadPins(); loadModelLabel();   // loadPins:服务端拉置顶;loadModelLabel:侧栏按钮显示当前模型
+loadThreads(); loadBalance(); loadPins(); loadModelLabel(); checkSetup();   // loadPins:服务端拉置顶;loadModelLabel:侧栏显当前模型;checkSetup:免 key 安装后引导配置
+async function checkSetup(){   // 当前 provider 还没配 key(且非 OAuth)→ 自动弹「🧠 模型」引导首次配置
+  try{ const d=await api("/api/model"); const p=d.current&&d.current.provider; const keyed=d.keyed||{};
+    if(p && !keyed[p]){ setTimeout(()=>{ if(!$("#modal").classList.contains("show")) openModelSwitch(); }, 600); }
+  }catch(e){}
+}
 setInterval(loadThreads, 4000);   // 轮询刷新侧栏状态点(多会话实时感)
 setInterval(loadBalance, 60000);  // 每分钟刷新 DeepSeek 余额
 loadVersion(); checkUpdate(); setInterval(checkUpdate, 3600000);   // CodeWhale 后端版本号 + 启动/每小时查新版

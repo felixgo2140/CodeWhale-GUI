@@ -32,41 +32,24 @@ fi
 CW="$(command -v codewhale)"; PY="$(command -v python3)"; NODEDIR="$(dirname "$(command -v node)")"
 echo "  codewhale=$CW"
 
-# ── 3. 选模型服务商 + 输入 key(装完也能在 app 里「🧠 模型」随时换)──
-echo "→ 用哪个模型服务商?(直接回车 = 1 DeepSeek)"
-echo "    1) DeepSeek      2) GLM 智谱/Z.ai      3) Kimi 月之暗面"
-echo "    4) OpenAI        5) 其他(手动输 provider id)"
-printf "  输入数字回车: "
-read -r PCHOICE
-case "$PCHOICE" in
-  2) PROVIDER="zai";      MODEL="auto";            PNAME="GLM(智谱/Z.ai)"; KEYHINT="z.ai 或 open.bigmodel.cn 申请的 key";;
-  3) PROVIDER="moonshot"; MODEL="auto";            PNAME="Kimi";           KEYHINT="platform.moonshot.cn 申请的 key";;
-  4) PROVIDER="openai";   MODEL="auto";            PNAME="OpenAI";         KEYHINT="platform.openai.com 的 sk-... key";;
-  5) printf "  输入 provider id(如 openrouter / anthropic / deepinfra): "; read -r PROVIDER; PROVIDER="${PROVIDER:-deepseek}"; MODEL="auto"; PNAME="$PROVIDER"; KEYHINT="$PROVIDER 的 API key";;
-  *) PROVIDER="deepseek"; MODEL="deepseek-v4-pro"; PNAME="DeepSeek";       KEYHINT="发你安装包的人单独给的 sk-... key";;
-esac
-echo "  → 选了:$PNAME"
-KEY=""
-while [ -z "$KEY" ]; do
-  printf "  粘贴「%s」后回车(输入时不显示是正常的): " "$KEYHINT"
-  read -rs KEY; echo
-  [ -z "$KEY" ] && echo "  ✗ 不能为空,再试一次。"
-done
+# ── 3. 默认配置(免 key 一键安装;模型与 API key 在 app 里「🧠 模型」配置)──
 mkdir -p "$HOME/.codewhale"
-{
-  echo "default_text_model = \"$MODEL\""
-  echo "provider = \"$PROVIDER\""
-  echo "auth_mode = \"api_key\""
-  [ "$PROVIDER" = "deepseek" ] && echo "api_key = \"$KEY\""   # deepseek 顶层也带一份(兼容旧路径)
-  echo ""
-  echo "[providers.$PROVIDER]"
-  echo "api_key = \"$KEY\""
-  echo ""
-  echo "[memory]"
-  echo "enabled = true"
-} > "$HOME/.codewhale/config.toml"
-chmod 600 "$HOME/.codewhale/config.toml"
-KEY=""   # 用完清掉变量
+if [ ! -f "$HOME/.codewhale/config.toml" ]; then
+  cat > "$HOME/.codewhale/config.toml" <<'CFG'
+default_text_model = "deepseek-v4-pro"
+provider = "deepseek"
+auth_mode = "api_key"
+
+[providers.deepseek]
+
+[memory]
+enabled = true
+CFG
+  chmod 600 "$HOME/.codewhale/config.toml"
+  echo "→ 已写默认配置(免 key)。装好打开后,在左下「🧠 模型」选服务商 + 填 API key 即可开始用。"
+else
+  echo "→ 检测到已有配置,保留不动。"
+fi
 echo "  ✓ 已配置 $PNAME(key 仅存本机 ~/.codewhale/config.toml,不外传)"
 
 # ── 4. GUI 文件 ──
