@@ -1,5 +1,10 @@
 # 更新日志
 
+## v2.0.4 — 修跨机器"沙箱"(workspace 路径)
+
+### 修复
+- **跨机器 workspace 失效**:旧版前端把新会话 workspace 写死成开发机的 `/Users/test`,在别人机器上该路径不存在 → agent 所有文件操作被「Path escapes workspace」拦截,表现为"在沙箱里跑、读不到记忆/写不进文件"。现改为 **server.py 发首页时注入本机真实 home**,任意机器 workspace 都正确。
+
 ## v2.0.3 — GLM 用量显示 + 键盘缩放
 
 ### 新增

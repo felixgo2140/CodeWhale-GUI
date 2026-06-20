@@ -267,7 +267,7 @@
 const API = location.origin;            // 同源:经 server.py 代理到本机 codewhale(免 CORS,适配手机)
 const TOKEN = (new URLSearchParams(location.search).get("token")) || localStorage.getItem("cw_token") || "";
 if(TOKEN){ localStorage.setItem("cw_token",TOKEN); if(new URLSearchParams(location.search).get("token")) history.replaceState({},"",location.pathname); }
-const HOME = "/Users/test";             // 新会话 workspace = home,使 ~/.codewhale 记忆 + ~/openclaw vault 可达
+const HOME = "__CW_HOME__".indexOf("CW_HOME")>=0 ? "/Users/test" : "__CW_HOME__";   // server.py 发页面时把 __CW_HOME__ 替换成本机真实 home(跨机器关键:写死 /Users/test 到别的机器会让 workspace 失效=形同沙箱);未注入时回退
 const url = p => API + p + (TOKEN ? (p.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOKEN) : "");
 const auth = TOKEN ? {Authorization:"Bearer "+TOKEN} : {};
 
