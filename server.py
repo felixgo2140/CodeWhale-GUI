@@ -47,6 +47,45 @@ if BIND not in ("127.0.0.1", "localhost") and not TOKEN:
     print("[security] no token at ~/.codewhale-gui/token — refusing LAN bind, falling back to 127.0.0.1")
     BIND = "127.0.0.1"
 
+_proxy_cache = {"t": 0.0, "v": None}
+def _local_proxy():
+    # launchd 起的 server.py 不继承 shell 的 HTTP_PROXY;若本机在跑假 IP 代理(DNS→198.18.x.x),
+    # 直连会断。这里按"环境变量 → macOS 系统代理 → 探测常见本地 HTTP 代理端口"找一个可用代理。
+    now = time.time()
+    if _proxy_cache["v"] is not None and now - _proxy_cache["t"] < 30:
+        return _proxy_cache["v"] or None
+    p = (os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+         or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy"))
+    if not p:
+        try:   # macOS 系统网络设置里的 HTTP(S) 代理
+            out = subprocess.run(["/usr/sbin/scutil", "--proxy"], capture_output=True, text=True, timeout=3).stdout
+            host = re.search(r'HTTPSProxy\s*:\s*(\S+)', out) or re.search(r'HTTPProxy\s*:\s*(\S+)', out)
+            port = re.search(r'HTTPSPort\s*:\s*(\d+)', out) or re.search(r'HTTPPort\s*:\s*(\d+)', out)
+            if ("HTTPSEnable : 1" in out or "HTTPEnable : 1" in out) and host and port:
+                p = f"http://{host.group(1)}:{port.group(1)}"
+        except Exception:
+            pass
+    if not p:
+        import socket
+        for port in (1082, 7890, 7897, 1087, 8889, 8080):   # Clash/Surge/V2ray 等常见本地 HTTP 代理口
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.25).close()
+                p = f"http://127.0.0.1:{port}"; break
+            except Exception:
+                pass
+    _proxy_cache.update(t=now, v=(p or ""))
+    return p or None
+def _open_url(req, timeout):
+    # 直连优先(TUN 能兜住就成);失败再走探测到的本机代理。失败也不抛新错,沿用原异常。
+    try:
+        return urllib.request.urlopen(req, timeout=timeout)
+    except Exception:
+        proxy = _local_proxy()
+        if not proxy:
+            raise
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+        return opener.open(req, timeout=timeout)
+
 _bal = {"t": 0.0, "d": None}
 def deepseek_key():
     s = open(CFG, encoding="utf-8").read()
@@ -68,7 +107,7 @@ def _zai_usage(key):
         try:
             req = urllib.request.Request(url, headers={
                 "Authorization": authval, "Accept-Language": "en-US,en", "Content-Type": "application/json"})
-            body = json.load(urllib.request.urlopen(req, timeout=15))
+            body = json.load(_open_url(req, 15))
             if not body.get("success", True):
                 msg = body.get("msg") or "zai error"
                 if "coding plan" in msg:                       # 没订阅 Coding Plan
@@ -107,7 +146,7 @@ def balance():
     try:
         req = urllib.request.Request("https://api.deepseek.com/user/balance",
                                      headers={"Authorization": "Bearer " + key})
-        d = json.load(urllib.request.urlopen(req, timeout=15))
+        d = json.load(_open_url(req, 15))
         d["provider"] = "deepseek"
     except Exception as e:
         d = {"provider": "deepseek", "error": str(e)[:120]}
@@ -175,7 +214,7 @@ def _fetch(url, timeout=30, maxbytes=64 * 1024):
     if not _https_or_local(url):
         raise ValueError("仅允许 HTTPS 更新源")                       # 防降级到明文 http(本机测试除外)
     req = urllib.request.Request(url, headers={"User-Agent": "CodeWhale-GUI-Updater"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with _open_url(req, timeout) as r:
         data = r.read(maxbytes + 1)
     if len(data) > maxbytes:
         raise ValueError("更新文件超出大小上限")
