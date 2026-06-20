@@ -267,7 +267,7 @@
 const API = location.origin;            // 同源:经 server.py 代理到本机 codewhale(免 CORS,适配手机)
 const TOKEN = (new URLSearchParams(location.search).get("token")) || localStorage.getItem("cw_token") || "";
 if(TOKEN){ localStorage.setItem("cw_token",TOKEN); if(new URLSearchParams(location.search).get("token")) history.replaceState({},"",location.pathname); }
-const HOME = "__CW_HOME__".indexOf("CW_HOME")>=0 ? "/Users/test" : "__CW_HOME__";   // server.py 发页面时把 __CW_HOME__ 替换成本机真实 home(跨机器关键:写死 /Users/test 到别的机器会让 workspace 失效=形同沙箱);未注入时回退
+// 新会话 workspace 不再由前端指定:createThread 传空 body,app-server 用自身工作目录($HOME)→ 任何机器都正确,无需注入/写死路径
 const url = p => API + p + (TOKEN ? (p.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOKEN) : "");
 const auth = TOKEN ? {Authorization:"Bearer "+TOKEN} : {};
 
@@ -432,7 +432,7 @@ async function doGuiUpdate(){
   }catch(e){ btn.classList.remove("busy"); btn.textContent="↑ 界面 "+v; alert("更新出错: "+e.message); }
 }
 async function applyAuto(id,on){ try{ await api(`/v1/threads/${id}`,{method:"PATCH",body:JSON.stringify({auto_approve:on})}); }catch(e){ console.warn(e); } }  // 只自动批准确认,不额外授予 shell 等权限
-async function createThread(){ return await api("/v1/threads",{method:"POST",body:JSON.stringify({workspace:HOME})}); }  // 新会话默认不自动批准(安全)
+async function createThread(){ return await api("/v1/threads",{method:"POST",body:"{}"}); }  // 不传 workspace → app-server 用自己的工作目录($HOME),任何机器都对(不写死路径);新会话默认不自动批准(安全)
 async function loadAutoState(id){ try{ const rec=await api(`/v1/threads/${id}`); const th=rec.thread||rec; if(state.activeId===id){ state.autoApprove=!!th.auto_approve; state.allowShell=!!th.allow_shell; renderAuto(); renderShell(); } }catch(e){ console.warn(e); } }
 async function applyShell(id,on){ try{ await api(`/v1/threads/${id}`,{method:"PATCH",body:JSON.stringify({allow_shell:on})}); }catch(e){ console.warn(e); } }
 function renderShell(){ const w=$("#shellwrap"); if(!w) return; w.classList.toggle("on",state.allowShell); w.classList.toggle("disabled",!state.activeId);

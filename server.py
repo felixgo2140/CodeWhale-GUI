@@ -575,20 +575,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if p.startswith("/v1/") or p == "/health":
             return self._proxy("GET")
-        if p in ("/", "/index.html"):   # 发首页时注入本机真实 home,使 agent workspace 在任意机器都正确(修跨机器"沙箱"问题)
-            try:
-                html = open(os.path.join(WEB, "index.html"), encoding="utf-8").read()
-                html = html.replace("__CW_HOME__", os.path.expanduser("~"))
-                b = html.encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("Content-Length", str(len(b)))
-                self.end_headers()
-                self.wfile.write(b)
-                return
-            except Exception:
-                pass   # 出错则回退到默认静态发送
         return super().do_GET()
     def do_POST(self):
         p = urllib.parse.urlparse(self.path).path
