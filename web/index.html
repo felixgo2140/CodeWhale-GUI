@@ -368,6 +368,14 @@ async function deleteThread(id,title){
 async function loadBalance(){
   const el=$("#balance");
   try{ const d=await (await fetch(url("/api/balance"))).json();
+    if(d.glm){   // GLM(z.ai)= Coding Plan 订阅,显示每 5h 用量额度而非美元余额
+      if(d.no_plan){ el.textContent="GLM 无套餐"; el.title="此 z.ai key 未订阅 GLM Coding Plan → 无用量额度,且 CodeWhale 的 coding 端点可能受限。订阅 Lite/Pro/Max 后这里显示每 5 小时用量。"; return; }
+      if(d.error){ el.textContent="GLM ⚠"; el.title="GLM 用量读取失败:"+d.error; return; }
+      const pct=(d.percent!=null)?Math.round(d.percent):null;
+      el.textContent=(pct!=null)?`GLM 5h ${pct}%`:"GLM —";
+      el.title=`GLM Coding Plan · 每 5 小时窗口已用 ${pct!=null?pct+"%":"?"}`+(d.limit?` (${d.used||0}/${d.limit} tokens)`:"");
+      return;
+    }
     if(d.unavailable){ el.textContent="余额 —"; el.title=`${PROV_SHORT[d.provider]||d.provider} 无余额接口,请到其官网查看`; return; }   // 非 DeepSeek:不误显 DeepSeek 余额
     if(d.error){ el.textContent="余额 ⚠"; el.title="余额读取失败:"+d.error+" —— 多半 key 不对或网络;左下「🧠 模型」核对 provider 与 key"; return; }   // 自报原因,便于别的机器排查
     const b=d.balance_infos&&d.balance_infos[0];
@@ -884,6 +892,17 @@ inp.addEventListener("keydown",e=>{
     e.preventDefault(); enterSend();
   }
 });
+
+/* ---------- 全局缩放 ⌘+ / ⌘= / ⌘- / ⌘0(原生 app + 浏览器 + 手机通用;随在线更新下发,无需重装)---------- */
+let _zoom=Math.max(0.5,Math.min(3,+(localStorage.getItem("cw_zoom")||1)||1));
+function applyZoom(z){ _zoom=Math.max(0.5,Math.min(3,Math.round(z*10)/10)); document.documentElement.style.zoom=_zoom; try{localStorage.setItem("cw_zoom",_zoom);}catch(e){} }
+if(_zoom!==1) document.documentElement.style.zoom=_zoom;   // 启动/刷新/更新后保持上次缩放
+window.addEventListener("keydown",e=>{
+  if(!(e.metaKey||e.ctrlKey)||e.altKey) return;             // 仅 ⌘/Ctrl(不含 Alt)组合,避免干扰正常输入
+  if(e.key==="+"||e.key==="="){ e.preventDefault(); applyZoom(_zoom+0.1); }       // ⌘+ / ⌘= 放大
+  else if(e.key==="-"||e.key==="_"){ e.preventDefault(); applyZoom(_zoom-0.1); }  // ⌘- 缩小
+  else if(e.key==="0"){ e.preventDefault(); applyZoom(1); }                       // ⌘0 实际大小
+},{capture:true});
 
 renderAuto(); renderShell();
 loadThreads(); loadBalance(); loadPins(); loadModelLabel(); checkSetup();   // loadPins:服务端拉置顶;loadModelLabel:侧栏显当前模型;checkSetup:免 key 安装后引导配置

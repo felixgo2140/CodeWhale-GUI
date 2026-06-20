@@ -1,5 +1,11 @@
 # 更新日志
 
+## v2.0.3 — GLM 用量显示 + 键盘缩放
+
+### 新增
+- **键盘缩放 ⌘+ / ⌘= / ⌘- / ⌘0**:web 层实现,原生 app + 浏览器 + 手机三端通用;缩放比例本地持久化,刷新/更新后保持。
+- **GLM(z.ai)用量显示**:当 provider=zai 时,侧栏读 z.ai Coding Plan 的每 5 小时用量额度(`monitor/usage/quota/limit`)显示「GLM 5h XX%」;未订阅 Coding Plan 时显示「GLM 无套餐」并说明原因。
+
 ## v2.0.2 — 免 key 一键安装 + GUI 配模型
 
 ### 改进

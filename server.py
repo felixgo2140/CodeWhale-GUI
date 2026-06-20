@@ -53,12 +53,49 @@ def deepseek_key():
     m = re.search(r'\[providers\.deepseek\][^\[]*?api_key\s*=\s*"([^"]+)"', s, re.S) \
         or re.search(r'^api_key\s*=\s*"([^"]+)"', s, re.M)
     return m.group(1) if m else None
+def _provider_key(prov):   # 读 [providers.<prov>] api_key
+    try:
+        s = open(CFG, encoding="utf-8").read()
+    except Exception:
+        return None
+    m = re.search(r'\[providers\.' + re.escape(prov) + r'\][^\[]*?api_key\s*=\s*"([^"]+)"', s, re.S)
+    return m.group(1) if m else None
+def _zai_usage(key):
+    # z.ai GLM Coding Plan 用量(prompts/tokens 每 5 小时窗口,非美元余额)。仅 Coding Plan 用户可读。
+    url = "https://api.z.ai/api/monitor/usage/quota/limit"
+    last = None
+    for authval in (key, "Bearer " + key):   # 官方扩展先裸 key 再 Bearer
+        try:
+            req = urllib.request.Request(url, headers={
+                "Authorization": authval, "Accept-Language": "en-US,en", "Content-Type": "application/json"})
+            body = json.load(urllib.request.urlopen(req, timeout=15))
+            if not body.get("success", True):
+                msg = body.get("msg") or "zai error"
+                if "coding plan" in msg:                       # 没订阅 Coding Plan
+                    return {"provider": "zai", "glm": True, "no_plan": True}
+                last = msg; continue
+            data = body.get("data") or body
+            limits = (data.get("limits") if isinstance(data, dict) else None) or body.get("limits") or []
+            tok = next((l for l in limits if l.get("type") == "TOKENS_LIMIT"), (limits[0] if limits else None))
+            if tok:
+                return {"provider": "zai", "glm": True,
+                        "percent": tok.get("percentage"),
+                        "used": tok.get("currentValue"), "limit": tok.get("usage")}
+            last = "无 limits 字段"
+        except Exception as e:
+            last = str(e)[:120]
+    return {"provider": "zai", "glm": True, "error": last or "zai 用量读取失败"}
 def balance():
     now = time.time()
     prov = _cfg_get("provider") or "deepseek"
     if _bal["d"] and _bal.get("prov") == prov and now - _bal["t"] < 60:   # 缓存按 provider 区分,切换后不再返回旧 provider 余额
         return _bal["d"]
-    if prov != "deepseek":   # 仅 DeepSeek 有简单余额接口;GLM(zai)等需上各自官网看,这里不误显 DeepSeek 余额
+    if prov == "zai":   # GLM:读 Coding Plan 5h 用量额度
+        key = _provider_key("zai")
+        d = _zai_usage(key) if key else {"provider": "zai", "error": "no zai key"}
+        _bal.update(t=now, d=d, prov=prov)
+        return d
+    if prov != "deepseek":   # 其它 provider 暂无简单余额接口;不误显 DeepSeek 余额
         d = {"provider": prov, "unavailable": True}
         _bal.update(t=now, d=d, prov=prov)
         return d
