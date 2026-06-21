@@ -13,6 +13,7 @@
 - **原生 macOS 应用**(Swift + WKWebView):真原生窗口、标准红黄绿、记忆窗口大小、Dock 点击复用窗口、零浏览器依赖
 - **多会话**侧栏 + 流式输出 + 工具调用审批卡 + 终端块渲染
 - **多模型一键切换**:DeepSeek / GLM(智谱·Z.ai)/ Kimi(月之暗面)/ OpenAI / ChatGPT(OAuth 登录)/ Claude / OpenRouter / DeepInfra …(侧栏「🧠 模型」)
+- **⚖️ 多模型并排对比**:多选 DeepSeek / GLM / GPT… 顶部共用输入框发一条 prompt,下方**每个模型一栏并排独立流式**,点栏头**最大化**单栏阅读。每个模型一个独立后端进程(真并行、不切换不重启),纯问答,与单模型模式并存。
 - **余额显示**:按当前 provider 绑定(DeepSeek 显示实时余额,其它显示来源说明)
 - **文件上传**:拖拽 / 📎 按钮 / 直接粘贴 → 存入 workspace,agent 自动读取
 - **Skills 面板**:浏览 / 搜索 / 查看 SKILL.md / 新建 skill

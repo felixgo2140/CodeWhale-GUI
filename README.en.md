@@ -13,6 +13,7 @@ No Chrome dependency. Universal binary for both Intel and Apple Silicon (~82 KB)
 - **Native macOS app** (Swift + WKWebView): real native window, standard traffic-light controls, remembers window size, Dock click re-focuses the window, zero browser dependency
 - **Multi-session** sidebar + streaming output + tool-call approval cards + terminal blocks
 - **One-click model switching**: DeepSeek / GLM (Zhipu·Z.ai) / Kimi (Moonshot) / OpenAI / ChatGPT (OAuth) / Claude / OpenRouter / DeepInfra … (sidebar "🧠 Model")
+- **⚖️ Side-by-side multi-model compare**: pick several of DeepSeek / GLM / GPT…, type one prompt in the shared box, and each model streams its answer in its **own column side by side**; click a column header to **maximize** it. Each model runs as its own backend process (truly parallel, no switching/restart), chat-only, alongside the normal single-model mode.
 - **Balance display** bound to the current provider (live balance for DeepSeek; a source hint for others)
 - **File upload**: drag-and-drop / 📎 button / paste → saved to the workspace, read by the agent
 - **Skills panel**: browse / search / view SKILL.md / create a skill
