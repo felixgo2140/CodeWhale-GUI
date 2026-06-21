@@ -11,7 +11,7 @@ Security: when bound to a non-loopback host (LAN), a token is REQUIRED. Without
 one it fails closed to 127.0.0.1, so the agent API is never exposed unprotected.
 """
 import http.server, socketserver, json, re, os, time, subprocess, shutil, urllib.request, urllib.error, urllib.parse
-import base64, hashlib, tarfile, tempfile, io, threading
+import base64, hashlib, tarfile, tempfile, io, threading, ssl
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
@@ -75,15 +75,65 @@ def _local_proxy():
                 pass
     _proxy_cache.update(t=now, v=(p or ""))
     return p or None
-def _open_url(req, timeout):
-    # 直连优先(TUN 能兜住就成);失败再走探测到的本机代理。失败也不抛新错,沿用原异常。
+# ── CA 信任(修:python.org 版 Python 默认 CA 包为空 + 本机代理做 TLS 解密用自签根 → 校验失败)──
+# 合并 macOS 钥匙串(系统根 + 用户/系统钥匙串里的代理 MITM 根)与 certifi 标准根成一个 CA 包,
+# 加载进 SSL 上下文。仍开启证书校验,只是把"本机已信任的根"也纳入信任锚 —— 每台机器按各自钥匙串生成。
+_CA_BUNDLE = os.path.expanduser("~/.codewhale-gui/ca-bundle.pem")
+def _build_ca_bundle():
+    parts = []
+    for kc in ("/System/Library/Keychains/SystemRootCertificates.keychain",
+               "/Library/Keychains/System.keychain",
+               os.path.expanduser("~/Library/Keychains/login.keychain-db")):
+        try:
+            out = subprocess.run(["/usr/bin/security", "find-certificate", "-a", "-p", kc],
+                                 capture_output=True, text=True, timeout=8).stdout
+            if out:
+                parts.append(out)
+        except Exception:
+            pass
     try:
-        return urllib.request.urlopen(req, timeout=timeout)
+        import certifi
+        parts.append(open(certifi.where(), encoding="utf-8").read())
+    except Exception:
+        pass
+    blob = "\n".join(parts)
+    if "BEGIN CERTIFICATE" not in blob:
+        return False
+    try:
+        os.makedirs(os.path.dirname(_CA_BUNDLE), exist_ok=True)
+        with open(_CA_BUNDLE, "w", encoding="utf-8") as f:
+            f.write(blob)
+        os.chmod(_CA_BUNDLE, 0o600)
+    except Exception:
+        pass
+    return True
+_ssl_ctx_cache = None
+def _ssl_context():
+    global _ssl_ctx_cache
+    if _ssl_ctx_cache is not None:
+        return _ssl_ctx_cache
+    ctx = ssl.create_default_context()
+    try:
+        if not (os.path.exists(_CA_BUNDLE) and os.path.getsize(_CA_BUNDLE) > 1000):
+            _build_ca_bundle()
+        if os.path.exists(_CA_BUNDLE):
+            ctx.load_verify_locations(_CA_BUNDLE)
+    except Exception:
+        pass
+    _ssl_ctx_cache = ctx
+    return ctx
+def _open_url(req, timeout):
+    # 直连优先(TUN 能兜住就成);失败再走探测到的本机代理。两条路都用合并后的 CA 上下文校验。
+    ctx = _ssl_context()
+    try:
+        return urllib.request.urlopen(req, timeout=timeout, context=ctx)
     except Exception:
         proxy = _local_proxy()
         if not proxy:
             raise
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=ctx),
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
         return opener.open(req, timeout=timeout)
 
 _bal = {"t": 0.0, "d": None}
@@ -460,6 +510,61 @@ def set_model(provider, model, api_key):
     _restart_appserver(); _appserver_healthy()
     return {"error": f"切到 {provider}/{model or '默认'} 后后端起不来(多半 key 不对、或模型名被当 DeepSeek 校验)。已自动回退到 {prev_p}/{prev_m},后端正常。非 DeepSeek 的 provider 模型名填 auto(由 provider 自选默认模型),再试。"}
 
+# ── 对比模式后端:每个 provider 一个独立 app-server(派生配置设对 provider+model,不同端口,懒启动)──
+CMP_DIR = os.path.expanduser("~/.codewhale-gui/cmp")
+CMP_PORTS = {}            # provider -> 已分配端口
+_cmp_lock = threading.Lock()
+def _cmp_model(prov):
+    return "deepseek-v4-pro" if prov == "deepseek" else "auto"   # 非 deepseek 一律 auto(让 provider 自选默认模型,避免模型名非法)
+def _cmp_safe(prov):
+    return re.sub(r'[^a-zA-Z0-9_-]', '_', prov)
+def _cmp_write_config(prov):
+    os.makedirs(CMP_DIR, exist_ok=True)
+    s = open(CFG, encoding="utf-8").read()                       # 从主配置派生,带上所有 provider 的 key
+    if re.search(r'(?m)^provider\s*=', s):
+        s = re.sub(r'(?m)^provider\s*=.*$', f'provider = "{prov}"', s, count=1)
+    else:
+        s = f'provider = "{prov}"\n' + s
+    if re.search(r'(?m)^default_text_model\s*=', s):
+        s = re.sub(r'(?m)^default_text_model\s*=.*$', f'default_text_model = "{_cmp_model(prov)}"', s, count=1)
+    else:
+        s = f'default_text_model = "{_cmp_model(prov)}"\n' + s
+    path = os.path.join(CMP_DIR, _cmp_safe(prov) + ".toml")
+    open(path, "w").write(s)
+    return path
+def _port_up(port):
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2)
+        return True
+    except Exception:
+        return False
+def ensure_provider_server(prov):
+    if not re.match(r'^[a-zA-Z0-9_-]+$', prov or ""):
+        raise ValueError("非法 provider")
+    with _cmp_lock:
+        port = CMP_PORTS.get(prov)
+        if port and _port_up(port):
+            return port
+        if not port:                                             # 分配一个空闲端口(从 7900 起)
+            used = set(CMP_PORTS.values())
+            port = 7900
+            while port in used or _port_up(port):
+                port += 1
+            CMP_PORTS[prov] = port
+        elif _port_up(port):
+            return port
+        cfg = _cmp_write_config(prov)
+        env = {**os.environ, "PATH": _PATH, "CODEWHALE_PROVIDER": prov}
+        logf = open(os.path.expanduser(f"~/codewhale-gui/cmp-{_cmp_safe(prov)}.log"), "a")
+        subprocess.Popen([CODEWHALE, "app-server", "--config", cfg, "--http", "--host", "127.0.0.1",
+                          "--port", str(port), "--insecure-no-auth"],
+                         env=env, cwd=os.path.expanduser("~"), stdout=logf, stderr=subprocess.STDOUT)
+        for _ in range(50):                                      # 等就绪(最多 ~20s)
+            if _port_up(port):
+                return port
+            time.sleep(0.4)
+        raise RuntimeError(f"{prov} app-server 启动超时")
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **k):
         super().__init__(*a, directory=WEB, **k)
@@ -478,6 +583,55 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(b'{"error":"unauthorized"}')
+    def _json(self, obj, code=200):
+        b = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+    def _proxy_to(self, method, port, upstream_path):   # 代理到指定 provider 的独立 app-server(SSE 流式)
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        body = self.rfile.read(length) if length else None
+        req = urllib.request.Request(f"http://127.0.0.1:{port}{upstream_path}", data=body, method=method)
+        ct = self.headers.get("Content-Type")
+        if ct:
+            req.add_header("Content-Type", ct)
+        try:
+            resp = urllib.request.urlopen(req, timeout=600)
+        except urllib.error.HTTPError as e:
+            resp = e
+        except Exception as e:
+            return self._json({"error": str(e)[:200]}, 502)
+        self.send_response(getattr(resp, "status", 200))
+        self.send_header("Content-Type", resp.headers.get("Content-Type", "application/json"))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            while True:
+                chunk = resp.read1(8192)   # read1=有多少转多少,不阻塞等满(SSE 最后一个小事件也能即时送达)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+    def _cmp_route(self, method):   # /cmp/<provider>/v1/... → 确保该 provider 后端在跑 → 代理过去
+        p = urllib.parse.urlparse(self.path).path
+        m = re.match(r'^/cmp/([a-zA-Z0-9_-]+)(/.*)$', p)
+        if not m:
+            return False
+        if not self._authed():
+            self._deny(); return True
+        prov = m.group(1)
+        upstream = self.path[len("/cmp/" + prov):]   # 去掉 /cmp/<prov> 前缀,保留 query
+        try:
+            port = ensure_provider_server(prov)
+        except Exception as e:
+            self._json({"error": str(e)[:200]}, 502); return True
+        self._proxy_to(method, port, upstream)
+        return True
 
     def _proxy(self, method):
         if not self._authed():
@@ -504,7 +658,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         try:
             while True:
-                chunk = resp.read(1024)
+                chunk = resp.read1(8192)   # read1=有多少转多少,不阻塞等满(SSE 最后一个小事件也能即时送达)
                 if not chunk:
                     break
                 self.wfile.write(chunk)
@@ -612,11 +766,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p.startswith("/cmp/") and self._cmp_route("GET"):
+            return
         if p.startswith("/v1/") or p == "/health":
             return self._proxy("GET")
         return super().do_GET()
     def do_POST(self):
         p = urllib.parse.urlparse(self.path).path
+        if p == "/api/compare/ensure":   # 预启动所选 provider 的独立后端,返回每个的状态
+            if not self._authed():
+                return self._deny()
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            out = {}
+            for prov in (data.get("providers") or [])[:6]:
+                try:
+                    out[prov] = {"ok": True, "port": ensure_provider_server(prov)}
+                except Exception as e:
+                    out[prov] = {"ok": False, "error": str(e)[:160]}
+            return self._json(out)
+        if p.startswith("/cmp/") and self._cmp_route("POST"):
+            return
         if p == "/api/update/apply":
             if not self._authed():
                 return self._deny()
@@ -737,11 +907,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             f.write(f"---\nname: {name}\ndescription: {desc or 'TODO 描述这个 skill 何时使用'}\n---\n\n# {name}\n\nTODO: 写清楚这个 skill 的步骤/用途。\n")
         return {"ok": True, "path": d}
     def do_PATCH(self):
-        if urllib.parse.urlparse(self.path).path.startswith("/v1/"):
+        p = urllib.parse.urlparse(self.path).path
+        if p.startswith("/cmp/") and self._cmp_route("PATCH"):
+            return
+        if p.startswith("/v1/"):
             return self._proxy("PATCH")
         self.send_error(404)
     def do_DELETE(self):
-        if urllib.parse.urlparse(self.path).path.startswith("/v1/"):
+        p = urllib.parse.urlparse(self.path).path
+        if p.startswith("/cmp/") and self._cmp_route("DELETE"):
+            return
+        if p.startswith("/v1/"):
             return self._proxy("DELETE")
         self.send_error(404)
 

@@ -69,6 +69,23 @@ chmod 600 "$HOME/.codewhale-gui/token"
 # 更新验签需要 cryptography(失败也不阻断安装,只是自动更新会暂时禁用)
 "$PY" -m pip install --user cryptography >/dev/null 2>&1 || "$PY" -m pip install --break-system-packages cryptography >/dev/null 2>&1 || echo "  (cryptography 没装上:在线更新会暂时禁用,不影响其他功能)"
 
+# ── 5.6 CA 证书包(修代理 TLS 解密 / python.org 版 Python 空 CA 包导致的余额、联网校验失败)──
+# 合并:钥匙串里的系统根 + System/login 钥匙串(含用户本机代理 TLS 解密用的自签根)+ certifi(若有)。
+# 让前端 server.py 的 HTTPS 校验既认公网证书、也认本机代理重签的证书;每台机器按各自钥匙串生成。
+echo "→ 生成 CA 证书包(兼容 TLS 解密代理)…"
+CABUNDLE="$HOME/.codewhale-gui/ca-bundle.pem"
+: > "$CABUNDLE"
+security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain >> "$CABUNDLE" 2>/dev/null || true
+security find-certificate -a -p /Library/Keychains/System.keychain          >> "$CABUNDLE" 2>/dev/null || true
+security find-certificate -a -p "$HOME/Library/Keychains/login.keychain-db"  >> "$CABUNDLE" 2>/dev/null || true
+CERTIFI="$("$PY" -c 'import certifi;print(certifi.where())' 2>/dev/null || true)"
+[ -n "$CERTIFI" ] && [ -f "$CERTIFI" ] && cat "$CERTIFI" >> "$CABUNDLE" 2>/dev/null || true
+if [ -s "$CABUNDLE" ]; then
+  chmod 600 "$CABUNDLE"; echo "  ✓ CA 包就绪($(grep -c 'BEGIN CERTIFICATE' "$CABUNDLE") 张证书)"
+else
+  echo "  ⚠ CA 包为空(余额/联网在 TLS 解密代理下可能仍失败)"; CABUNDLE=""
+fi
+
 # ── 5.5 联网工具(MCP: fetch 读网页 + playwright 浏览器)──
 echo "→ 配置联网工具(MCP)… 这步会下载组件(含浏览器 ~150MB),可能几分钟,请耐心"
 if ! command -v uvx >/dev/null 2>&1; then
@@ -111,6 +128,9 @@ echo "  ✓ 联网工具就绪"
 echo "→ 配置开机自启…"
 LA="$HOME/Library/LaunchAgents"; mkdir -p "$LA"
 PLPATH="$NODEDIR:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# 让前端 server.py 用上面生成的 CA 包(空则不注入,行为同旧版)
+CERTENV=""
+[ -n "$CABUNDLE" ] && CERTENV="<key>SSL_CERT_FILE</key><string>$CABUNDLE</string>"
 cat > "$LA/com.codewhale.appserver.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -135,7 +155,7 @@ cat > "$LA/com.codewhale.frontend.plist" <<PLIST
   <key>Label</key><string>com.codewhale.frontend</string>
   <key>ProgramArguments</key><array><string>$PY</string><string>$HOME/codewhale-gui/server.py</string></array>
   <key>WorkingDirectory</key><string>$HOME/codewhale-gui</string>
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$PLPATH</string></dict>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$PLPATH</string>$CERTENV</dict>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>
   <key>StandardOutPath</key><string>$HOME/codewhale-gui/webserver.log</string>
   <key>StandardErrorPath</key><string>$HOME/codewhale-gui/webserver.log</string>

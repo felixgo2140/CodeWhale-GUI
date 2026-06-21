@@ -1,5 +1,20 @@
 # 更新日志
 
+## v2.1.0 — 多模型并排对比
+
+### 新增
+- **多模型并排对比**(侧栏「⚖️ 对比」):多选 provider(DeepSeek / GLM / GPT …),顶部共用输入框发一条 prompt,下方每个模型一栏**并排独立流式**,点栏头可**最大化**单栏阅读。每个模型一个独立后端进程(不切换不重启,真并行);对比为纯问答(不跑工具),与单模型模式并存。
+  - 实现:server.py 每 provider 派生独立配置起 app-server(`/cmp/<provider>/v1/*` 代理),`/api/compare/ensure` 懒启动;前端多栏 SSE。
+  - 注:GLM 那栏需 z.ai Coding Plan 才出结果,否则报错(订阅后自动可用)。
+
+### 含 v2.0.8 全部修复
+本版包含 v2.0.8 的代理 TLS 解密修复(见下)。
+
+## v2.0.8 — 修代理 TLS 解密下余额/联网校验失败
+
+### 修复
+- **本机代理做 TLS 解密(MITM 自签根)时余额/更新检查失败**:python.org 版 Python 默认 CA 包为空,代理重签的证书校验不过。现 server.py 合并 macOS 钥匙串(系统根 + 含代理自签根的 System/login 钥匙串)与 certifi 成一个 CA 包(`~/.codewhale-gui/ca-bundle.pem`)载入 SSL 上下文;安装脚本也在装机时生成该包并给前端注入 `SSL_CERT_FILE`。仍开启证书校验,只是纳入本机已信任的根。
+
 ## v2.0.7 — 代理环境下余额/更新检查修复
 
 ### 修复

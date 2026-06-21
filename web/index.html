@@ -214,7 +214,7 @@
     <div id="sidehead">
       <div id="brand"><span class="logo">🐳</span><span class="bname">CodeWhale</span><span id="version"></span><button id="updbtn" title="CodeWhale 后端有新版,点击更新">↑ 更新</button><button id="guiupdbtn" title="界面有新版,点击下载验签更新">↑ 界面</button></div>
       <button id="newbtn">＋ 新建对话</button>
-      <div id="sidetools"><button class="topbtn" id="skillsbtn">🧩 Skills</button><button class="topbtn" id="mcpbtn">🔌 连接器</button><button class="topbtn" id="updatebtn" title="检查并更新:界面 + CodeWhale 后端">🔄 更新</button></div>
+      <div id="sidetools"><button class="topbtn" id="skillsbtn">🧩 Skills</button><button class="topbtn" id="mcpbtn">🔌 连接器</button><button class="topbtn" id="cmpbtn" title="多模型并排对比">⚖️ 对比</button><button class="topbtn" id="updatebtn" title="检查并更新:界面 + CodeWhale 后端">🔄 更新</button></div>
     </div>
     <div id="threads"></div>
     <div id="sidefoot">
@@ -915,6 +915,136 @@ setInterval(loadThreads, 4000);   // 轮询刷新侧栏状态点(多会话实时
 setInterval(loadBalance, 60000);  // 每分钟刷新 DeepSeek 余额
 loadVersion(); checkUpdate(); setInterval(checkUpdate, 3600000);   // CodeWhale 后端版本号 + 启动/每小时查新版
 checkGuiUpdate(); setInterval(checkGuiUpdate, 3600000);            // GUI 界面:启动 + 每小时查新版(签名验证)
+
+/* ---------- 多模型并排对比 ---------- */
+const CMP={ sel:new Set(), threads:{}, seq:{}, keyed:{}, maxed:null };
+async function openCompare(){
+  $("#cmpView").hidden=false;
+  try{ const d=await api("/api/model"); CMP.keyed=d.keyed||{}; }catch(e){}
+  if(CMP.sel.size===0){
+    ["deepseek","openai-codex"].forEach(p=>{ if(CMP.keyed[p]) CMP.sel.add(p); });
+    if(CMP.sel.size===0) CMP.sel.add("deepseek");
+  }
+  renderCmpChips(); renderCmpCols();
+  setTimeout(()=>{ const i=$("#cmpInput"); if(i) i.focus(); },60);
+}
+function closeCompare(){ $("#cmpView").hidden=true; }
+function renderCmpChips(){
+  const box=$("#cmpChips");
+  box.innerHTML=PROVIDERS.map(p=>{
+    const on=CMP.sel.has(p.id), nokey=!p.oauth && !CMP.keyed[p.id];
+    return `<span class="cmpchip ${on?'on':''} ${nokey?'nokey':''}" data-p="${p.id}" title="${nokey?'未配置 key':''}">${PROV_SHORT[p.id]||p.name}${nokey?' ⚠':''}</span>`;
+  }).join("");
+  box.querySelectorAll(".cmpchip").forEach(el=>el.onclick=()=>{
+    const id=el.dataset.p;
+    if(CMP.sel.has(id)){ if(CMP.sel.size>1) CMP.sel.delete(id); } else CMP.sel.add(id);
+    renderCmpChips(); renderCmpCols();
+  });
+}
+function renderCmpCols(){   // diff:保留已有栏内容,只增删变化的
+  const box=$("#cmpCols");
+  [...box.querySelectorAll(".cmpcol")].forEach(c=>{ if(!CMP.sel.has(c.dataset.p)) c.remove(); });
+  PROVIDERS.filter(p=>CMP.sel.has(p.id)).forEach(p=>{
+    if(box.querySelector('.cmpcol[data-p="'+p.id+'"]')) return;
+    const d=document.createElement("div"); d.className="cmpcol"; d.dataset.p=p.id;
+    d.innerHTML=`<div class="cmpcol-h" data-p="${p.id}"><span>${PROV_SHORT[p.id]||p.name}</span><span class="st" id="cmpst-${p.id}"></span></div><div class="cmpcol-b" id="cmpb-${p.id}"></div>`;
+    box.appendChild(d);
+    d.querySelector(".cmpcol-h").onclick=()=>toggleMax(p.id);
+  });
+}
+function toggleMax(p){
+  const cols=$("#cmpCols").querySelectorAll(".cmpcol");
+  if(CMP.maxed===p){ CMP.maxed=null; cols.forEach(c=>c.classList.remove("max","hide")); }
+  else { CMP.maxed=p; cols.forEach(c=>{ const me=c.dataset.p===p; c.classList.toggle("max",me); c.classList.toggle("hide",!me); }); }
+}
+function cmpAddMsg(p,cls,html){ const b=$("#cmpb-"+CSS.escape(p)); if(!b) return null; const d=document.createElement("div"); d.className="cmpmsg "+cls; d.innerHTML=html; b.appendChild(d); b.scrollTop=b.scrollHeight; return d; }
+async function cmpSend(){
+  const ta=$("#cmpInput"); const text=(ta.value||"").trim(); if(!text) return;
+  const provs=[...CMP.sel]; ta.value=""; $("#cmpSendBtn").disabled=true;
+  provs.forEach(p=>{ const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent="启动…"; });
+  let ensured={}; try{ ensured=await api("/api/compare/ensure",{method:"POST",body:JSON.stringify({providers:provs})}); }catch(e){}
+  await Promise.all(provs.map(p=>cmpRun(p,text,ensured[p])));
+  $("#cmpSendBtn").disabled=false;
+}
+async function cmpRun(prov,text,ens){
+  const st=$("#cmpst-"+CSS.escape(prov));
+  cmpAddMsg(prov,"u",esc(text));
+  if(ens && ens.ok===false){ cmpAddMsg(prov,"a err","✗ 后端启动失败:"+esc(ens.error||"")); if(st)st.textContent="✗"; return; }
+  const A=cmpAddMsg(prov,"a",`<span class="rsn" style="display:none"></span><span class="ans"></span><span class="cur">▍</span>`);
+  const ans=A.querySelector(".ans"), rsn=A.querySelector(".rsn"), cur=A.querySelector(".cur");
+  if(st)st.textContent="思考…";
+  try{
+    if(!CMP.threads[prov]){
+      const t=await (await fetch(url(`/cmp/${prov}/v1/threads`),{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})).json();
+      CMP.threads[prov]=t.id; CMP.seq[prov]=0;
+      fetch(url(`/cmp/${prov}/v1/threads/${t.id}`),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto_approve:true})}).catch(()=>{});
+    }
+    const tid=CMP.threads[prov], since=CMP.seq[prov]||0;
+    const sendText="【多模型对比模式:请直接用文字回答,不要调用任何工具、不要执行命令、不要读写文件】\n\n"+text;   // 防 agent 对简单问题也去调 shell 导致失败
+    await fetch(url(`/cmp/${prov}/v1/threads/${tid}/turns`),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:sendText})});
+    await new Promise(resolve=>{
+      const es=new EventSource(url(`/cmp/${prov}/v1/threads/${tid}/events?since_seq=${since}`));
+      let done=false; const finish=()=>{ if(done)return; done=true; try{es.close()}catch(e){} if(cur)cur.remove(); if(st&&st.textContent!=="✗")st.textContent="✓"; resolve(); };
+      const onEv=(k,e)=>{   // SSE 是命名事件,逐个 addEventListener(onmessage 只收匿名事件,收不到)
+        let ev; try{ ev=JSON.parse(e.data); }catch{ return; }
+        if(ev.seq) CMP.seq[prov]=ev.seq;
+        const pl=ev.payload||{};
+        if(k==="item.delta"){
+          if(pl.kind==="agent_message"){ ans.textContent+=pl.delta||""; if(st)st.textContent="输出中"; }
+          else if(pl.kind==="agent_reasoning"){ rsn.style.display="block"; rsn.textContent+=pl.delta||""; }
+          const b=$("#cmpb-"+CSS.escape(prov)); if(b) b.scrollTop=b.scrollHeight;
+        } else if(k==="item.completed"){ const it=pl.item||{}; if(it.kind==="agent_message"&&it.detail) ans.textContent=it.detail; }
+        else if(k==="item.failed"){ const it=pl.item||{}; ans.innerHTML=`<span class="err">✗ ${esc(String(it.detail||it.summary||"失败").slice(0,400))}</span>`; if(st)st.textContent="✗"; finish(); }
+        else if(k==="turn.completed"||k==="turn.failed"){ finish(); }
+      };
+      ["item.delta","item.completed","item.failed","turn.completed","turn.failed"].forEach(name=>es.addEventListener(name,e=>onEv(name,e)));
+      es.onerror=()=>{ if(es.readyState===2) finish(); };
+      setTimeout(finish, 240000);
+    });
+  }catch(e){ if(ans) ans.innerHTML=`<span class="err">✗ ${esc(String(e&&e.message||e))}</span>`; if(cur)cur.remove(); if(st)st.textContent="✗"; }
+}
+$("#cmpbtn").onclick=openCompare;
+$("#cmpClose").onclick=closeCompare;
+$("#cmpSendBtn").onclick=cmpSend;
+$("#cmpInput").addEventListener("keydown",e=>{ if(e.key==="Enter"&&!e.shiftKey){ if(e.isComposing||e.keyCode===229)return; e.preventDefault(); cmpSend(); }});
 </script>
+<style>
+#cmpView{position:fixed;inset:0;background:var(--bg);z-index:60;display:flex;flex-direction:column}
+#cmpView[hidden]{display:none}
+#cmpTop{padding:10px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+#cmpHead{display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap}
+#cmpHead b{font-size:14px}
+#cmpChips{display:flex;gap:6px;flex-wrap:wrap;flex:1}
+.cmpchip{border:1px solid var(--line);border-radius:13px;padding:3px 10px;font-size:12px;cursor:pointer;background:var(--bg);color:var(--dim);user-select:none}
+.cmpchip.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.cmpchip.nokey{opacity:.55}
+#cmpClose{border:1px solid var(--line);background:var(--bg);border-radius:7px;padding:4px 10px;font-size:12px;cursor:pointer;color:var(--dim)}
+#cmpInputRow{display:flex;gap:8px}
+#cmpInput{flex:1;min-height:44px;max-height:130px;resize:vertical;border:1px solid var(--line);border-radius:8px;padding:9px 11px;font:inherit;font-size:13px;background:var(--bg);color:var(--txt)}
+#cmpSendBtn{border:none;background:var(--accent);color:#fff;border-radius:8px;padding:0 18px;font-size:13px;font-weight:600;cursor:pointer}
+#cmpSendBtn:disabled{opacity:.5;cursor:default}
+#cmpCols{flex:1;display:flex;gap:1px;background:var(--line);overflow:hidden}
+.cmpcol{flex:1 1 0;min-width:0;background:var(--bg);display:flex;flex-direction:column;overflow:hidden}
+.cmpcol.max{flex:1 1 100%}
+.cmpcol.hide{display:none}
+.cmpcol-h{padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel);font-size:12px;font-weight:600;color:var(--txt);display:flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap}
+.cmpcol-h .st{font-size:11px;font-weight:400;color:var(--faint);margin-left:auto}
+.cmpcol-h:hover{color:var(--accent)}
+.cmpcol-b{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:9px}
+.cmpmsg{font-size:13px;line-height:1.55}
+.cmpmsg.u{align-self:flex-end;max-width:88%;background:var(--user);color:var(--usertxt);padding:6px 10px;border-radius:10px;white-space:pre-wrap;word-break:break-word}
+.cmpmsg.a{white-space:normal;word-break:break-word;color:var(--txt)}
+.cmpmsg.a .ans{white-space:pre-wrap}
+.cmpmsg.a .rsn{display:block;color:var(--faint);font-size:12px;white-space:pre-wrap;border-left:2px solid var(--line);padding-left:8px;margin-bottom:6px}
+.cmpmsg.a .cur{color:var(--accent)}
+.cmpmsg.err,.cmpmsg .err{color:var(--err)}
+</style>
+<div id="cmpView" hidden>
+  <div id="cmpTop">
+    <div id="cmpHead"><b>⚖️ 多模型对比</b><div id="cmpChips"></div><button id="cmpClose">✕ 退出</button></div>
+    <div id="cmpInputRow"><textarea id="cmpInput" placeholder="输入一个问题,同时发给所有选中的模型…（Enter 发送 · Shift+Enter 换行）"></textarea><button id="cmpSendBtn">发送</button></div>
+  </div>
+  <div id="cmpCols"></div>
+</div>
 </body>
 </html>
