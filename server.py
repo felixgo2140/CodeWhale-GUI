@@ -210,9 +210,16 @@ def _find_codewhale():   # Apple Silicon=/opt/homebrew, Intel=/usr/local, 直装
     return shutil.which("codewhale") or "codewhale"
 CODEWHALE = _find_codewhale()
 _PATH = "/opt/homebrew/bin:/usr/local/bin:" + os.path.expanduser("~/.local/bin") + ":/usr/bin:/bin:/usr/sbin:/sbin"
+def _proxy_env():
+    # launchd 起的 server.py 没继承 shell 的 HTTP_PROXY → 它拉起的 codewhale 子进程(update 下载 / 各 provider 外连)
+    # 在 TUN 兜不住的机器上连不上。把探测到的本机代理注入子进程环境(同 _open_url 的思路)。
+    p = _local_proxy()
+    if not p:
+        return {}
+    return {"HTTP_PROXY": p, "HTTPS_PROXY": p, "http_proxy": p, "https_proxy": p}
 def _run(cmd, timeout=120):
     try:
-        env = {**os.environ, "PATH": _PATH}  # launchd PATH 太精简,codewhale 是 node 脚本需 node 在 PATH;兼容 arm64/Intel
+        env = {**_proxy_env(), **os.environ, "PATH": _PATH}  # 已有 proxy 则不覆盖;launchd PATH 太精简需补 node/codewhale 路径
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
         return p.returncode, (p.stdout or "") + (p.stderr or "")
     except Exception as e:
@@ -554,7 +561,7 @@ def ensure_provider_server(prov):
         elif _port_up(port):
             return port
         cfg = _cmp_write_config(prov)
-        env = {**os.environ, "PATH": _PATH, "CODEWHALE_PROVIDER": prov}
+        env = {**_proxy_env(), **os.environ, "PATH": _PATH, "CODEWHALE_PROVIDER": prov}
         logf = open(os.path.expanduser(f"~/codewhale-gui/cmp-{_cmp_safe(prov)}.log"), "a")
         subprocess.Popen([CODEWHALE, "app-server", "--config", cfg, "--http", "--host", "127.0.0.1",
                           "--port", str(port), "--insecure-no-auth"],

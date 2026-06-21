@@ -1,5 +1,11 @@
 # 更新日志
 
+## v2.1.1 — 修对比发送无效 + 后端更新走代理
+
+### 修复
+- **对比模式点「发送」没反应**(v2.1.0 的 bug):对比 overlay 的 HTML 在脚本之后才解析,绑定按钮的代码先跑导致没绑上。改为在 DOMContentLoaded 后绑定;并让点发送**立即显示用户气泡 + 启动中**,不再干等后端启动几秒。
+- **「CodeWhale 后端」更新按钮无效**:`codewhale update` 子进程由 launchd 起的 server.py 拉起、不继承 shell 的 `HTTP_PROXY`,在假 IP 代理下下载新二进制失败。现给 server.py 调起的所有 codewhale 子进程(含 update、对比各 provider 后端)注入探测到的本机代理。
+
 ## v2.1.0 — 多模型并排对比
 
 ### 新增

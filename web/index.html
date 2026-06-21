@@ -961,14 +961,13 @@ function cmpAddMsg(p,cls,html){ const b=$("#cmpb-"+CSS.escape(p)); if(!b) return
 async function cmpSend(){
   const ta=$("#cmpInput"); const text=(ta.value||"").trim(); if(!text) return;
   const provs=[...CMP.sel]; ta.value=""; $("#cmpSendBtn").disabled=true;
-  provs.forEach(p=>{ const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent="启动…"; });
+  provs.forEach(p=>{ cmpAddMsg(p,"u",esc(text)); const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent="启动…"; });   // 立即显示用户气泡 + 启动中,不等后端
   let ensured={}; try{ ensured=await api("/api/compare/ensure",{method:"POST",body:JSON.stringify({providers:provs})}); }catch(e){}
   await Promise.all(provs.map(p=>cmpRun(p,text,ensured[p])));
   $("#cmpSendBtn").disabled=false;
 }
 async function cmpRun(prov,text,ens){
-  const st=$("#cmpst-"+CSS.escape(prov));
-  cmpAddMsg(prov,"u",esc(text));
+  const st=$("#cmpst-"+CSS.escape(prov));   // 用户气泡已在 cmpSend 里即时加过
   if(ens && ens.ok===false){ cmpAddMsg(prov,"a err","✗ 后端启动失败:"+esc(ens.error||"")); if(st)st.textContent="✗"; return; }
   const A=cmpAddMsg(prov,"a",`<span class="rsn" style="display:none"></span><span class="ans"></span><span class="cur">▍</span>`);
   const ans=A.querySelector(".ans"), rsn=A.querySelector(".rsn"), cur=A.querySelector(".cur");
@@ -1003,10 +1002,13 @@ async function cmpRun(prov,text,ens){
     });
   }catch(e){ if(ans) ans.innerHTML=`<span class="err">✗ ${esc(String(e&&e.message||e))}</span>`; if(cur)cur.remove(); if(st)st.textContent="✗"; }
 }
-$("#cmpbtn").onclick=openCompare;
-$("#cmpClose").onclick=closeCompare;
-$("#cmpSendBtn").onclick=cmpSend;
-$("#cmpInput").addEventListener("keydown",e=>{ if(e.key==="Enter"&&!e.shiftKey){ if(e.isComposing||e.keyCode===229)return; e.preventDefault(); cmpSend(); }});
+// 对比的 overlay HTML 在本 <script> 之后才解析 → 绑定必须等 DOMContentLoaded,否则 #cmpSendBtn 等还不存在,点了没反应
+window.addEventListener("DOMContentLoaded",()=>{
+  const cb=$("#cmpbtn"); if(cb) cb.onclick=openCompare;
+  const cc=$("#cmpClose"); if(cc) cc.onclick=closeCompare;
+  const cs=$("#cmpSendBtn"); if(cs) cs.onclick=cmpSend;
+  const ci=$("#cmpInput"); if(ci) ci.addEventListener("keydown",e=>{ if(e.key==="Enter"&&!e.shiftKey){ if(e.isComposing||e.keyCode===229)return; e.preventDefault(); cmpSend(); }});
+});
 </script>
 <style>
 #cmpView{position:fixed;inset:0;background:var(--bg);z-index:60;display:flex;flex-direction:column}
