@@ -933,5 +933,10 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = True
 
 if __name__ == "__main__":
+    # 清理可能残留的旧对比 app-server(老版本无代理 env 会答错模型 / 复用旧后端)→ 下次按需重启为带修复的
+    try:
+        subprocess.run(["/usr/bin/pkill", "-f", "app-server --config " + CMP_DIR], timeout=5)
+    except Exception:
+        pass
     print(f"CodeWhale GUI server on {BIND}:{PORT}  (token {'ENABLED' if TOKEN else 'off'})")
     Server((BIND, PORT), Handler).serve_forever()
