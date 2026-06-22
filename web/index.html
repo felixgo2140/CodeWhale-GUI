@@ -1000,18 +1000,23 @@ async function cmpRun(prov,text,ens){
     await fetch(url(`/cmp/${prov}/v1/threads/${tid}/turns`),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:sendText})});
     await new Promise(resolve=>{
       const es=new EventSource(url(`/cmp/${prov}/v1/threads/${tid}/events?since_seq=${since}`));
-      let done=false, sawTool=false, grace=null;
-      const finish=()=>{ if(done)return; done=true; clearTimeout(grace); try{es.close()}catch(e){} if(cur)cur.remove(); if(steps===0&&!rsn.textContent.trim()&&proc.parentNode)proc.remove(); if(A&&!ans.textContent.trim())A.remove(); if(st&&st.textContent!=="✗")st.textContent="✓"; resolve(); };   // 空过程块/空答案→移除
+      let done=false, sawTool=false, grace=null, phase="思考中", tick=null, poll=null; const t0=Date.now();
+      const secs=()=>Math.round((Date.now()-t0)/1000);
+      const finish=(failed)=>{ if(done)return; done=true; clearTimeout(grace); clearInterval(tick); clearInterval(poll); try{es.close()}catch(e){} if(cur)cur.remove(); if(steps===0&&!rsn.textContent.trim()&&proc.parentNode)proc.remove(); if(A&&!ans.textContent.trim()&&!failed)A.remove(); if(st&&!/^✗/.test(st.textContent))st.textContent="✓ "+secs()+"s"; resolve(); };
+      const setPhase=(p)=>{ phase=p; if(st&&!/^[✓✗]/.test(st.textContent)) st.textContent=p+" "+secs()+"s"; };   // 阶段+已用秒:让用户一眼看出"还活着、跑了多久"
+      tick=setInterval(()=>{ if(!done && st && !/^[✓✗]/.test(st.textContent)) st.textContent=phase+" "+secs()+"s"; },1000);   // 心跳:秒数在跳=没卡死
+      poll=setInterval(async()=>{ if(done)return; try{ const arr=await (await fetch(url(`/cmp/${prov}/v1/threads/summary?limit=10`))).json(); const me=Array.isArray(arr)?arr.find(x=>x.id===tid):null; if(me && ["completed","failed","interrupted","canceled","cancelled"].includes(me.latest_turn_status)) finish(); }catch(e){} },4000);   // 兜底:SSE 停顿/漏 turn.completed 时靠轮询发现已结束→即时收尾刷新
       const scroll=()=>{ const b=$("#cmpb-"+CSS.escape(prov)); if(b) b.scrollTop=b.scrollHeight; };
+      setPhase("思考中");
       const isTool=kind=>kind && !["agent_message","agent_reasoning","user_message"].includes(kind);
       const onEv=(k,e)=>{   // SSE 是命名事件,逐个 addEventListener(onmessage 只收匿名事件,收不到)
         let ev; try{ ev=JSON.parse(e.data); }catch{ return; }
         if(ev.seq) CMP.seq[prov]=ev.seq;
         const pl=ev.payload||{};
         if(k==="item.delta"){
-          if(pl.kind==="agent_message"){ if(grace){clearTimeout(grace);grace=null;} ans.textContent+=pl.delta||""; if(st)st.textContent="输出中"; scroll(); }
-          else if(pl.kind==="agent_reasoning"){ rsn.textContent+=pl.delta||""; if(st&&st.textContent==="思考…")st.textContent="思考中…"; }   // 思考收进折叠的过程块,不挤占答案
-        } else if(k==="item.started"){ if(isTool((pl.item||{}).kind)){ if(st)st.textContent="执行中…"; } }
+          if(pl.kind==="agent_message"){ if(grace){clearTimeout(grace);grace=null;} ans.textContent+=pl.delta||""; setPhase("输出中"); scroll(); }
+          else if(pl.kind==="agent_reasoning"){ rsn.textContent+=pl.delta||""; setPhase("思考中"); }   // 思考收进折叠的过程块,不挤占答案
+        } else if(k==="item.started"){ if(isTool((pl.item||{}).kind)){ setPhase("执行工具"); } }
         else if(k==="item.completed"){ const it=pl.item||{};
           if(it.kind==="agent_message"&&it.detail) ans.textContent=it.detail;
           else if(isTool(it.kind)){ sawTool=true; addStep("🔧 "+String(it.summary||it.kind).slice(0,140)); }   // 工具/命令活动→折叠的过程块
@@ -1020,9 +1025,9 @@ async function cmpRun(prov,text,ens){
           if(CMP.autoApprove && aid){ fetch(url(`/cmp/${prov}/v1/approvals/${aid}`),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision:"allow",remember:false})}).catch(()=>{}); addStep("🔧 自动批准:"+tool); }
           else addStep("🔒 需批准:"+tool+"(开「⚡自动批准」放行)");
         }
-        else if(k==="item.failed"){ const it=pl.item||{}; ans.innerHTML=`<span class="err">✗ ${esc(String(it.detail||it.summary||"失败").slice(0,400))}</span>`; if(st)st.textContent="✗"; finish(); }
+        else if(k==="item.failed"){ const it=pl.item||{}; ans.innerHTML=`<span class="err">✗ ${esc(String(it.detail||it.summary||"失败").slice(0,400))}</span>`; if(st)st.textContent="✗"; finish(true); }
         else if(k==="turn.completed"||k==="turn.failed"){
-          if(k==="turn.completed" && sawTool && !ans.textContent.trim()){ sawTool=false; if(st)st.textContent="整理中…"; clearTimeout(grace); grace=setTimeout(finish,6000); }  // 跑了工具还没文字答案→短暂等可能的后续总结轮(数据已在🔧行)
+          if(k==="turn.completed" && sawTool && !ans.textContent.trim()){ sawTool=false; setPhase("整理中"); clearTimeout(grace); grace=setTimeout(finish,6000); }  // 跑了工具还没文字答案→短暂等可能的后续总结轮(数据已在🔧行)
           else finish();
         }
       };
