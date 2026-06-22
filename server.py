@@ -522,6 +522,8 @@ def set_model(provider, model, api_key):
 CMP_DIR = os.path.expanduser("~/.codewhale-gui/cmp")
 CMP_PORTS = {}            # provider -> 已分配端口
 _cmp_lock = threading.Lock()
+_cmp_launching = {}       # provider -> True(正在启动,避免重复 Popen 同端口)
+_PORT_UP = {}             # port -> 过期时间戳(缓存"活着",省去每次请求都探活的 HTTP 往返)
 def _cmp_model(prov):
     return "deepseek-v4-pro" if prov == "deepseek" else "auto"   # 非 deepseek 一律 auto(让 provider 自选默认模型,避免模型名非法)
 def _cmp_safe(prov):
@@ -541,37 +543,51 @@ def _cmp_write_config(prov):
     open(path, "w").write(s)
     return path
 def _port_up(port):
+    exp = _PORT_UP.get(port)                                     # 命中缓存(15s 内确认过活着)→ 直接 True,免 HTTP 往返
+    if exp and exp > time.time():
+        return True
     try:
         urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2)
+        _PORT_UP[port] = time.time() + 15
         return True
     except Exception:
+        _PORT_UP.pop(port, None)
         return False
 def ensure_provider_server(prov):
     if not re.match(r'^[a-zA-Z0-9_-]+$', prov or ""):
         raise ValueError("非法 provider")
-    with _cmp_lock:
-        port = CMP_PORTS.get(prov)
-        if port and _port_up(port):
-            return port
-        if not port:                                             # 分配一个空闲端口(从 7900 起)
-            used = set(CMP_PORTS.values())
-            port = 7900
-            while port in used or _port_up(port):
-                port += 1
-            CMP_PORTS[prov] = port
-        elif _port_up(port):
-            return port
-        cfg = _cmp_write_config(prov)
-        env = {**_proxy_env(), **os.environ, "PATH": _PATH, "CODEWHALE_PROVIDER": prov}
-        logf = open(os.path.expanduser(f"~/codewhale-gui/cmp-{_cmp_safe(prov)}.log"), "a")
-        subprocess.Popen([CODEWHALE, "app-server", "--config", cfg, "--http", "--host", "127.0.0.1",
-                          "--port", str(port), "--insecure-no-auth"],
-                         env=env, cwd=os.path.expanduser("~"), stdout=logf, stderr=subprocess.STDOUT)
-        for _ in range(50):                                      # 等就绪(最多 ~20s)
+    port = CMP_PORTS.get(prov)                                   # 快路径:已知端口且活着 → 立即返回(不进锁,热切换 ~0)
+    if port and _port_up(port):
+        return port
+    launched_here = False
+    try:
+        with _cmp_lock:                                          # 锁只护"分配端口 + 起进程",不护后面的就绪等待
+            port = CMP_PORTS.get(prov)
+            if port and _port_up(port):
+                return port
+            if not port:                                         # 分配一个空闲端口(从 7900 起)
+                used = set(CMP_PORTS.values())
+                port = 7900
+                while port in used or _port_up(port):
+                    port += 1
+                CMP_PORTS[prov] = port
+            if not _cmp_launching.get(prov):                     # 没有别的线程在启动它 → 这条线程负责 Popen
+                _cmp_launching[prov] = True
+                launched_here = True
+                cfg = _cmp_write_config(prov)
+                env = {**_proxy_env(), **os.environ, "PATH": _PATH, "CODEWHALE_PROVIDER": prov}
+                logf = open(os.path.expanduser(f"~/codewhale-gui/cmp-{_cmp_safe(prov)}.log"), "a")
+                subprocess.Popen([CODEWHALE, "app-server", "--config", cfg, "--http", "--host", "127.0.0.1",
+                                  "--port", str(port), "--insecure-no-auth"],
+                                 env=env, cwd=os.path.expanduser("~"), stdout=logf, stderr=subprocess.STDOUT)
+        for _ in range(50):                                      # 就绪等待在锁外:启动 A 不再阻塞切到 B(消除连环卡顿),最多 ~20s
             if _port_up(port):
                 return port
             time.sleep(0.4)
-        raise RuntimeError(f"{prov} app-server 启动超时")
+    finally:
+        if launched_here:                                        # 无论成功/超时/Popen 抛错都清启动标志,避免该 provider 永久卡住
+            _cmp_launching.pop(prov, None)
+    raise RuntimeError(f"{prov} app-server 启动超时")
 
 # ── 每对话锁模型(CodeWhale 会话是跨 app-server 共享存储,所以不能靠"谁有这会话"判 provider;
 #    用一张自维护、持久化的 tid->provider 锁定表,建会话时写定,路由按它走,聚合按它打标)──
@@ -607,7 +623,7 @@ def _route_base(path):       # /v1/threads/<tid>/* 路由到该对话锁定的 p
     return UPSTREAM
 def aggregate_threads():     # 共享存储::7878 已含全部会话,只查它;按锁定表给每条标 provider
     try:
-        arr = json.load(_LOCAL.open(f"http://127.0.0.1:7878/v1/threads/summary?limit=50", timeout=20))
+        arr = json.load(_LOCAL.open(f"http://127.0.0.1:7878/v1/threads/summary?limit=50", timeout=8))
     except Exception:
         return []
     if not isinstance(arr, list):

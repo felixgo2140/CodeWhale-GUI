@@ -299,6 +299,8 @@ const scrollDown = (force) => { const m=$("#messages"); if(force) _stick=true; i
 
 /* ---------- sidebar ---------- */
 async function loadThreads(){
+  if(state._loadingThreads) return;   // 防重入:忙碌的 :7878 下,4s 轮询若上一发还没回来就别再压一发(并发堆叠=切换更卡)
+  state._loadingThreads=true;
   try{
     const t = await api("/api/threads/all");   // 聚合各 provider 后端的会话,带 provider 标签(每对话锁模型)
     setConn(true); state.threads=t;
@@ -307,6 +309,7 @@ async function loadThreads(){
     const sig=JSON.stringify(t.map(x=>[x.id,x.title,x.latest_turn_status,x.updated_at]))+"|"+[...state.pinned].sort().join(",")+"|"+state.activeId;
     if(sig!==state._sig){ state._sig=sig; renderThreads(); }   // 仅当列表真变化才重建 DOM,避免轮询吞掉点击
   }catch(e){ setConn(false); console.warn(e); }
+  finally{ state._loadingThreads=false; }
 }
 function setConn(up){ const c=$("#conn"); c.classList.toggle("up",up); $("#connt").textContent = up?"已连接 7878":"未连接"; }
 function renderThreads(){
@@ -468,6 +471,9 @@ async function openThread(id){
     const rec=await api(`/v1/threads/${id}`);
     if(state.activeId!==id) return;   // 等待期间又切走了 → 放弃,别污染新会话
     since=rec.latest_seq||0;
+    const lastTurn=(rec.turns||[]).slice(-1)[0];   // 切到一条仍在跑的对话:快照不会重放已发生的 turn.started → 据此同步 running,否则会误发触发 409
+    const tst=(lastTurn&&lastTurn.status)||(rec.thread||{}).latest_turn_status||"";
+    if(/^(in[_ ]?progress|queued|running)$/i.test(tst)){ state.turnId=(lastTurn&&lastTurn.id)||state.turnId; setRunning(true); }
     $("#mwrap").innerHTML="";
     for(const it of (rec.items||[])){
       if(it.kind==="status") continue;   // 跳过 transient 状态噪音(占 ~半数,不是对话内容)
@@ -630,6 +636,10 @@ async function send(queuedText){
       }).catch(()=>{});
     }
   }catch(e){
+    if(/\b409\b|active turn/i.test(e.message||"")){   // 该对话仍有一轮在跑(切回来误发/连点)→ 不报错,转为排队,turn 完成后自动发
+      setRunning(true); state.queue.push({text, el:(()=>{ const el=document.createElement("div"); el.className="msg user queued"; el.innerHTML=`<div class="av">你</div><div class="body"><div class="who">⏳ 排队中(上一轮还在跑)</div><div class="content"></div><button class="qx" title="取消排队">✕</button></div>`; el.querySelector(".content").textContent=text; el.querySelector(".qx").onclick=()=>{ const i=state.queue.findIndex(q=>q.el===el); if(i>=0) state.queue.splice(i,1); el.remove(); }; $("#mwrap").appendChild(el); scrollDown(true); return el; })()});
+      return;
+    }
     inp.value=text; inp.style.height="auto"; inp.style.height=Math.min(inp.scrollHeight,200)+"px"; inp.focus();  // 失败:文字留回输入框
     $("#sendbtn").disabled=false;
     sysnote("发送失败: "+e.message);
