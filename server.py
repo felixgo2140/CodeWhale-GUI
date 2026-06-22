@@ -19,6 +19,7 @@ CFG = os.path.expanduser("~/.codewhale/config.toml")
 TOKEN_FILE = os.path.expanduser("~/.codewhale-gui/token")
 PINS_FILE = os.path.expanduser("~/.codewhale-gui/pins.json")
 UPSTREAM = "http://127.0.0.1:7878"
+_LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))   # 本机 app-server 请求绝不走代理(代理会劫持 127.0.0.1 导致超时)
 BIND = os.environ.get("CW_BIND", "0.0.0.0")
 PORT = int(os.environ.get("CW_PORT", "3000"))
 
@@ -572,6 +573,50 @@ def ensure_provider_server(prov):
             time.sleep(0.4)
         raise RuntimeError(f"{prov} app-server 启动超时")
 
+# ── 每对话锁模型(CodeWhale 会话是跨 app-server 共享存储,所以不能靠"谁有这会话"判 provider;
+#    用一张自维护、持久化的 tid->provider 锁定表,建会话时写定,路由按它走,聚合按它打标)──
+_TPROV_FILE = os.path.expanduser("~/.codewhale-gui/thread_provider.json")
+try:
+    _tprov = json.load(open(_TPROV_FILE)); _tprov = _tprov if isinstance(_tprov, dict) else {}
+except Exception:
+    _tprov = {}
+_tprov_lock = threading.Lock()
+def _pin_thread(tid, prov):
+    with _tprov_lock:
+        _tprov[tid] = prov
+        try: json.dump(_tprov, open(_TPROV_FILE, "w"))
+        except Exception: pass
+NEWCHAT_FILE = os.path.expanduser("~/.codewhale-gui/newchat.json")
+def _newchat_provider():
+    try:
+        p = (json.load(open(NEWCHAT_FILE)).get("provider") or "").strip()
+        if p: return p
+    except Exception:
+        pass
+    return _cfg_get("provider") or "deepseek"
+def _set_newchat_provider(prov):
+    os.makedirs(os.path.dirname(NEWCHAT_FILE), exist_ok=True)
+    json.dump({"provider": prov}, open(NEWCHAT_FILE, "w"))
+def _route_base(path):       # /v1/threads/<tid>/* 路由到该对话锁定的 provider 后端;未锁定或锁定=当前默认→:7878
+    m = re.match(r'^/v1/threads/(thr_[a-zA-Z0-9_-]+)', path or "")
+    if m:
+        prov = _tprov.get(m.group(1))
+        if prov and prov != (_cfg_get("provider") or "deepseek"):
+            try: return f"http://127.0.0.1:{ensure_provider_server(prov)}"
+            except Exception: pass
+    return UPSTREAM
+def aggregate_threads():     # 共享存储::7878 已含全部会话,只查它;按锁定表给每条标 provider
+    try:
+        arr = json.load(_LOCAL.open(f"http://127.0.0.1:7878/v1/threads/summary?limit=50", timeout=20))
+    except Exception:
+        return []
+    if not isinstance(arr, list):
+        return []
+    dflt = _cfg_get("provider") or "deepseek"
+    for t in arr:
+        t["provider"] = _tprov.get(t.get("id")) or dflt
+    return arr
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **k):
         super().__init__(*a, directory=WEB, **k)
@@ -606,7 +651,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if ct:
             req.add_header("Content-Type", ct)
         try:
-            resp = urllib.request.urlopen(req, timeout=600)
+            resp = _LOCAL.open(req, timeout=600)
         except urllib.error.HTTPError as e:
             resp = e
         except Exception as e:
@@ -645,12 +690,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._deny()
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else None
-        req = urllib.request.Request(UPSTREAM + self.path, data=body, method=method)
+        req = urllib.request.Request(_route_base(self.path) + self.path, data=body, method=method)
         ct = self.headers.get("Content-Type")
         if ct:
             req.add_header("Content-Type", ct)
         try:
-            resp = urllib.request.urlopen(req, timeout=600)
+            resp = _LOCAL.open(req, timeout=600)
         except urllib.error.HTTPError as e:
             resp = e
         except Exception as e:
@@ -675,6 +720,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         p = urllib.parse.urlparse(self.path).path
+        if p == "/api/threads/all":   # 聚合各 provider 后端的会话(带 provider 标签)+ 建路由表
+            if not self._authed():
+                return self._deny()
+            try:
+                out = aggregate_threads()
+            except Exception as e:
+                out = []
+            return self._json(out)
+        if p == "/api/newchat-provider":
+            if not self._authed():
+                return self._deny()
+            return self._json({"provider": _newchat_provider()})
         if p.startswith("/api/balance"):
             if not self._authed():
                 return self._deny()
@@ -780,6 +837,31 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
     def do_POST(self):
         p = urllib.parse.urlparse(self.path).path
+        if p == "/api/newchat-provider":   # 设置"新对话默认模型"(不重启 :7878)
+            if not self._authed():
+                return self._deny()
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            prov = (data.get("provider") or "").strip()
+            if not re.match(r'^[a-zA-Z0-9_-]+$', prov):
+                return self._json({"error": "非法 provider"}, 400)
+            _set_newchat_provider(prov)
+            return self._json({"ok": True, "provider": prov})
+        if p == "/v1/threads":   # 新对话:建在"新对话默认 provider"的独立后端,并记 tid->port(每对话锁模型)
+            if not self._authed():
+                return self._deny()
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            body = self.rfile.read(length) if length else b"{}"
+            prov = _newchat_provider()
+            try:
+                port = ensure_provider_server(prov)
+                req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/threads", data=body, method="POST", headers={"Content-Type": "application/json"})
+                d = json.loads(_LOCAL.open(req, 30).read())
+                if d.get("id"):
+                    _pin_thread(d["id"], prov)
+            except Exception as e:
+                return self._json({"error": str(e)[:200]}, 502)
+            return self._json(d)
         if p == "/api/compare/ensure":   # 预启动所选 provider 的独立后端,返回每个的状态
             if not self._authed():
                 return self._deny()

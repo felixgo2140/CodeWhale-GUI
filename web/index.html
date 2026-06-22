@@ -300,7 +300,7 @@ const scrollDown = (force) => { const m=$("#messages"); if(force) _stick=true; i
 /* ---------- sidebar ---------- */
 async function loadThreads(){
   try{
-    const t = await api("/v1/threads/summary?limit=50");
+    const t = await api("/api/threads/all");   // 聚合各 provider 后端的会话,带 provider 标签(每对话锁模型)
     setConn(true); state.threads=t;
     const at=t.find(x=>x.id===state.activeId);   // 兜底:SSE 漏收 turn.completed 时,靠轮询发现活动会话已结束 → 收尾 + 发队列
     if(at && state.running && ["completed","failed","interrupted","canceled","cancelled"].includes(at.latest_turn_status)){ setRunning(false); processQueue(); }
@@ -330,7 +330,7 @@ function renderThreads(){
     d.innerHTML=`<div class="t1"><span class="dot ${dotCls}" title="${dotTitle}"></span><span class="title">${pinned?"📌 ":""}${stalled?"⚠ ":""}${esc(t.title||"未命名")}</span>`+
       `<span class="actions"><button class="act rename" title="重命名">✎</button><button class="act pin" title="${pinned?"取消置顶":"置顶"}">${pinned?"📍":"📌"}</button><button class="act del" title="删除">🗑</button></span></div>`+
       (t.preview?`<div class="prev">${esc(t.preview)}</div>`:"")+
-      `<div class="meta"><span>${esc(t.model||"")}</span><span>${relTime(t.updated_at)}</span></div>`;
+      `<div class="meta"><span>${esc(PROV_SHORT[t.provider]||t.provider||t.model||"")}</span><span>${relTime(t.updated_at)}</span></div>`;
     d.onclick=()=>openThread(t.id);
     d.querySelector(".pin").onclick=(e)=>{e.stopPropagation();togglePin(t.id);};
     d.querySelector(".del").onclick=(e)=>{e.stopPropagation();deleteThread(t.id,t.title);};
@@ -458,7 +458,7 @@ async function openThread(id){
   const wrap=$("#mwrap"); wrap.innerHTML="";
   const t=state.threads.find(x=>x.id===id);
   $("#ttitle").textContent=t?.title||"对话";
-  $("#tmeta").innerHTML = t ? `<span class="badge">${esc(t.model||"")}</span><span class="badge">${esc(t.mode||"")}</span><span class="badge">${esc((t.workspace||"").split("/").pop()||"~")}</span>` : "";
+  $("#tmeta").innerHTML = t ? `<span class="badge" title="此对话锁定的模型">${esc(PROV_SHORT[t.provider]||t.provider||t.model||"")}</span><span class="badge">${esc(t.mode||"")}</span><span class="badge">${esc((t.workspace||"").split("/").pop()||"~")}</span>` : "";
 
   // 快照渲染历史(一次 GET 拿全部 item)→ 再从 latest_seq 起只听新事件。
   // 避免旧做法从 since_seq=0 重放上万条事件(切大会话时卡顿的根源)。
@@ -792,7 +792,7 @@ async function openModelSwitch(){
     <div class="prow"><input id="mmodel" placeholder="模型名(可改)"></div>
     <div class="prow" id="mkeyrow"><input id="mkey" type="password" placeholder="API key"></div>
     <div class="prow"><button class="btn primary" id="mswitch">切换并重启后端</button></div>
-    <div id="mhint" style="font-size:11px;color:var(--faint);line-height:1.6">切换会重启后端(几秒,当前会话数据不丢)。装 GLM:选「GLM」→ 填你在 z.ai / open.bigmodel.cn 申请的 key → 切换。key 存本机,不外传。</div>`;
+    <div id="mhint" style="font-size:11px;color:var(--faint);line-height:1.6">切换后<b>新开的对话</b>会锁定此模型;<b>已有对话各自保留自己的模型不变</b>(不会被切回)。切换会重启后端(几秒,会话数据不丢)。装 GLM:选「GLM」→ 填你在 z.ai / open.bigmodel.cn 申请的 key → 切换。key 存本机,不外传。</div>`;
   let keyed={};
   try{ const d=await api("/api/model"); keyed=d.keyed||{}; $("#curmodel").textContent=`${d.current.provider} / ${d.current.model||"(默认)"}`; }catch(e){ $("#curmodel").textContent="读取失败"; }
   const sel=$("#mprov");
@@ -808,6 +808,7 @@ async function openModelSwitch(){
     const b=$("#mswitch"); b.textContent="切换中,重启后端…"; b.disabled=true;
     try{ const d=await api("/api/model",{method:"POST",body:JSON.stringify({provider,model,api_key})});
       if(d.error){ alert("切换失败: "+d.error); b.textContent="切换并重启后端"; b.disabled=false; return; }
+      try{ await api("/api/newchat-provider",{method:"POST",body:JSON.stringify({provider})}); }catch(e){}   // 新对话锁定此 provider(每对话锁模型)
       b.textContent="✓ 已切换 "+(model&&model!=="auto"?model:provider);
       setTimeout(()=>{ const a=state.activeId; closeModal(); closeStream(); loadThreads(); loadModelLabel(); loadBalance(); if(a) openThread(a); }, 700);   // 软刷新:重拉对话 + 模型名 + 余额 + 重连当前会话流,不整页白屏重载(后端已 health-check 过)
     }catch(e){ alert("切换失败: "+e.message); b.textContent="切换并重启后端"; b.disabled=false; }
