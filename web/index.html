@@ -975,8 +975,17 @@ async function cmpSend(){
 async function cmpRun(prov,text,ens){
   const st=$("#cmpst-"+CSS.escape(prov));   // 用户气泡已在 cmpSend 里即时加过
   if(ens && ens.ok===false){ cmpAddMsg(prov,"a err","✗ 后端启动失败:"+esc(ens.error||"")); if(st)st.textContent="✗"; return; }
-  const A=cmpAddMsg(prov,"a",`<span class="rsn" style="display:none"></span><span class="ans"></span><span class="cur">▍</span>`);
-  const ans=A.querySelector(".ans"), rsn=A.querySelector(".rsn"), cur=A.querySelector(".cur");
+  const cb=$("#cmpb-"+CSS.escape(prov));
+  // 过程块:思考 + 工具/命令调用都收进来,默认折叠,点头部展开;答案气泡始终可见在下面
+  const proc=document.createElement("div"); proc.className="cmpproc collapsed";
+  proc.innerHTML=`<div class="cmpproc-h"><span class="car">▸</span> ⚙️ 过程 <span class="cnt">0</span> 步</div><div class="cmpproc-b"><div class="rsn"></div></div>`;
+  if(cb) cb.appendChild(proc);
+  proc.querySelector(".cmpproc-h").onclick=()=>proc.classList.toggle("collapsed");
+  const rsn=proc.querySelector(".rsn"), procCnt=proc.querySelector(".cnt"), procBody=proc.querySelector(".cmpproc-b");
+  let steps=0;
+  const addStep=(t)=>{ const d=document.createElement("div"); d.className="cmpstep"; d.textContent=t; procBody.appendChild(d); procCnt.textContent=(++steps); const x=$("#cmpb-"+CSS.escape(prov)); if(x) x.scrollTop=x.scrollHeight; };
+  const A=cmpAddMsg(prov,"a",`<span class="ans"></span><span class="cur">▍</span>`);
+  const ans=A.querySelector(".ans"), cur=A.querySelector(".cur");
   if(st)st.textContent="思考…";
   try{
     if(!CMP.threads[prov]){
@@ -992,26 +1001,24 @@ async function cmpRun(prov,text,ens){
     await new Promise(resolve=>{
       const es=new EventSource(url(`/cmp/${prov}/v1/threads/${tid}/events?since_seq=${since}`));
       let done=false, sawTool=false, grace=null;
-      const finish=()=>{ if(done)return; done=true; clearTimeout(grace); try{es.close()}catch(e){} if(cur)cur.remove(); if(A&&!ans.textContent.trim()&&!rsn.textContent.trim())A.remove(); if(st&&st.textContent!=="✗")st.textContent="✓"; resolve(); };   // 纯工具无文字答案→移除空气泡
+      const finish=()=>{ if(done)return; done=true; clearTimeout(grace); try{es.close()}catch(e){} if(cur)cur.remove(); if(steps===0&&!rsn.textContent.trim()&&proc.parentNode)proc.remove(); if(A&&!ans.textContent.trim())A.remove(); if(st&&st.textContent!=="✗")st.textContent="✓"; resolve(); };   // 空过程块/空答案→移除
       const scroll=()=>{ const b=$("#cmpb-"+CSS.escape(prov)); if(b) b.scrollTop=b.scrollHeight; };
-      const sysline=(t)=>{ const b=$("#cmpb-"+CSS.escape(prov)); if(!b)return; const d=document.createElement("div"); d.className="cmpsys"; d.textContent=t; b.appendChild(d); scroll(); };  // 工具/系统行(暗色)
       const isTool=kind=>kind && !["agent_message","agent_reasoning","user_message"].includes(kind);
       const onEv=(k,e)=>{   // SSE 是命名事件,逐个 addEventListener(onmessage 只收匿名事件,收不到)
         let ev; try{ ev=JSON.parse(e.data); }catch{ return; }
         if(ev.seq) CMP.seq[prov]=ev.seq;
         const pl=ev.payload||{};
         if(k==="item.delta"){
-          if(pl.kind==="agent_message"){ if(grace){clearTimeout(grace);grace=null;} ans.textContent+=pl.delta||""; if(st)st.textContent="输出中"; }
-          else if(pl.kind==="agent_reasoning"){ rsn.style.display="block"; rsn.textContent+=pl.delta||""; }
-          scroll();
+          if(pl.kind==="agent_message"){ if(grace){clearTimeout(grace);grace=null;} ans.textContent+=pl.delta||""; if(st)st.textContent="输出中"; scroll(); }
+          else if(pl.kind==="agent_reasoning"){ rsn.textContent+=pl.delta||""; if(st&&st.textContent==="思考…")st.textContent="思考中…"; }   // 思考收进折叠的过程块,不挤占答案
         } else if(k==="item.started"){ if(isTool((pl.item||{}).kind)){ if(st)st.textContent="执行中…"; } }
         else if(k==="item.completed"){ const it=pl.item||{};
           if(it.kind==="agent_message"&&it.detail) ans.textContent=it.detail;
-          else if(isTool(it.kind)){ sawTool=true; sysline("🔧 "+String(it.summary||it.kind).slice(0,140)); }   // 工具/命令活动
+          else if(isTool(it.kind)){ sawTool=true; addStep("🔧 "+String(it.summary||it.kind).slice(0,140)); }   // 工具/命令活动→折叠的过程块
         }
         else if(k==="approval.required"){ const aid=pl.approval_id||pl.id||ev.approval_id; const tool=String(pl.tool_name||pl.command||pl.summary||"工具调用").slice(0,90);
-          if(CMP.autoApprove && aid){ fetch(url(`/cmp/${prov}/v1/approvals/${aid}`),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision:"allow",remember:false})}).catch(()=>{}); sysline("🔧 自动批准:"+tool); }
-          else sysline("🔒 需批准:"+tool+"(开「⚡自动批准」放行)");
+          if(CMP.autoApprove && aid){ fetch(url(`/cmp/${prov}/v1/approvals/${aid}`),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision:"allow",remember:false})}).catch(()=>{}); addStep("🔧 自动批准:"+tool); }
+          else addStep("🔒 需批准:"+tool+"(开「⚡自动批准」放行)");
         }
         else if(k==="item.failed"){ const it=pl.item||{}; ans.innerHTML=`<span class="err">✗ ${esc(String(it.detail||it.summary||"失败").slice(0,400))}</span>`; if(st)st.textContent="✗"; finish(); }
         else if(k==="turn.completed"||k==="turn.failed"){
@@ -1066,7 +1073,16 @@ window.addEventListener("DOMContentLoaded",()=>{
 .cmpmsg.a .rsn{display:block;color:var(--faint);font-size:12px;white-space:pre-wrap;border-left:2px solid var(--line);padding-left:8px;margin-bottom:6px}
 .cmpmsg.a .cur{color:var(--accent)}
 .cmpmsg.err,.cmpmsg .err{color:var(--err)}
-.cmpsys{font-size:11px;color:var(--faint);font-style:italic;padding:2px 0;word-break:break-word}
+.cmpproc{margin:2px 0;border-left:2px solid var(--line);padding-left:8px}
+.cmpproc-h{font-size:11px;color:var(--faint);cursor:pointer;user-select:none;padding:2px 0;white-space:nowrap}
+.cmpproc-h:hover{color:var(--dim)}
+.cmpproc-h .car{display:inline-block;transition:.12s}
+.cmpproc:not(.collapsed) .cmpproc-h .car{transform:rotate(90deg)}
+.cmpproc.collapsed .cmpproc-b{display:none}
+.cmpproc-b{font-size:11px;color:var(--faint);max-height:340px;overflow-y:auto;margin-top:3px}
+.cmpproc-b .rsn{white-space:pre-wrap;font-style:italic;word-break:break-word}
+.cmpproc-b .rsn:empty{display:none}
+.cmpstep{padding:2px 0;word-break:break-word;white-space:pre-wrap}
 #cmpHead .tgl{flex:0 0 auto}
 </style>
 <div id="cmpView" hidden>

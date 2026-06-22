@@ -1,5 +1,11 @@
 # 更新日志
 
+## v2.1.4 — 对比模式工具过程可折叠
+
+### 改进
+- **对比栏的「思考 + 工具调用」收进默认折叠的「⚙️ 过程 N 步」块**,答案始终显示在下面,不再被一长串 web_search / exec_shell / load_skill 过程刷屏挤掉。点过程块头部可展开查看每一步。
+- 确认:对比模式各栏完整具备单模型的能力 —— MCP(fetch/playwright/gmail)、默认 skills(felix-framework 等)、shell、联网,开「💻 Shell」即放开。
+
 ## v2.1.3 — 对比模式加 Shell / 自动批准开关
 
 ### 新增
