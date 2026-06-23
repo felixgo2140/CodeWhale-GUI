@@ -928,7 +928,9 @@ loadVersion(); checkUpdate(); setInterval(checkUpdate, 3600000);   // CodeWhale 
 checkGuiUpdate(); setInterval(checkGuiUpdate, 3600000);            // GUI 界面:启动 + 每小时查新版(签名验证)
 
 /* ---------- 多模型并排对比 ---------- */
-const CMP={ sel:new Set(), threads:{}, seq:{}, keyed:{}, maxed:null, autoApprove:true, allowShell:false };
+const CMP={ sel:new Set(), threads:{}, seq:{}, keyed:{}, maxed:null, autoApprove:true, allowShell:false, fakeip:false };
+// 本机是否 fake-ip 代理环境(普通机器=false→不发 curl/MCP 引导,fetch_url 照常用;被劫持机器=true→引导走 curl/MCP)
+api("/api/netenv").then(d=>{ CMP.fakeip=!!(d&&d.fakeip); }).catch(()=>{});
 async function openCompare(){
   $("#cmpView").hidden=false;
   try{ const d=await api("/api/model"); CMP.keyed=d.keyed||{}; }catch(e){}
@@ -1009,7 +1011,8 @@ async function cmpRun(prov,text,ens){
     // Shell 关=纯问答(发指令禁工具,干净对比);Shell 开=放开,让模型用工具/命令/联网
     // Shell 开时附一句网络指引:本机 fake-ip 代理下内置 fetch_url 抓全文会被 SSRF 守卫拦(域名解析成 198.18.x.x 保留地址),引导走 curl/MCP;web_search 不受影响照常用。指令只进 prompt,不进界面气泡(用户气泡显示的是原文 text)。
     const NETHINT="【本机网络环境:内置 fetch_url 抓取网页全文会被拦(域名解析到保留地址 198.18.x.x)。需要读网页全文时请用 exec_shell 跑 curl(如 curl -sS --max-time 15 '网址')或 MCP 的 fetch / searxng;web_search 可正常使用,无需绕行。】\n\n";
-    const sendText=CMP.allowShell ? (NETHINT+text) : ("【多模型对比模式:请直接用文字回答,不要调用任何工具、不要执行命令、不要读写文件】\n\n"+text);
+    // 只有 fake-ip 机器(CMP.fakeip)才加这句引导;普通机器 fetch_url 正常,不发以免误导
+    const sendText=CMP.allowShell ? ((CMP.fakeip?NETHINT:"")+text) : ("【多模型对比模式:请直接用文字回答,不要调用任何工具、不要执行命令、不要读写文件】\n\n"+text);
     await fetch(url(`/cmp/${prov}/v1/threads/${tid}/turns`),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:sendText})});
     await new Promise(resolve=>{
       const es=new EventSource(url(`/cmp/${prov}/v1/threads/${tid}/events?since_seq=${since}`));
