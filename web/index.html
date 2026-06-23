@@ -33,6 +33,11 @@
   #updbtn,#guiupdbtn{display:none;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:3px 9px;font-size:11px;font-weight:500;cursor:pointer;white-space:nowrap;margin-left:6px}
   #updbtn{margin-left:auto}
   #updbtn:hover,#guiupdbtn:hover{background:var(--accent2)} #updbtn.busy,#guiupdbtn.busy{background:var(--panel2);color:var(--dim);cursor:default}
+  .updprog{min-width:220px;text-align:right}
+  .updbar{height:8px;border-radius:5px;background:var(--panel2);overflow:hidden;border:1px solid var(--line)}
+  .updfill{height:100%;width:0%;background:var(--accent);border-radius:5px;transition:width .35s ease}
+  .updfill.err{background:#c0392b}
+  .updtxt{font-size:11px;color:var(--dim);margin-top:4px;white-space:nowrap}
   #newbtn{margin-top:12px;width:100%;padding:9px;border:1px solid var(--line);background:var(--panel2);color:var(--txt);border-radius:9px;cursor:pointer;font-size:13px;font-weight:500;transition:.15s}
   #newbtn:hover{background:var(--accent);border-color:var(--accent);color:#fff}
   #updatebar{display:none;margin-top:8px;padding:7px 10px;border-radius:8px;background:var(--accent);color:#fff;font-size:12px;cursor:pointer;text-align:center;font-weight:500;line-height:1.35}
@@ -849,12 +854,37 @@ async function openUpdate(){
   })();
 }
 async function applyUpd(btn,endpoint){
+  if(endpoint.indexOf("/gui/")>=0){   // 界面更新:异步 + 下载/校验/应用 进度条
+    if(!confirm("开始更新界面?会下载、校验数字签名 + SHA-256 后替换并重启(会话数据不丢)。")) return;
+    return guiUpdateWithProgress(btn.parentNode);
+  }
+  // 后端(codewhale update):子进程,无细粒度进度,沿用同步
   if(!confirm("开始更新?会下载、校验后替换并重启(几秒,会话数据不丢)。")) return;
   btn.disabled=true; btn.textContent="⏳ 更新中…";
   try{ const r=await api(endpoint,{method:"POST",body:"{}"});
     if(r.ok){ btn.textContent="✓ 重启中…"; setTimeout(()=>location.reload(),4800); }
     else { btn.disabled=false; btn.textContent="✗ 重试"; alert("更新失败:\n"+(r.error||r.output||"未知错误")); }
   }catch(e){ btn.disabled=false; btn.textContent="✗ 重试"; alert("更新出错: "+e.message); }
+}
+// 界面更新进度:启动异步作业 → 每 400ms 轮询进度 → 画下载/校验/应用进度条 → 完成自动刷新
+async function guiUpdateWithProgress(box){
+  box.innerHTML='<div class="updprog"><div class="updbar"><div class="updfill"></div></div><div class="updtxt">开始…</div></div>';
+  const fill=box.querySelector(".updfill"), txt=box.querySelector(".updtxt");
+  let start; try{ start=await api("/api/update/gui/apply",{method:"POST",body:"{}"}); }
+  catch(e){ txt.innerHTML='<span class="st err">启动失败:'+esc(e.message)+'</span>'; return; }
+  if(start && start.error){ txt.innerHTML='<span class="st err">'+esc(start.error)+'</span>'; return; }
+  const LAB={checking:"检查中",downloading:"下载中",verifying:"校验签名/完整性",applying:"应用中",restarting:"重启中"};
+  const mb=n=>((n||0)/1048576).toFixed(1);
+  const poll=setInterval(async()=>{
+    let p; try{ p=await api("/api/update/gui/progress"); }catch(e){ return; }
+    if(p.phase==="downloading"){ fill.style.width=(p.pct||0)+"%"; txt.textContent=`下载中 ${p.pct||0}%  (${mb(p.downloaded)}/${mb(p.total)} MB)`; }
+    else if(!p.done){ fill.style.width="100%"; txt.textContent=(LAB[p.phase]||p.phase||"处理中")+"…"; }
+    if(p.done){
+      clearInterval(poll);
+      if(p.error){ fill.classList.add("err"); txt.innerHTML='<span class="st err">更新失败:'+esc(p.error)+'</span>'; }
+      else { fill.style.width="100%"; txt.textContent="✓ 更新完成 "+(p.version||"")+",重启中…"; setTimeout(()=>location.reload(),4500); }
+    }
+  },400);
 }
 
 /* ---------- wire up ---------- */
@@ -877,7 +907,7 @@ $("#interruptbtn").onclick=interrupt;
 $("#autowrap").onclick=toggleAuto;
 $("#shellwrap").onclick=toggleShell;
 $("#updbtn").onclick=doUpdate;
-$("#guiupdbtn").onclick=doGuiUpdate;
+$("#guiupdbtn").onclick=openUpdate;   // 顶栏「↑ 界面」直接打开更新中心(带下载/应用进度条),不再走旧的同步弹窗
 function closeDrawer(){ $("#sidebar")?.classList.remove("open"); $("#backdrop")?.classList.remove("show"); }
 $("#hamburger").onclick=()=>{ $("#sidebar").classList.toggle("open"); $("#backdrop").classList.toggle("show"); };
 $("#backdrop").onclick=closeDrawer;

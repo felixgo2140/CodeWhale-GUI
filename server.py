@@ -303,66 +303,112 @@ def gui_update_check():
     except Exception as e:
         return {"enabled": True, "current": cur, "error": str(e)[:160]}
 
+# ── GUI 在线更新:异步 + 分块下载 + 进度(前端轮询 /api/update/gui/progress 画进度条)──
+_GUI_UPD = {"phase": "idle", "downloaded": 0, "total": 0, "pct": 0, "error": None, "done": False, "version": None}
+_gui_upd_lock = threading.Lock()
+def _gui_set(**kw):
+    with _gui_upd_lock:
+        _GUI_UPD.update(kw)
+def gui_update_progress():
+    with _gui_upd_lock:
+        return dict(_GUI_UPD)
+def _gui_update_worker(cfg, m):
+    try:
+        new_v = m.get("version", "0"); bundle = str(m.get("bundle", "")); size = int(m.get("size") or 0)
+        # 1) 分块下载(边下边报 downloaded/pct)
+        _gui_set(phase="downloading", downloaded=0, total=size, pct=0)
+        u = _release_url(cfg, bundle)
+        if not _https_or_local(u):
+            raise ValueError("仅允许 HTTPS 更新源")
+        req = urllib.request.Request(u, headers={"User-Agent": "CodeWhale-GUI-Updater"})
+        buf = bytearray()
+        with _open_url(req, 180) as r:
+            while True:
+                chunk = r.read(65536)
+                if not chunk:
+                    break
+                buf += chunk
+                if len(buf) > size:
+                    raise ValueError("下载超出清单大小")
+                _gui_set(downloaded=len(buf), pct=(int(len(buf) * 100 / size) if size else 0))
+        blob = bytes(buf)
+        if len(blob) != size:
+            raise ValueError("下载大小与清单不符")
+        # 2) SHA-256 完整性校验
+        _gui_set(phase="verifying", pct=100)
+        if hashlib.sha256(blob).hexdigest() != str(m.get("sha256", "")).lower():
+            raise ValueError("SHA-256 不匹配 —— 拒绝应用(文件可能被篡改)")
+        # 3) 解包逐成员校验(只许 web/** + server.py + VERSION,禁链接/路径穿越)+ 原子替换 + 回滚
+        _gui_set(phase="applying")
+        tmp = tempfile.mkdtemp(prefix="cwgui-upd-")
+        try:
+            with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+                for mem in tf.getmembers():
+                    name = mem.name.lstrip("./")
+                    if mem.issym() or mem.islnk():
+                        raise ValueError(f"含链接,拒绝:{name}")
+                    if name.startswith("/") or ".." in name.split("/"):
+                        raise ValueError(f"路径穿越,拒绝:{name}")
+                    if not (name == "server.py" or name == "VERSION" or name == "web" or name.startswith("web/")):
+                        raise ValueError(f"不允许的文件,拒绝:{name}")
+                tf.extractall(tmp)
+            bak = ROOT + ".bak"
+            shutil.rmtree(bak, ignore_errors=True)
+            os.makedirs(bak, exist_ok=True)
+            applied = []
+            try:
+                for rel in ("web", "server.py", "VERSION"):
+                    src = os.path.join(tmp, rel)
+                    if not os.path.exists(src):
+                        continue
+                    dst = os.path.join(ROOT, rel)
+                    if os.path.exists(dst):
+                        shutil.move(dst, os.path.join(bak, rel))
+                    shutil.move(src, dst)
+                    applied.append((rel, dst))
+            except Exception as e:
+                for rel, dst in applied:
+                    shutil.rmtree(dst, ignore_errors=True) if os.path.isdir(dst) else (os.remove(dst) if os.path.exists(dst) else None)
+                    b = os.path.join(bak, rel)
+                    if os.path.exists(b):
+                        shutil.move(b, dst)
+                raise ValueError("替换失败,已回滚:" + str(e)[:120])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        # 4) 完成 → 1.5s 后重启前端
+        _gui_set(phase="restarting", done=True, version=new_v, error=None)
+        threading.Timer(1.5, lambda: _run(["/bin/launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.codewhale.frontend"], timeout=30)).start()
+    except Exception as e:
+        _gui_set(phase="error", error=str(e)[:200], done=True)
+
 def gui_update_apply():
+    # 启动异步更新作业;立刻返回(前端转去轮询 /api/update/gui/progress 画进度条)
+    with _gui_upd_lock:
+        if _GUI_UPD["phase"] in ("downloading", "verifying", "applying") and not _GUI_UPD["done"]:
+            return {"running": True}                                # 已在跑,别重复启动
     cfg = _update_cfg()
     if not (cfg.get("repo") or cfg.get("base_url")):
         return {"error": "更新未配置(~/.codewhale-gui/update.json 填 repo)"}
-    m = _get_manifest(cfg)                                          # 拉 + 验签
+    _gui_set(phase="checking", downloaded=0, total=0, pct=0, error=None, done=False, version=None)
+    try:
+        m = _get_manifest(cfg)                                      # 拉 + 验签(同步,立刻把配置/签名错误返回前端)
+    except Exception as e:
+        _gui_set(phase="error", error="拉清单/验签失败:" + str(e)[:160], done=True)
+        return {"error": _GUI_UPD["error"]}
     new_v = m.get("version", "0")
     if _vtuple(new_v) <= _vtuple(_gui_version()):
+        _gui_set(phase="idle", done=False)
         return {"error": f"已是最新或更高({_gui_version()}),不降级"}
     bundle = str(m.get("bundle", ""))
     if not bundle or "/" in bundle or ".." in bundle:
+        _gui_set(phase="error", error="清单 bundle 名非法", done=True)
         return {"error": "清单 bundle 名非法"}
     size = int(m.get("size") or 0)
     if size <= 0 or size > 60 * 1024 * 1024:
+        _gui_set(phase="error", error="清单 size 非法或过大", done=True)
         return {"error": "清单 size 非法或过大"}
-    blob = _fetch(_release_url(cfg, bundle), timeout=180, maxbytes=size)
-    if len(blob) != size:
-        return {"error": "下载大小与清单不符"}
-    if hashlib.sha256(blob).hexdigest() != str(m.get("sha256", "")).lower():
-        return {"error": "SHA-256 不匹配 —— 拒绝应用(文件可能被篡改)"}   # ★ 完整性校验
-    # 解包到 temp,逐成员校验:只许 web/** + server.py + VERSION,禁符号链接/路径穿越
-    tmp = tempfile.mkdtemp(prefix="cwgui-upd-")
-    try:
-        with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
-            members = tf.getmembers()
-            for mem in members:
-                name = mem.name.lstrip("./")
-                if mem.issym() or mem.islnk():
-                    return {"error": f"含链接,拒绝:{name}"}
-                parts = name.split("/")
-                if name.startswith("/") or ".." in parts:
-                    return {"error": f"路径穿越,拒绝:{name}"}
-                if not (name == "server.py" or name == "VERSION" or name == "web" or name.startswith("web/")):
-                    return {"error": f"不允许的文件,拒绝:{name}"}
-            tf.extractall(tmp)                                       # 已逐一校验通过
-        # 备份当前 → 原子替换 → 失败回滚
-        bak = ROOT + ".bak"
-        shutil.rmtree(bak, ignore_errors=True)
-        os.makedirs(bak, exist_ok=True)
-        applied = []
-        try:
-            for rel in ("web", "server.py", "VERSION"):
-                src = os.path.join(tmp, rel)
-                if not os.path.exists(src):
-                    continue
-                dst = os.path.join(ROOT, rel)
-                if os.path.exists(dst):
-                    shutil.move(dst, os.path.join(bak, rel))        # 备份旧
-                shutil.move(src, dst)                                # 换新
-                applied.append((rel, dst))
-        except Exception as e:
-            for rel, dst in applied:                                # 回滚
-                shutil.rmtree(dst, ignore_errors=True) if os.path.isdir(dst) else (os.remove(dst) if os.path.exists(dst) else None)
-                b = os.path.join(bak, rel)
-                if os.path.exists(b):
-                    shutil.move(b, dst)
-            return {"error": "替换失败,已回滚:" + str(e)[:120]}
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-    threading.Timer(1.5, lambda: _run(["/bin/launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.codewhale.frontend"], timeout=30)).start()
-    return {"ok": True, "version": new_v, "restarting": True}
+    threading.Thread(target=_gui_update_worker, args=(cfg, m), daemon=True).start()
+    return {"started": True, "version": new_v, "size": size}
 
 def read_pins():   # 置顶存服务端 → 所有窗口/手机共享一份,不再各浏览器各管各的
     try:
@@ -832,6 +878,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p == "/api/update/gui/progress":   # 前端轮询:下载/校验/应用 进度
+            if not self._authed():
+                return self._deny()
+            return self._json(gui_update_progress())
         if p == "/api/pins":
             if not self._authed():
                 return self._deny()

@@ -14,7 +14,7 @@ cp "$HERE/installer/install.sh"     "$STAGE/install.sh"
 cp "$HERE/installer/install.command" "$STAGE/install.command" 2>/dev/null || true
 cp "$HERE/installer/README.txt"     "$STAGE/README.txt"
 cp "$HERE/installer/update.json"    "$STAGE/update.json"
-cp "$HERE/installer/VERSION"        "$STAGE/VERSION"
+cp "$HERE/VERSION"                  "$STAGE/VERSION"   # 用顶层 VERSION(= 本次发布版本),不用 stale 的 installer/VERSION
 cp -R "$HERE/web"                   "$STAGE/web"
 cp "$HERE/server.py"                "$STAGE/server.py"
 chmod +x "$STAGE/install.sh" 2>/dev/null || true
