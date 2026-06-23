@@ -6,14 +6,22 @@ CodeWhale GUI —— 发布在线更新 操作指南
   • 公钥: 已内嵌进 server.py(收件人用它验签)
   • 发版脚本: ~/codewhale-release/make-release.sh
 
-每次发布新版的步骤:
+每次发布新版的步骤（务必发全 4 个文件，否则新机器装不到最新版！）:
   1. 改好 ~/codewhale-gui 里的 web/ 或 server.py
-  2. 跑:  ~/codewhale-release/make-release.sh 2.1.0 "这版改了啥"
-     → 在 ~/codewhale-release/dist/2.1.0/ 生成 3 个文件:
-        gui-2.1.0.tar.gz / manifest.json / manifest.json.sig
-  3. 在你的 GitHub 仓库新建一个 Release(tag 如 v2.1.0),把这 3 个文件作为附件上传
-  4. 完事。所有装了你安装包、且 update.json 指向你仓库的用户,启动/每小时会自动检查到,
-     在界面点「↑ 界面 2.1.0」就会下载→验签→校验哈希→替换→重启。
+  2. 同步到 repo + 设版本:
+        cp ~/codewhale-gui/{server.py,web/index.html 等} ~/codewhale-gui-repo/对应位置
+        echo 2.2.0 > ~/codewhale-gui-repo/VERSION
+  3. 在线更新 3 产物(从 dev 打):
+        ~/codewhale-release/make-release.sh 2.2.0 "这版改了啥"
+        → dist/2.2.0/ 生成 gui-2.2.0.tar.gz / manifest.json / manifest.json.sig
+  4. ★ 完整安装包(从 repo 打,编译原生 app):
+        cd ~/codewhale-gui-repo && ./package-installer.sh ~/codewhale-release/dist/2.2.0/codewhale-installer.tar.gz
+        → 生成 codewhale-installer.tar.gz（新机器一键装最新版用的，必须随每版发！）
+  5. 建 Release 上传【全部 4 个文件】:
+        gh release create v2.2.0 --repo <owner/repo> ... \
+          gui-2.2.0.tar.gz manifest.json manifest.json.sig codewhale-installer.tar.gz
+  6. 装过的机器：界面点「↑ 界面」看进度条更新；新机器：下 codewhale-installer.tar.gz 双击 install.command。
+  ⚠ 只传 3 个在线产物（漏掉 installer）会导致新机器在 Releases 页找不到安装包 —— v2.1.6~v2.1.9 就犯过这错。
 
 开启面向用户的自动更新:
   • 编辑安装包里的 update.json:repo 改成你的 "owner/repo",enabled 改 true,然后重打包分享
