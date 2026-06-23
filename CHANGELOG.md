@@ -1,5 +1,11 @@
 # 更新日志
 
+## v2.1.8 — 对比模式联网取数引导(本机代理下)
+
+### 改进
+- **对比模式开 Shell 时,引导各模型走 curl / MCP 取网页全文**:本机若挂 fake-ip 代理(域名解析成 198.18.x.x 保留地址),CodeWhale 的内置 `fetch_url` 抓全文会被其硬编码的 SSRF 守卫拦(报 `resolved IP ... restricted address`)——这是 CodeWhale 上游的安全限制,`[network].allow` 也盖不住(已实测)。现开 Shell 时附一句指引,让模型直接用 `exec_shell` + `curl`(或 MCP 的 fetch / searxng)读全文,**跳过会被拦的 fetch_url、不再先弹红字再回退**。`web_search`(搜索)本就不受影响、照常可用。指令只进 prompt 不进界面气泡。
+  - 注:彻底的原生修法是把本机代理从 fake-ip 切到 redir-host 模式(DNS 返回真实 IP),内置 web 工具即全局可用,无需引导。
+
 ## v2.1.7 — 切换对话提速 + 修发送 409
 
 ### 修复 / 提速
