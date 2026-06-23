@@ -952,6 +952,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json({"error": "非法 provider"}, 400)
             _set_newchat_provider(prov)
             return self._json({"ok": True, "provider": prov})
+        if p == "/api/pin-thread":   # 把对话锁定到某 provider(对比模式建会话后调,让主窗口侧栏正确标 provider,不再误显默认)
+            if not self._authed():
+                return self._deny()
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            tid = (data.get("tid") or data.get("thread_id") or "").strip()
+            prov = (data.get("provider") or "").strip()
+            if not re.match(r'^thr_[a-zA-Z0-9_-]+$', tid) or not re.match(r'^[a-zA-Z0-9_-]+$', prov):
+                return self._json({"error": "非法 tid/provider"}, 400)
+            _pin_thread(tid, prov)
+            return self._json({"ok": True})
         if p == "/v1/threads":   # 新对话:建在"新对话默认 provider"的独立后端,并记 tid->port(每对话锁模型)
             if not self._authed():
                 return self._deny()
