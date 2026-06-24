@@ -1151,9 +1151,15 @@ async function cmpRun(prov,text,ens){
           if(CMP.autoApprove && aid){ fetch(url(`/cmp/${prov}/v1/approvals/${aid}`),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decision:"allow",remember:false})}).catch(()=>{}); addStep("🔧 自动批准:"+tool); }
           else addStep("🔒 需批准:"+tool+"(开「⚡自动批准」放行)");
         }
-        else if(k==="item.failed"){ const it=pl.item||{}; ans.innerHTML=`<span class="err">✗ ${esc(String(it.detail||it.summary||"失败").slice(0,400))}</span>`; if(st)st.textContent="✗"; finish(true); }
+        else if(k==="item.failed"){ const it=pl.item||{}; const msg=String(it.detail||it.summary||"失败").replace(/\s+/g," ").slice(0,160);
+          // 工具/命令失败只算"过程一步",agent 会重试/换招 → 不要当整轮失败把该栏收尾(否则吞掉后面真正的答案)。
+          // 只有当 turn 真正结束(turn.completed/failed)且全程没拿到答案时才在那里收尾。
+          if(isTool(it.kind)||!it.kind){ sawTool=true; addStep("🔧 ✗ "+msg); setPhase("重试中"); }
+          else { rsn.textContent += (rsn.textContent?"\n":"")+"[失败] "+msg; }
+        }
         else if(k==="turn.completed"||k==="turn.failed"||k==="turn.interrupted"){
           if(k==="turn.completed" && sawTool && !ans.textContent.trim()){ sawTool=false; setPhase("整理中"); clearTimeout(grace); grace=setTimeout(finish,6000); }  // 跑了工具还没文字答案→短暂等可能的后续总结轮(数据已在🔧行)
+          else if(k==="turn.failed"){ if(!ans.textContent.trim()) ans.innerHTML='<span class="err">✗ 本轮失败(展开「过程」看详情)</span>'; if(st)st.textContent="✗"; finish(true); }   // 真正整轮失败才标 ✗
           else { if(k==="turn.interrupted"&&st)st.textContent="⏸ 已暂停"; finish(); }
         }
       };
