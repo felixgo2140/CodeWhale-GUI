@@ -1113,16 +1113,23 @@ async function cmpRun(prov,text,ens){
       CMP.threads[prov]=t.id; CMP.seq[prov]=0;
       api("/api/pin-thread",{method:"POST",body:JSON.stringify({tid:t.id,provider:prov})}).catch(()=>{});   // 锁定到本 provider → 主窗口侧栏正确标 GLM/GPT,不再误显默认 DeepSeek
     }
-    const tid=CMP.threads[prov], since=CMP.seq[prov]||0;
+    const tid=CMP.threads[prov];
     cmpSetRunning(prov,true);
     // 每轮按当前开关设会话标志(自动批准 / 允许 shell)→ 让模型能联网取数、跳出沙箱
     await fetch(url(`/cmp/${prov}/v1/threads/${tid}`),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto_approve:CMP.autoApprove, allow_shell:CMP.allowShell})}).catch(()=>{});
+    // ★ since_seq 取「发 turn 前的当前 latest_seq」,只听本轮新事件、绝不重放历史——
+    //   否则追问时会把上一轮的 turn.completed/旧增量重放进来,导致 ✓0s 误收尾、流式不同步、答案吞掉。
+    let since=CMP.seq[prov]||0;
+    try{ const ti=await (await fetch(url(`/cmp/${prov}/v1/threads/${tid}`))).json(); if(typeof ti.latest_seq==="number") since=ti.latest_seq; }catch(e){}
     // Shell 关=纯问答(发指令禁工具,干净对比);Shell 开=放开,让模型用工具/命令/联网
     // Shell 开时附一句网络指引:本机 fake-ip 代理下内置 fetch_url 抓全文会被 SSRF 守卫拦(域名解析成 198.18.x.x 保留地址),引导走 curl/MCP;web_search 不受影响照常用。指令只进 prompt,不进界面气泡(用户气泡显示的是原文 text)。
     const NETHINT="【本机网络环境:内置 fetch_url 抓取网页全文会被拦(域名解析到保留地址 198.18.x.x)。需要读网页全文时请用 exec_shell 跑 curl(如 curl -sS --max-time 15 '网址')或 MCP 的 fetch / searxng;web_search 可正常使用,无需绕行。】\n\n";
     // 只有 fake-ip 机器(CMP.fakeip)才加这句引导;普通机器 fetch_url 正常,不发以免误导
     const sendText=CMP.allowShell ? ((CMP.fakeip?NETHINT:"")+text) : ("【多模型对比模式:请直接用文字回答,不要调用任何工具、不要执行命令、不要读写文件】\n\n"+text);
-    await fetch(url(`/cmp/${prov}/v1/threads/${tid}/turns`),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:sendText})});
+    let myTurn=null;
+    try{ const tr=await (await fetch(url(`/cmp/${prov}/v1/threads/${tid}/turns`),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:sendText})})).json();
+      myTurn=(tr&&((tr.turn&&tr.turn.id)||tr.id))||null;   // 本轮 turn id:SSE 只认本轮事件,重放的旧轮一律忽略
+    }catch(e){}
     await new Promise(resolve=>{
       const es=new EventSource(url(`/cmp/${prov}/v1/threads/${tid}/events?since_seq=${since}`));
       let done=false, sawTool=false, grace=null, phase="思考中", tick=null, poll=null, idle=null; const t0=Date.now();
@@ -1140,6 +1147,7 @@ async function cmpRun(prov,text,ens){
       const isTool=kind=>kind && !["agent_message","agent_reasoning","user_message"].includes(kind);
       const onEv=(k,e)=>{   // SSE 是命名事件,逐个 addEventListener(onmessage 只收匿名事件,收不到)
         let ev; try{ ev=JSON.parse(e.data); }catch{ return; }
+        if(myTurn && ev.turn_id && ev.turn_id!==myTurn) return;   // 不是本轮的事件(重放的旧轮)→ 忽略,杜绝 ✓0s 误收尾 / 流式不同步 / 吞答案
         bump();   // 每收到一个事件就重置空闲计时:模型在干活就别超时
         if(ev.seq) CMP.seq[prov]=ev.seq;
         const pl=ev.payload||{};
