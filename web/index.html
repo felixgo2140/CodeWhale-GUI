@@ -1131,8 +1131,9 @@ async function cmpRun(prov,text,ens){
       // 空闲超时:只要还在出 SSE 事件(模型在干活)就一直续命;真正静默 180s 才判卡住。深度研究任务工具步骤多、跑很久也不会被误杀(原来死板的 240s 绝对超时会把没跑完的长任务一刀切)。
       const onIdle=()=>{ if(st&&!/^[✓✗⏸⏱]/.test(st.textContent)) st.textContent="⏱ 似乎卡住("+secs()+"s)"; finish(true); };
       const bump=()=>{ clearTimeout(idle); idle=setTimeout(onIdle, 180000); };
-      const setPhase=(p)=>{ phase=p; if(st&&!/^[✓✗]/.test(st.textContent)) st.textContent=p+" "+secs()+"s"; };   // 阶段+已用秒:让用户一眼看出"还活着、跑了多久"
-      tick=setInterval(()=>{ if(!done && st && !/^[✓✗]/.test(st.textContent)) st.textContent=phase+" "+secs()+"s"; },1000);   // 心跳:秒数在跳=没卡死
+      const statusText=()=>phase+(steps?" · "+steps+"步":"")+" · "+secs()+"s";   // 工作状态:阶段 · 已跑步数 · 已用秒(步数涨/秒在跳=还在干活)
+      const setPhase=(p)=>{ phase=p; if(st&&!/^[✓✗⏸⏱]/.test(st.textContent)) st.textContent=statusText(); };
+      tick=setInterval(()=>{ if(!done && st && !/^[✓✗⏸⏱]/.test(st.textContent)) st.textContent=statusText(); },1000);   // 心跳:每秒刷新工作状态
       poll=setInterval(async()=>{ if(done)return; try{ const arr=await (await fetch(url(`/cmp/${prov}/v1/threads/summary?limit=10`))).json(); const me=Array.isArray(arr)?arr.find(x=>x.id===tid):null; if(me && ["completed","failed","interrupted","canceled","cancelled"].includes(me.latest_turn_status)) finish(); }catch(e){} },4000);   // 兜底:SSE 停顿/漏 turn.completed 时靠轮询发现已结束→即时收尾刷新
       const scroll=()=>{ const b=$("#cmpb-"+CSS.escape(prov)); if(b) b.scrollTop=b.scrollHeight; };
       setPhase("思考中");
