@@ -1,5 +1,13 @@
 # 更新日志
 
+## v2.4.0 — 对比窗口稳定性大修 + 高效取数 skill
+
+### 修复(稳定性)
+- **修对比「后端启动超时」**(ChatGPT 栏常报 `openai-codex app-server 启动超时`):根因是每个对比后端启动时要起 8 个 MCP 服务(npx/pip 拉包很慢),并发起 3 个后端时一起抢资源,把 openai-codex 拖过 20s 超时。现**对比后端不再加载 MCP**(模型实际用 exec_shell + 内置 web_search + python,根本没用这些 MCP)——实测并发起 3 个后端从可能超时变成 **1.9 秒全起好**。后端就绪超时也从 20s 放宽到 45s 兜底。
+
+### 新增(高效取数)
+- **内置 `compare-research` skill,对比所有模型自动加载**(`always_load`):编码高效取数规范——行情用 `yfinance`、SEC 用 EDGAR 全文搜索、新闻用 `web_search`,**不许 curl 整页 HTML 硬爬、不许重复抓、控制 token**。直接纠正 GPT 之前"curl 531KB 文件 ×3、烧 125 万 token、跑 8 分钟"的低效。实测同一行情问题:三栏都用 yfinance、12~20 秒完成、答案一致。skill 嵌进 server.py,在线更新即自动安装,任何机器都带上。
+
 ## v2.3.10 — 对比栏工作状态显示(阶段 · 步数 · 秒)
 
 ### 新增

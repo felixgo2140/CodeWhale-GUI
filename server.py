@@ -580,9 +580,57 @@ _CMP_PIN_MODEL = {"zai": "GLM-5.2"}
 _CMP_FORCE_MODEL = {"deepseek": "deepseek-v4-pro", "zai": "GLM-5.2", "openai-codex": "gpt-5.5"}
 def _cmp_safe(prov):
     return re.sub(r'[^a-zA-Z0-9_-]', '_', prov)
+_COMPARE_SKILL_MD = """---
+name: compare-research
+description: 多模型对比窗口里的高效取数与研究规范。任何需要联网/取数/研究的任务(行情、财报、SEC 内幕、新闻、个股分析)都按本规范执行——拿结构化小数据、别硬爬整页、别重复抓、控制上下文 token。
+metadata:
+  short-description: 多模型对比高效取数规范
+---
+
+# 多模型对比 · 高效取数规范
+
+你正运行在「多模型对比」窗口里。资源/时间/token 都宝贵,**取数要又快又省**。严格按下面来,别用蛮力。
+
+## 取数工具优先级(按数据类型选对工具)
+1. **行情 / 财务指标 / 估值** → `exec_shell` 跑 Python + `yfinance`(结构化、量小):`t=yf.Ticker('GLW'); t.info / t.fast_info / t.history(period='5d')`。**不要** `curl` 财经网页 HTML 回来硬解析。
+2. **SEC 文件 / 内幕(Form 4)/ 8-K / 重述** → 用 EDGAR 全文搜索 API 拿结构化 JSON(`https://efts.sec.gov/LATEST/search-index?q=...&forms=4`,带 User-Agent),再**只取目标 filing 的相关段落**;绝不把整份 >100KB 的 filing 原文塞进上下文。
+3. **新闻 / 事件 / 催化剂** → 用内置 `web_search`(本机正常可用),看标题+摘要定位即可。
+
+## 铁律(避免又慢又烧 token)
+- 绝不重复抓同一文档;绝不 `curl` 整页 HTML 当数据(全是 CSS/JS,解析必炸);只取回答所需的最少数据;某命令失败就换更精准的查询,别重复同一条。
+- 本机 fake-ip 下内置 `fetch_url` 会被拦 → 用 `curl` 或 `web_search`,别卡在 fetch_url。
+
+## 深度投研
+若是「深度分析/研究某只票/给投资建议」,先 `load_skill value-investment-master`(用户的投研方法论),按其框架拆解(基本面/估值/催化剂/风险),再结合实时数据输出。
+
+## 输出
+先给**结论 + 关键数据(带数字)**,再给推理;对比窗口讲究并排可比,别长篇铺垫。
+"""
+def _ensure_compare_skill():
+    # 让 compare-research skill 跟着 server.py 走(GUI 在线更新即带上),任何机器更新后都能 always_load 到它
+    try:
+        d = os.path.expanduser("~/.codewhale/skills/compare-research")
+        f = os.path.join(d, "SKILL.md")
+        if not os.path.exists(f):
+            os.makedirs(d, exist_ok=True)
+            open(f, "w", encoding="utf-8").write(_COMPARE_SKILL_MD)
+    except Exception:
+        pass
+def _strip_mcp(s):
+    # 剥掉 [mcp_servers.*] 段:对比/per-provider 后端不需要 MCP(模型实际用 exec_shell + 内置 web_search + python),
+    # 而起这些 npx/pip MCP 很慢——并发起 3 个后端时一起抢资源会把后端启动拖过超时(openai-codex「启动超时」根因)。
+    out = []; skip = False
+    for ln in s.splitlines(keepends=True):
+        st = ln.lstrip()
+        if st.startswith("["):
+            skip = st.startswith("[mcp_servers")
+        if not skip:
+            out.append(ln)
+    return "".join(out)
 def _cmp_write_config(prov):
     os.makedirs(CMP_DIR, exist_ok=True)
-    s = open(CFG, encoding="utf-8").read()                       # 从主配置派生,带上所有 provider 的 key
+    _ensure_compare_skill()                                      # 保证高效取数 skill 存在,供 always_load 加载
+    s = _strip_mcp(open(CFG, encoding="utf-8").read())           # 从主配置派生,带上所有 provider 的 key;去掉 MCP 段以求启动快而稳
     if re.search(r'(?m)^provider\s*=', s):
         s = re.sub(r'(?m)^provider\s*=.*$', f'provider = "{prov}"', s, count=1)
     else:
@@ -600,6 +648,14 @@ def _cmp_write_config(prov):
                        hdr + "\n" + f'model = "{pin}"\n', s, count=1)
         else:
             s = s.rstrip() + f"\n\n{hdr}\nmodel = \"{pin}\"\n"
+    # 自动加载高效取数规范 skill(对比窗口所有模型都遵守,纠正 GPT 爱硬爬整页/重复抓的低效)
+    if re.search(r'(?m)^\[skills\]\s*$', s):
+        if re.search(r'(?m)^\s*always_load\s*=', s):
+            s = re.sub(r'(?m)^(\s*)always_load\s*=.*$', r'\1always_load = ["compare-research"]', s, count=1)
+        else:
+            s = re.sub(r'(?m)^(\[skills\]\s*\n)', r'\1always_load = ["compare-research"]\n', s, count=1)
+    else:
+        s = s.rstrip() + '\n\n[skills]\nalways_load = ["compare-research"]\n'
     path = os.path.join(CMP_DIR, _cmp_safe(prov) + ".toml")
     open(path, "w").write(s)
     return path
@@ -641,7 +697,7 @@ def ensure_provider_server(prov):
                 subprocess.Popen([CODEWHALE, "app-server", "--config", cfg, "--http", "--host", "127.0.0.1",
                                   "--port", str(port), "--insecure-no-auth"],
                                  env=env, cwd=os.path.expanduser("~"), stdout=logf, stderr=subprocess.STDOUT)
-        for _ in range(50):                                      # 就绪等待在锁外:启动 A 不再阻塞切到 B(消除连环卡顿),最多 ~20s
+        for _ in range(112):                                     # 就绪等待在锁外:启动 A 不再阻塞切到 B(消除连环卡顿),最多 ~45s(并发起多个后端时留足余量)
             if _port_up(port):
                 return port
             time.sleep(0.4)
