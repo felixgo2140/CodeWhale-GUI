@@ -1,5 +1,12 @@
 # 更新日志
 
+## v2.3.4 — 真正修好对比模型飘忽(建线程时钉死 model)
+
+### 修复
+- **接着 v2.3.3:GLM/GPT 栏问模型仍会答成 deepseek**(尤其 Shell 关、带「对比模式」提示词时)。彻底定位:`default_text_model="auto"` 触发 CodeWhale 的**自动路由,它按 prompt 内容跨 provider 乱选模型**(看到「不要调用工具」这类受限提示就路由到 deepseek),`[providers].model` 的 config 级 pin 压不住它。**唯一有效的是建线程时把 `model` 钉到 thread 级**。现对比/单窗口建会话时直接带上具体模型(zai→`GLM-5.2`、openai-codex→`gpt-5.5`、deepseek→`deepseek-v4-pro`),绕过自动路由。
+  - 实测(带「对比模式」提示词):三栏各自正确 —— deepseek-v4-pro / gpt-5.5 / GLM-5.2,重复多次稳定。
+  - 旧线程仍是 auto:更新后在对比里点 **「＋ 新对话」** 开新的即可(新线程才带 model 锁定)。
+
 ## v2.3.3 — 修对比 GLM 栏模型飘忽(一会儿 GLM 一会儿 DeepSeek)
 
 ### 修复

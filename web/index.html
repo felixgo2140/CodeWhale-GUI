@@ -984,6 +984,8 @@ checkGuiUpdate(); setInterval(checkGuiUpdate, 3600000);            // GUI 界面
 
 /* ---------- 多模型并排对比 ---------- */
 const CMP={ sel:new Set(), threads:{}, seq:{}, keyed:{}, maxed:null, autoApprove:true, allowShell:false, fakeip:false, turn:{}, running:{} };
+// 建对比线程时直接把 model 钉到 thread 级,绕过 default_text_model="auto" 的自动路由(它会按 prompt 内容乱选、常落 deepseek,导致 GLM/GPT 栏答错)。
+const CMP_FORCE_MODEL={ deepseek:"deepseek-v4-pro", zai:"GLM-5.2", "openai-codex":"gpt-5.5" };
 // 本机是否 fake-ip 代理环境(普通机器=false→不发 curl/MCP 引导,fetch_url 照常用;被劫持机器=true→引导走 curl/MCP)
 api("/api/netenv").then(d=>{ CMP.fakeip=!!(d&&d.fakeip); }).catch(()=>{});
 async function openCompare(){
@@ -1103,7 +1105,8 @@ async function cmpRun(prov,text,ens){
   if(st)st.textContent="思考…";
   try{
     if(!CMP.threads[prov]){
-      const t=await (await fetch(url(`/cmp/${prov}/v1/threads`),{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})).json();
+      const fm=CMP_FORCE_MODEL[prov];   // 钉死该栏的 model,避免 auto 路由乱选
+      const t=await (await fetch(url(`/cmp/${prov}/v1/threads`),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(fm?{model:fm}:{})})).json();
       CMP.threads[prov]=t.id; CMP.seq[prov]=0;
       api("/api/pin-thread",{method:"POST",body:JSON.stringify({tid:t.id,provider:prov})}).catch(()=>{});   // 锁定到本 provider → 主窗口侧栏正确标 GLM/GPT,不再误显默认 DeepSeek
     }

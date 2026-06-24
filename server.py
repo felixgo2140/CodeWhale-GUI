@@ -575,6 +575,9 @@ def _cmp_model(prov):
 # 非 deepseek 的 default_text_model="auto" 会让 CodeWhale 自动路由、在轮次间乱选模型(GLM 栏一会儿答 GLM 一会儿答 deepseek)。
 # 真正定模型的是 [providers.<prov>].model。这里固定到各 provider 的具体 model(只放已验证的 id,避免乱填崩溃;按需扩展)。
 _CMP_PIN_MODEL = {"zai": "GLM-5.2"}
+# 真正生效的是「建线程时把 model 钉到 thread 级」——default_text_model="auto" 的自动路由会按 prompt 乱选模型、
+# 无视 provider 与 [providers].model;只有 thread.model 是具体 id 才压得住。建会话/对比建线程时注入这个。
+_CMP_FORCE_MODEL = {"deepseek": "deepseek-v4-pro", "zai": "GLM-5.2", "openai-codex": "gpt-5.5"}
 def _cmp_safe(prov):
     return re.sub(r'[^a-zA-Z0-9_-]', '_', prov)
 def _cmp_write_config(prov):
@@ -981,6 +984,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0) or 0)
             body = self.rfile.read(length) if length else b"{}"
             prov = _newchat_provider()
+            fm = _CMP_FORCE_MODEL.get(prov)                          # 把 model 钉到 thread 级,绕过 auto 自动路由(否则非 deepseek 会被乱选成 deepseek)
+            if fm:
+                try:
+                    bd = json.loads(body or b"{}")
+                    if not bd.get("model"):
+                        bd["model"] = fm
+                        body = json.dumps(bd).encode()
+                except Exception:
+                    pass
             try:
                 port = ensure_provider_server(prov)
                 req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/threads", data=body, method="POST", headers={"Content-Type": "application/json"})
