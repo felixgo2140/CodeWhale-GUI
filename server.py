@@ -990,6 +990,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 except Exception as e:
                     out[prov] = {"ok": False, "error": str(e)[:160]}
             return self._json(out)
+        if p == "/api/compare/reset":   # 杀掉所有 per-provider 后端 + 清端口表 → 下次按需用当前配置/key 重启,杜绝残留旧后端答错模型(三栏都答 DeepSeek 的根治)
+            if not self._authed():
+                return self._deny()
+            try:
+                subprocess.run(["/usr/bin/pkill", "-f", "app-server --config " + CMP_DIR], timeout=5)
+            except Exception:
+                pass
+            with _cmp_lock:
+                CMP_PORTS.clear(); _cmp_launching.clear(); _PORT_UP.clear()
+            return self._json({"ok": True})
         if p.startswith("/cmp/") and self._cmp_route("POST"):
             return
         if p == "/api/update/apply":

@@ -1,5 +1,14 @@
 # 更新日志
 
+## v2.3.1 — 修对比"GLM/GPT 栏都答 DeepSeek"
+
+### 修复
+- **对比里 GLM / ChatGPT 栏实际回答的是 DeepSeek**(问"你用什么模型"三栏都说 deepseek-v4-pro):成因是某些情况下残留的旧 per-provider 后端被复用,而它连不上各自的模型端点 → CodeWhale 静默回退到 DeepSeek。现:
+  - **打开对比时(无进行中的会话)自动清掉残留后端**,各栏用最新配置 / key 冷启,从根上杜绝复用旧后端;有进行中的对比会话则不清、保留延续。
+  - 顶栏新增 **「↻ 重启后端」**:万一某栏仍回答得不像它本人,一键用最新配置 / key 重启所有对比后端。
+  - 新增后端 `/api/compare/reset`(杀 per-provider 后端 + 清端口表)。
+- 实测:重启后端后三栏各自正确 —— DeepSeek→deepseek-v4-pro、GLM→GLM-5.2、ChatGPT→gpt-5.5。
+
 ## v2.3.0 — 对比模式向单窗口看齐 + 修对比会话误标模型
 
 ### 修复

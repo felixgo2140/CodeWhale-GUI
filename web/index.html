@@ -963,6 +963,7 @@ const CMP={ sel:new Set(), threads:{}, seq:{}, keyed:{}, maxed:null, autoApprove
 api("/api/netenv").then(d=>{ CMP.fakeip=!!(d&&d.fakeip); }).catch(()=>{});
 async function openCompare(){
   $("#cmpView").hidden=false;
+  if(Object.keys(CMP.threads).length===0){ try{ await api("/api/compare/reset",{method:"POST",body:"{}"}); }catch(e){} }   // 没有进行中的对比会话→清掉可能残留的旧后端,确保各栏用当前配置/key 重启,杜绝"GLM/GPT 栏都答 DeepSeek"(残留后端连不上各自端点→回退 DeepSeek);有会话则不清,保留延续
   try{ const d=await api("/api/model"); CMP.keyed=d.keyed||{}; }catch(e){}
   if(CMP.sel.size===0){
     ["deepseek","openai-codex"].forEach(p=>{ if(CMP.keyed[p]) CMP.sel.add(p); });
@@ -1030,6 +1031,15 @@ async function cmpRunOne(prov){   // 只追问这一个模型(单独继续该栏
   cmpAddMsg(prov,"u",esc(text));
   let ensured={}; try{ ensured=await api("/api/compare/ensure",{method:"POST",body:JSON.stringify({providers:[prov]})}); }catch(e){}
   await cmpRun(prov,text,ensured[prov]);
+}
+async function cmpResetBackends(){   // 重启所有对比后端(残留后端连不上各自端点→回退 DeepSeek 时用):杀掉旧后端 + 清历史,下次发送用最新配置/key 冷启
+  if(!confirm("重启所有对比后端?会清空各栏当前历史,并用最新配置 / key 重新连接各模型(几秒)。\n用于:某个模型栏回答的不是它本人(回退成了 DeepSeek)。")) return;
+  const btn=$("#cmpResetBtn"); if(btn){ btn.disabled=true; btn.textContent="↻ 重启中…"; }
+  try{ await api("/api/compare/reset",{method:"POST",body:"{}"}); }catch(e){}
+  CMP.threads={}; CMP.seq={}; CMP.turn={}; CMP.running={};
+  [...CMP.sel].forEach(p=>{ const b=$("#cmpb-"+CSS.escape(p)); if(b) b.innerHTML=""; const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent=""; const stop=$("#cmpstop-"+CSS.escape(p)); if(stop) stop.hidden=true; const cs=$("#cmpcsend-"+CSS.escape(p)); if(cs) cs.disabled=false; });
+  if(btn){ btn.disabled=false; btn.textContent="↻ 重启后端"; }
+  const i=$("#cmpInput"); if(i) i.focus();
 }
 function cmpNewChat(){   // 新对话:清空所有栏历史 + 重建会话(学单一窗口的「新建对话」)
   if(Object.keys(CMP.threads).length && !confirm("清空所有对比栏的历史,开始新的对话?各模型会重新建会话。")) return;
@@ -1127,6 +1137,7 @@ window.addEventListener("DOMContentLoaded",()=>{
   const cb=$("#cmpbtn"); if(cb) cb.onclick=openCompare;
   const cc=$("#cmpClose"); if(cc) cc.onclick=closeCompare;
   const cn=$("#cmpNewBtn"); if(cn) cn.onclick=cmpNewChat;
+  const cr=$("#cmpResetBtn"); if(cr) cr.onclick=cmpResetBackends;
   const cs=$("#cmpSendBtn"); if(cs) cs.onclick=cmpSend;
   const ca=$("#cmpAutoTgl"); if(ca) ca.onclick=cmpToggleAuto;
   const csh=$("#cmpShellTgl"); if(csh) csh.onclick=cmpToggleShell;
@@ -1181,13 +1192,14 @@ window.addEventListener("DOMContentLoaded",()=>{
 .cmpcolin{flex:1;min-width:0;resize:none;border:1px solid var(--line);border-radius:7px;padding:5px 8px;font:inherit;font-size:12px;background:var(--bg);color:var(--txt);max-height:90px;line-height:1.4}
 .cmpcolsend{flex:0 0 auto;border:none;background:var(--accent);color:#fff;border-radius:7px;padding:0 11px;font-size:15px;font-weight:600;cursor:pointer}
 .cmpcolsend:disabled{opacity:.45;cursor:default}
-#cmpNewBtn{border:1px solid var(--line);background:var(--bg);border-radius:7px;padding:4px 10px;font-size:12px;cursor:pointer;color:var(--dim);flex:0 0 auto}
-#cmpNewBtn:hover{color:var(--accent);border-color:var(--accent)}
+#cmpNewBtn,#cmpResetBtn{border:1px solid var(--line);background:var(--bg);border-radius:7px;padding:4px 10px;font-size:12px;cursor:pointer;color:var(--dim);flex:0 0 auto}
+#cmpNewBtn:hover,#cmpResetBtn:hover{color:var(--accent);border-color:var(--accent)}
+#cmpResetBtn:disabled{opacity:.5;cursor:default}
 #cmpHead .tgl{flex:0 0 auto}
 </style>
 <div id="cmpView" hidden>
   <div id="cmpTop">
-    <div id="cmpHead"><b>⚖️ 多模型对比</b><div id="cmpChips"></div><div id="cmpShellTgl" class="tgl" title="允许各模型跑 shell / 联网取数(跳出沙箱)"><span class="sw"></span>💻 Shell</div><div id="cmpAutoTgl" class="tgl" title="工具调用自动批准(对比无逐栏审批 UI,开 Shell 时建议开)"><span class="sw"></span>⚡ 自动批准</div><button id="cmpNewBtn" title="清空所有栏的历史,开始新的对比对话">＋ 新对话</button><button id="cmpClose">✕ 退出</button></div>
+    <div id="cmpHead"><b>⚖️ 多模型对比</b><div id="cmpChips"></div><div id="cmpShellTgl" class="tgl" title="允许各模型跑 shell / 联网取数(跳出沙箱)"><span class="sw"></span>💻 Shell</div><div id="cmpAutoTgl" class="tgl" title="工具调用自动批准(对比无逐栏审批 UI,开 Shell 时建议开)"><span class="sw"></span>⚡ 自动批准</div><button id="cmpNewBtn" title="清空所有栏的历史,开始新的对比对话">＋ 新对话</button><button id="cmpResetBtn" title="某栏回答的不是它本人(回退成了 DeepSeek)?点这里用最新配置/key 重启所有对比后端">↻ 重启后端</button><button id="cmpClose">✕ 退出</button></div>
     <div id="cmpInputRow"><textarea id="cmpInput" placeholder="输入一个问题,同时发给所有选中的模型…（Enter 发送 · Shift+Enter 换行）"></textarea><button id="cmpSendBtn">发送</button></div>
   </div>
   <div id="cmpCols"></div>
