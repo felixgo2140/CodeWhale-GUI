@@ -1025,7 +1025,10 @@ function renderCmpCols(){   // diff:保留已有栏内容,只增删变化的
     if(box.querySelector('.cmpcol[data-p="'+p.id+'"]')) return;
     const d=document.createElement("div"); d.className="cmpcol"; d.dataset.p=p.id;
     const nm=PROV_SHORT[p.id]||p.name;
-    d.innerHTML=`<div class="cmpcol-h" data-p="${p.id}"><span class="cnm">${nm}</span><span class="st" id="cmpst-${p.id}"></span>`+
+    const lockedModel=CMP_FORCE_MODEL[p.id]||"auto";   // 此栏真正锁定的模型 id;模型自报不可信,以这个徽章为准
+    d.innerHTML=`<div class="cmpcol-h" data-p="${p.id}"><span class="cnm">${nm}</span>`+
+      `<span class="cmpmodel" title="此栏实际锁定调用的模型(以此为准,别信模型自报的身份)">${esc(lockedModel)}</span>`+
+      `<span class="st" id="cmpst-${p.id}"></span>`+
       `<button class="cmpstop" id="cmpstop-${p.id}" title="暂停这个模型当前的回答" hidden>■ 停止</button></div>`+
       `<div class="cmpcol-b" id="cmpb-${p.id}"></div>`+
       `<div class="cmpcol-f"><textarea class="cmpcolin" id="cmpin-${p.id}" rows="1" placeholder="只追问 ${nm}…（Enter 发送）"></textarea><button class="cmpcolsend" id="cmpcsend-${p.id}" title="只发给 ${nm}（单独继续这个对话）">→</button></div>`;
@@ -1194,7 +1197,9 @@ window.addEventListener("DOMContentLoaded",()=>{
 .cmpcol.hide{display:none}
 .cmpcol-h{padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel);font-size:12px;font-weight:600;color:var(--txt);display:flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap}
 .cmpcol-h .st{font-size:11px;font-weight:400;color:var(--faint);margin-left:auto}
+.cmpcol-h .cmpmodel{font-size:10px;font-weight:500;color:var(--accent);background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 6px;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .cmpcol-h:hover{color:var(--accent)}
+.cmpcol-h:hover .cmpmodel{color:var(--accent)}
 .cmpcol-b{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:9px}
 .cmpmsg{font-size:13px;line-height:1.55}
 .cmpmsg.u{align-self:flex-end;max-width:88%;background:var(--user);color:var(--usertxt);padding:6px 10px;border-radius:10px;white-space:pre-wrap;word-break:break-word}

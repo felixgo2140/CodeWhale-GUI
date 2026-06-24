@@ -1,5 +1,10 @@
 # 更新日志
 
+## v2.3.6 — 对比每栏标题显示「锁定模型」徽章
+
+### 新增
+- **对比每栏标题加一个锁定模型徽章**(`deepseek-v4-pro` / `gpt-5.5` / `GLM-5.2`):**以这个为准**,不用再纠结模型自报的身份。背景:CodeWhale 是 DeepSeek-TUI 改的,系统提示带 deepseek 烙印,**非 deepseek 模型(尤其 GLM)被问"你是谁"时会鹦鹉学舌说"我是 deepseek"**,但实际调用的是各自的模型(已用网络抓包验证:GLM 栏只连 `api.z.ai`、ChatGPT 只连 `chatgpt.com`、DeepSeek 只连 `api.deepseek.com`,零串台)。徽章给你一个可信的"这栏到底跑啥"指示。未锁定的 provider 显示 `auto`。
+
 ## v2.3.5 — 对比 model 锁定改服务端注入(旧界面不重载也生效)
 
 ### 改进
