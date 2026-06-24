@@ -1,5 +1,12 @@
 # 更新日志
 
+## v2.3.3 — 修对比 GLM 栏模型飘忽(一会儿 GLM 一会儿 DeepSeek)
+
+### 修复
+- **对比里 GLM 栏问"你用什么模型"答案在 GLM-5.2 / deepseek-v4-pro / deepseek-v4-flash 之间乱跳**:根因是对比派生配置只设了顶层 `default_text_model`(它**只认 "auto" 或 DeepSeek 模型 id**,所以非 deepseek 一律填了 "auto"),而 "auto" 会让 CodeWhale 自动路由、在轮次间乱选模型 —— 真正定模型的是 **`[providers.<prov>].model`**,之前没设。现对非 deepseek provider **固定到其具体模型**(zai → `GLM-5.2`),GLM 栏稳定用 GLM。
+  - 实测:修后 zai 后端连问 3 次全部 GLM-5.2(原来会飘)。openai-codex(OAuth)的 "auto" 本就稳定出 gpt-5.5,不受影响。
+  - 旧的对比后端要重启才用上新配置:更到本版后,在对比里点 **「↻ 重启后端」**(或退出重进)即可。
+
 ## v2.3.2 — 修原生壳里弹窗(confirm/alert/prompt)点了没反应
 
 ### 修复(影响面很大)

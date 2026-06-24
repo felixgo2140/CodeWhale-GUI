@@ -571,7 +571,10 @@ _cmp_lock = threading.Lock()
 _cmp_launching = {}       # provider -> True(正在启动,避免重复 Popen 同端口)
 _PORT_UP = {}             # port -> 过期时间戳(缓存"活着",省去每次请求都探活的 HTTP 往返)
 def _cmp_model(prov):
-    return "deepseek-v4-pro" if prov == "deepseek" else "auto"   # 非 deepseek 一律 auto(让 provider 自选默认模型,避免模型名非法)
+    return "deepseek-v4-pro" if prov == "deepseek" else "auto"   # 顶层 default_text_model 只认 "auto" 或 DeepSeek 模型 id;非 deepseek 一律 auto
+# 非 deepseek 的 default_text_model="auto" 会让 CodeWhale 自动路由、在轮次间乱选模型(GLM 栏一会儿答 GLM 一会儿答 deepseek)。
+# 真正定模型的是 [providers.<prov>].model。这里固定到各 provider 的具体 model(只放已验证的 id,避免乱填崩溃;按需扩展)。
+_CMP_PIN_MODEL = {"zai": "GLM-5.2"}
 def _cmp_safe(prov):
     return re.sub(r'[^a-zA-Z0-9_-]', '_', prov)
 def _cmp_write_config(prov):
@@ -585,6 +588,15 @@ def _cmp_write_config(prov):
         s = re.sub(r'(?m)^default_text_model\s*=.*$', f'default_text_model = "{_cmp_model(prov)}"', s, count=1)
     else:
         s = f'default_text_model = "{_cmp_model(prov)}"\n' + s
+    pin = _CMP_PIN_MODEL.get(prov)                               # 固定 [providers.<prov>].model → 该栏稳定用对的模型,不再被 auto 路由带跑
+    if pin:
+        hdr = f"[providers.{prov}]"
+        if re.search(r'(?m)^' + re.escape(hdr) + r'\s*$', s):
+            # 替换该段紧跟 header 的 model 行;没有就插入(header 后通常是 api_key,不会误吞)
+            s = re.sub(r'(?m)^' + re.escape(hdr) + r'[ \t]*\n([ \t]*model[ \t]*=.*\n)?',
+                       hdr + "\n" + f'model = "{pin}"\n', s, count=1)
+        else:
+            s = s.rstrip() + f"\n\n{hdr}\nmodel = \"{pin}\"\n"
     path = os.path.join(CMP_DIR, _cmp_safe(prov) + ".toml")
     open(path, "w").write(s)
     return path
