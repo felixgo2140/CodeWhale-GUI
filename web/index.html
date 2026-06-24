@@ -336,7 +336,7 @@ async function loadThreads(){
     setConn(true); state.threads=t;
     const at=t.find(x=>x.id===state.activeId);   // 兜底:SSE 漏收 turn.completed 时,靠轮询发现活动会话已结束 → 收尾 + 发队列
     if(at && state.running && ["completed","failed","interrupted","canceled","cancelled"].includes(at.latest_turn_status)){ setRunning(false); processQueue(); }
-    const sig=JSON.stringify(t.map(x=>[x.id,x.title,x.latest_turn_status,x.updated_at]))+"|"+[...state.pinned].sort().join(",")+"|"+state.activeId;
+    const sig=JSON.stringify(t.map(x=>[x.id,x.title,x.latest_turn_status,x.updated_at,x.provider]))+"|"+[...state.pinned].sort().join(",")+"|"+state.activeId;   // 含 provider:模型标签变了也会重渲染侧栏
     if(sig!==state._sig){ state._sig=sig; renderThreads(); }   // 仅当列表真变化才重建 DOM,避免轮询吞掉点击
   }catch(e){ setConn(false); console.warn(e); }
   finally{ state._loadingThreads=false; }
