@@ -1125,9 +1125,12 @@ async function cmpRun(prov,text,ens){
     await fetch(url(`/cmp/${prov}/v1/threads/${tid}/turns`),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:sendText})});
     await new Promise(resolve=>{
       const es=new EventSource(url(`/cmp/${prov}/v1/threads/${tid}/events?since_seq=${since}`));
-      let done=false, sawTool=false, grace=null, phase="思考中", tick=null, poll=null; const t0=Date.now();
+      let done=false, sawTool=false, grace=null, phase="思考中", tick=null, poll=null, idle=null; const t0=Date.now();
       const secs=()=>Math.round((Date.now()-t0)/1000);
-      const finish=(failed)=>{ if(done)return; done=true; clearTimeout(grace); clearInterval(tick); clearInterval(poll); try{es.close()}catch(e){} cmpSetRunning(prov,false); CMP.turn[prov]=null; if(cur)cur.remove(); if(steps===0&&!rsn.textContent.trim()&&proc.parentNode)proc.remove(); if(A&&!ans.textContent.trim()&&!failed)A.remove(); if(st&&!/^[✓✗⏸]/.test(st.textContent))st.textContent="✓ "+secs()+"s"; resolve(); };
+      const finish=(failed)=>{ if(done)return; done=true; clearTimeout(grace); clearTimeout(idle); clearInterval(tick); clearInterval(poll); try{es.close()}catch(e){} cmpSetRunning(prov,false); CMP.turn[prov]=null; if(cur)cur.remove(); if(steps===0&&!rsn.textContent.trim()&&proc.parentNode)proc.remove(); if(A&&!ans.textContent.trim()&&!failed)A.remove(); if(st&&!/^[✓✗⏸⏱]/.test(st.textContent))st.textContent="✓ "+secs()+"s"; resolve(); };
+      // 空闲超时:只要还在出 SSE 事件(模型在干活)就一直续命;真正静默 180s 才判卡住。深度研究任务工具步骤多、跑很久也不会被误杀(原来死板的 240s 绝对超时会把没跑完的长任务一刀切)。
+      const onIdle=()=>{ if(st&&!/^[✓✗⏸⏱]/.test(st.textContent)) st.textContent="⏱ 似乎卡住("+secs()+"s)"; finish(true); };
+      const bump=()=>{ clearTimeout(idle); idle=setTimeout(onIdle, 180000); };
       const setPhase=(p)=>{ phase=p; if(st&&!/^[✓✗]/.test(st.textContent)) st.textContent=p+" "+secs()+"s"; };   // 阶段+已用秒:让用户一眼看出"还活着、跑了多久"
       tick=setInterval(()=>{ if(!done && st && !/^[✓✗]/.test(st.textContent)) st.textContent=phase+" "+secs()+"s"; },1000);   // 心跳:秒数在跳=没卡死
       poll=setInterval(async()=>{ if(done)return; try{ const arr=await (await fetch(url(`/cmp/${prov}/v1/threads/summary?limit=10`))).json(); const me=Array.isArray(arr)?arr.find(x=>x.id===tid):null; if(me && ["completed","failed","interrupted","canceled","cancelled"].includes(me.latest_turn_status)) finish(); }catch(e){} },4000);   // 兜底:SSE 停顿/漏 turn.completed 时靠轮询发现已结束→即时收尾刷新
@@ -1136,6 +1139,7 @@ async function cmpRun(prov,text,ens){
       const isTool=kind=>kind && !["agent_message","agent_reasoning","user_message"].includes(kind);
       const onEv=(k,e)=>{   // SSE 是命名事件,逐个 addEventListener(onmessage 只收匿名事件,收不到)
         let ev; try{ ev=JSON.parse(e.data); }catch{ return; }
+        bump();   // 每收到一个事件就重置空闲计时:模型在干活就别超时
         if(ev.seq) CMP.seq[prov]=ev.seq;
         const pl=ev.payload||{};
         if(k==="turn.started"){ CMP.turn[prov]=ev.turn_id||(pl.turn||{}).id||CMP.turn[prov]; }   // 记下 turn_id 供「停止」中断
@@ -1165,7 +1169,7 @@ async function cmpRun(prov,text,ens){
       };
       ["turn.started","item.started","item.delta","item.completed","item.failed","approval.required","turn.completed","turn.failed","turn.interrupted"].forEach(name=>es.addEventListener(name,e=>onEv(name,e)));
       es.onerror=()=>{ if(es.readyState===2) finish(); };
-      setTimeout(finish, 240000);
+      bump();   // 起步先武装空闲计时(180s 无任何事件才判卡住);不再用死板的 240s 绝对超时切断长任务
     });
   }catch(e){ if(ans) ans.innerHTML=`<span class="err">✗ ${esc(String(e&&e.message||e))}</span>`; if(cur)cur.remove(); if(st)st.textContent="✗"; }
 }
