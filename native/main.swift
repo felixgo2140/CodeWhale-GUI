@@ -31,7 +31,7 @@ func ensureServices() {
     for _ in 0..<40 { if ping("http://127.0.0.1:3000/") { break }; usleep(400_000) }
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate {
     var window: NSWindow!
     var web: WKWebView!
 
@@ -43,6 +43,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         cfg.preferences.setValue(true, forKey: "developerExtrasEnabled")  // 右键可"检查元素"
         web = WKWebView(frame: NSRect(x: 0, y: 0, width: 1200, height: 800), configuration: cfg)
         web.navigationDelegate = self
+        web.uiDelegate = self        // ★ 关键:不设 uiDelegate 时 WKWebView 不弹 JS 对话框,confirm() 直接返回 false、alert()/prompt() 静默无效 → 删除/更新/重命名/对比「重启后端」等点了没反应
         web.allowsBackForwardNavigationGestures = false
 
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
@@ -99,6 +100,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         NSApp.mainMenu = mainMenu
     }
     @objc func reloadPage(_ sender: Any?) { load() }   // 重新加载页面(load() 会带 token 重新拉 :3000)
+
+    // ── JS 对话框(WKUIDelegate)── 用原生 NSAlert 实现 alert()/confirm()/prompt(),挂成 window sheet。
+    // 不实现时 WKWebView 默认全部静默失效(confirm 返回 false),导致所有 confirm/alert/prompt 功能点了没反应。
+    func webView(_ w: WKWebView, runJavaScriptAlertPanelWithMessage msg: String, initiatedByFrame f: WKFrameInfo, completionHandler done: @escaping () -> Void) {
+        let a = NSAlert(); a.messageText = "CodeWhale"; a.informativeText = msg; a.addButton(withTitle: "好")
+        if let win = window { a.beginSheetModal(for: win) { _ in done() } } else { a.runModal(); done() }
+    }
+    func webView(_ w: WKWebView, runJavaScriptConfirmPanelWithMessage msg: String, initiatedByFrame f: WKFrameInfo, completionHandler done: @escaping (Bool) -> Void) {
+        let a = NSAlert(); a.messageText = "CodeWhale"; a.informativeText = msg
+        a.addButton(withTitle: "确定"); a.addButton(withTitle: "取消")
+        if let win = window { a.beginSheetModal(for: win) { r in done(r == .alertFirstButtonReturn) } }
+        else { done(a.runModal() == .alertFirstButtonReturn) }
+    }
+    func webView(_ w: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame f: WKFrameInfo, completionHandler done: @escaping (String?) -> Void) {
+        let a = NSAlert(); a.messageText = "CodeWhale"; a.informativeText = prompt
+        a.addButton(withTitle: "确定"); a.addButton(withTitle: "取消")
+        let tf = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24)); tf.stringValue = defaultText ?? ""
+        a.accessoryView = tf
+        let handle: (NSApplication.ModalResponse) -> Void = { r in done(r == .alertFirstButtonReturn ? tf.stringValue : nil) }
+        if let win = window { a.beginSheetModal(for: win, completionHandler: handle) } else { handle(a.runModal()) }
+    }
 
     // 点 Dock 图标:已有窗口就前置,没有就重建 —— 原生"复用窗口",不再开重复窗
     func applicationShouldHandleReopen(_ s: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
