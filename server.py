@@ -752,9 +752,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(b)))
         self.end_headers()
         self.wfile.write(b)
-    def _proxy_to(self, method, port, upstream_path):   # 代理到指定 provider 的独立 app-server(SSE 流式)
-        length = int(self.headers.get("Content-Length", 0) or 0)
-        body = self.rfile.read(length) if length else None
+    def _proxy_to(self, method, port, upstream_path, body=False):   # 代理到指定 provider 的独立 app-server(SSE 流式);body 显式给则用它,否则从请求体读
+        if body is False:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            body = self.rfile.read(length) if length else None
         req = urllib.request.Request(f"http://127.0.0.1:{port}{upstream_path}", data=body, method=method)
         ct = self.headers.get("Content-Type")
         if ct:
@@ -791,7 +792,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             port = ensure_provider_server(prov)
         except Exception as e:
             self._json({"error": str(e)[:200]}, 502); return True
-        self._proxy_to(method, port, upstream)
+        body = False
+        if method == "POST" and urllib.parse.urlparse(upstream).path == "/v1/threads" and _CMP_FORCE_MODEL.get(prov):
+            # 对比建线程:服务端把 model 钉到 thread 级,绕过 default_text_model="auto" 的自动路由
+            # (旧前端发 {} 也能被纠正,用户不必重载页面)
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                bd = json.loads(raw or b"{}")
+                if not bd.get("model"):
+                    bd["model"] = _CMP_FORCE_MODEL[prov]
+                body = json.dumps(bd).encode()
+            except Exception:
+                body = raw
+        self._proxy_to(method, port, upstream, body=body)
         return True
 
     def _proxy(self, method):
