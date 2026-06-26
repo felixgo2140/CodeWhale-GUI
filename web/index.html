@@ -997,7 +997,9 @@ async function openCompare(){
     ["deepseek","openai-codex"].forEach(p=>{ if(CMP.keyed[p]) CMP.sel.add(p); });
     if(CMP.sel.size===0) CMP.sel.add("deepseek");
   }
-  renderCmpChips(); renderCmpCols(); renderCmpToggles();
+  renderCmpChips(); renderCmpCols(); renderCmpToggles(); cmpSyncSendUI();
+  // 预热:后台把选中栏的后端 + 全 MCP 先起好(/health 1.6s,MCP 后台起几秒)→ 用户读题/打字时就绪,发送时不必干等
+  api("/api/compare/ensure",{method:"POST",body:JSON.stringify({providers:[...CMP.sel]})}).catch(()=>{});
   setTimeout(()=>{ const i=$("#cmpInput"); if(i) i.focus(); },60);
 }
 function closeCompare(){ $("#cmpView").hidden=true; }
@@ -1095,6 +1097,16 @@ function cmpSyncSendUI(){
   const btn=$("#cmpSendBtn"), ta=$("#cmpInput"), q=CMP.sendQ.length;
   if(btn) btn.textContent=CMP.busy?(q?("发送中·排队"+q):"发送中…"):"发送";
   if(ta) ta.placeholder=CMP.busy?"回答进行中,再发会排队,完成后自动按序发送…":"输入一个问题,同时发给所有选中的模型…（Enter 发送 · Shift+Enter 换行）";
+  const qb=$("#cmpQueue");   // 队列条:把排队中的问题原文显示出来,每条可单独 ✕ 撤销
+  if(qb){
+    if(!q){ qb.hidden=true; qb.innerHTML=""; }
+    else{
+      qb.hidden=false;
+      qb.innerHTML='<span class="cmpqlbl">⏳ 排队中（完成当前轮后按序自动发）：</span>'+
+        CMP.sendQ.map((t,i)=>`<span class="cmpqchip" title="${esc(t)}"><span>${esc(t)}</span><b data-i="${i}" title="取消这条">✕</b></span>`).join("");
+      qb.querySelectorAll(".cmpqchip b").forEach(x=>x.onclick=()=>{ CMP.sendQ.splice(+x.dataset.i,1); cmpSyncSendUI(); });
+    }
+  }
 }
 async function cmpSend(){
   const ta=$("#cmpInput"); const text=(ta.value||"").trim(); if(!text) return;
@@ -1148,7 +1160,9 @@ async function cmpRun(prov,text,ens){
     // Shell 开时附一句网络指引:本机 fake-ip 代理下内置 fetch_url 抓全文会被 SSRF 守卫拦(域名解析成 198.18.x.x 保留地址),引导走 curl/MCP;web_search 不受影响照常用。指令只进 prompt,不进界面气泡(用户气泡显示的是原文 text)。
     const NETHINT="【本机网络环境:内置 fetch_url 抓取网页全文会被拦(域名解析到保留地址 198.18.x.x)。需要读网页全文时请用 exec_shell 跑 curl(如 curl -sS --max-time 15 '网址')或 MCP 的 fetch / searxng;web_search 可正常使用,无需绕行。】\n\n";
     // 只有 fake-ip 机器(CMP.fakeip)才加这句引导;普通机器 fetch_url 正常,不发以免误导
-    const sendText=CMP.allowShell ? ((CMP.fakeip?NETHINT:"")+text) : ("【多模型对比模式:请直接用文字回答,不要调用任何工具、不要执行命令、不要读写文件】\n\n"+text);
+    // 跟单窗口完全同能力:工具 / MCP / skill 始终可用,不再发"禁用工具"指令。
+    // Shell 开关只控制 exec_shell(上面 PATCH 的 allow_shell);MCP / web_search / 读取等非 shell 工具一直在,模型自行决定用不用。
+    const sendText=(CMP.fakeip?NETHINT:"")+text;
     let myTurn=null;
     try{ const tr=await (await fetch(url(`/cmp/${prov}/v1/threads/${tid}/turns`),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:sendText})})).json();
       myTurn=(tr&&((tr.turn&&tr.turn.id)||tr.id))||null;   // 本轮 turn id:SSE 只认本轮事件,重放的旧轮一律忽略
@@ -1271,11 +1285,19 @@ window.addEventListener("DOMContentLoaded",()=>{
 #cmpNewBtn:hover,#cmpResetBtn:hover{color:var(--accent);border-color:var(--accent)}
 #cmpResetBtn:disabled{opacity:.5;cursor:default}
 #cmpHead .tgl{flex:0 0 auto}
+#cmpQueue{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:7px 0 0;font-size:12px}
+#cmpQueue[hidden]{display:none}
+.cmpqlbl{color:var(--run);font-weight:500;flex:0 0 auto}
+.cmpqchip{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:2px 5px 2px 9px;color:var(--dim);max-width:280px;overflow:hidden}
+.cmpqchip span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.cmpqchip b{cursor:pointer;color:var(--faint);font-weight:600;font-size:11px;padding:0 2px;flex:0 0 auto}
+.cmpqchip b:hover{color:var(--err)}
 </style>
 <div id="cmpView" hidden>
   <div id="cmpTop">
-    <div id="cmpHead"><b>⚖️ 多模型对比</b><div id="cmpChips"></div><div id="cmpShellTgl" class="tgl" title="允许各模型跑 shell / 联网取数(跳出沙箱)"><span class="sw"></span>💻 Shell</div><div id="cmpAutoTgl" class="tgl" title="工具调用自动批准(对比无逐栏审批 UI,开 Shell 时建议开)"><span class="sw"></span>⚡ 自动批准</div><button id="cmpNewBtn" title="清空所有栏的历史,开始新的对比对话">＋ 新对话</button><button id="cmpResetBtn" title="某栏回答的不是它本人(回退成了 DeepSeek)?点这里用最新配置/key 重启所有对比后端">↻ 重启后端</button><button id="cmpClose">✕ 退出</button></div>
+    <div id="cmpHead"><b>⚖️ 多模型对比</b><div id="cmpChips"></div><div id="cmpShellTgl" class="tgl" title="开 = 允许 exec_shell 跑命令(跳出沙箱)。注:MCP / web_search / 读取等工具跟单窗口一样一直可用,此开关只额外控制 shell 命令"><span class="sw"></span>💻 Shell</div><div id="cmpAutoTgl" class="tgl" title="工具调用自动批准(对比无逐栏审批 UI,开 Shell 时建议开)"><span class="sw"></span>⚡ 自动批准</div><button id="cmpNewBtn" title="清空所有栏的历史,开始新的对比对话">＋ 新对话</button><button id="cmpResetBtn" title="某栏回答的不是它本人(回退成了 DeepSeek)?点这里用最新配置/key 重启所有对比后端">↻ 重启后端</button><button id="cmpClose">✕ 退出</button></div>
     <div id="cmpInputRow"><textarea id="cmpInput" placeholder="输入一个问题,同时发给所有选中的模型…（Enter 发送 · Shift+Enter 换行）"></textarea><button id="cmpSendBtn">发送</button></div>
+    <div id="cmpQueue" hidden></div>
   </div>
   <div id="cmpCols"></div>
 </div>

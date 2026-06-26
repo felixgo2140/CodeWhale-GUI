@@ -591,10 +591,13 @@ metadata:
 
 你正运行在「多模型对比」窗口里。资源/时间/token 都宝贵,**取数要又快又省**。严格按下面来,别用蛮力。
 
-## 取数工具优先级(按数据类型选对工具)
-1. **行情 / 财务指标 / 估值** → `exec_shell` 跑 Python + `yfinance`(结构化、量小):`t=yf.Ticker('GLW'); t.info / t.fast_info / t.history(period='5d')`。**不要** `curl` 财经网页 HTML 回来硬解析。
-2. **SEC 文件 / 内幕(Form 4)/ 8-K / 重述** → 用 EDGAR 全文搜索 API 拿结构化 JSON(`https://efts.sec.gov/LATEST/search-index?q=...&forms=4`,带 User-Agent),再**只取目标 filing 的相关段落**;绝不把整份 >100KB 的 filing 原文塞进上下文。
-3. **新闻 / 事件 / 催化剂** → 用内置 `web_search`(本机正常可用),看标题+摘要定位即可。
+## 你的工具(跟单窗口完全一样)
+你有**完整 MCP**(`fmp` 基本面/财报/估值、`yfinance` 行情/期权、`sec_edgar` 文件/内幕、`fetch` 抓网页、`searxng` 聚合搜索、`gmail`)+ 内置 `web_search` +(开了 Shell 时)`exec_shell`,以及全部 skill(`load_skill` 按需加载)。能力和单窗口一致,放手用。先 `tool_search` 找对工具。
+
+## 取数工具优先级(拿结构化小数据,别硬爬整页)
+1. **行情 / 财务指标 / 估值** → MCP 的 `fmp` / `yfinance`;或开了 Shell 时 `exec_shell` 跑 Python `yfinance`(`t=yf.Ticker('GLW'); t.fast_info`)。**不要** `curl` 财经网页 HTML 回来硬解析。
+2. **SEC 文件 / 内幕(Form 4)/ 8-K / 重述** → MCP 的 `sec_edgar`;或 EDGAR 全文搜索 API 拿结构化 JSON(`https://efts.sec.gov/LATEST/search-index?q=...&forms=4`,带 User-Agent),**只取目标 filing 相关段落**,绝不把整份 >100KB 原文塞进上下文。
+3. **新闻 / 事件 / 催化剂** → MCP `searxng` 或内置 `web_search`,看标题+摘要定位即可。
 
 ## 铁律(避免又慢又烧 token)
 - 绝不重复抓同一文档;绝不 `curl` 整页 HTML 当数据(全是 CSS/JS,解析必炸);只取回答所需的最少数据;某命令失败就换更精准的查询,别重复同一条。
@@ -611,7 +614,8 @@ def _ensure_compare_skill():
     try:
         d = os.path.expanduser("~/.codewhale/skills/compare-research")
         f = os.path.join(d, "SKILL.md")
-        if not os.path.exists(f):
+        cur = open(f, encoding="utf-8").read() if os.path.exists(f) else None   # 内容变了就覆写(否则改了 skill 也传播不出去)
+        if cur != _COMPARE_SKILL_MD:
             os.makedirs(d, exist_ok=True)
             open(f, "w", encoding="utf-8").write(_COMPARE_SKILL_MD)
     except Exception:
@@ -630,7 +634,7 @@ def _strip_mcp(s):
 def _cmp_write_config(prov):
     os.makedirs(CMP_DIR, exist_ok=True)
     _ensure_compare_skill()                                      # 保证高效取数 skill 存在,供 always_load 加载
-    s = _strip_mcp(open(CFG, encoding="utf-8").read())           # 从主配置派生,带上所有 provider 的 key;去掉 MCP 段以求启动快而稳
+    s = open(CFG, encoding="utf-8").read()                       # 从主配置派生,带上所有 provider 的 key + 全部 MCP(对比要跟单窗口完全同能力:工具/MCP/skill 都在)。app-server /health 不阻塞 MCP(实测带 8 MCP 仍 1.6s 起),MCP 后台起;3 后端不再一次性并发(openCompare 预热 + 串行 /health 门控)避开早前并发起 24 个 MCP 的资源尖峰
     if re.search(r'(?m)^provider\s*=', s):
         s = re.sub(r'(?m)^provider\s*=.*$', f'provider = "{prov}"', s, count=1)
     else:
@@ -798,6 +802,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*a, directory=WEB, **k)
     def log_message(self, *a):
         pass
+    def end_headers(self):
+        # SPA 外壳(index.html)绝不缓存:否则 WKWebView/浏览器会缓存旧版,⌘R 或在线更新后页面看着没变
+        # (本次亲历:preview 拿到了几版之前的缓存)。其余静态资源(图标/manifest)照常可缓存。
+        p = urllib.parse.urlparse(self.path).path
+        if p == "/" or p.endswith(".html"):
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+        super().end_headers()
 
     def _authed(self):
         if not TOKEN:
@@ -1077,7 +1089,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 port = ensure_provider_server(prov)
                 req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/threads", data=body, method="POST", headers={"Content-Type": "application/json"})
-                d = json.loads(_LOCAL.open(req, 30).read())
+                d = json.loads(_LOCAL.open(req, timeout=30).read())   # 必须用关键字 timeout!位置传 30 会被当成 data=30(int)→ http.client "message_body got int"→ 新建对话 502
                 if d.get("id"):
                     _pin_thread(d["id"], prov)
             except Exception as e:
