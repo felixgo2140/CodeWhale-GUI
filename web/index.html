@@ -390,7 +390,7 @@ async function renameThread(id, cur){
   }catch(e){ alert("重命名失败: "+e.message); }
 }
 async function deleteThread(id,title){
-  if(!confirm(`删除对话「${title||"未命名"}」?\n(归档移出列表,后端可恢复)`)) return;
+  if(!(await cwConfirm(`删除对话「${title||"未命名"}」?\n(归档移出列表,后端可恢复)`))) return;
   try{ await api(`/v1/threads/${id}`,{method:"PATCH",body:JSON.stringify({archived:true})});
     state.threads=state.threads.filter(t=>t.id!==id);
     if(state.pinned.delete(id)) savePins();
@@ -433,7 +433,7 @@ async function checkUpdate(){
 async function doUpdate(){
   const btn=$("#updbtn");
   if(btn.classList.contains("busy")) return;
-  if(!confirm(`更新 CodeWhale 到 ${updInfo&&updInfo.latest||"最新版"}?\n会下载新版并重启后端(约 1 分钟;当前会话数据不受影响)`)) return;
+  if(!(await cwConfirm(`更新 CodeWhale 到 ${updInfo&&updInfo.latest||"最新版"}?\n会下载新版并重启后端(约 1 分钟;当前会话数据不受影响)`))) return;
   btn.classList.add("busy"); btn.textContent="⏳ 更新中…";
   try{
     const r=await (await fetch(url("/api/update/apply"),{method:"POST",headers:auth})).json();
@@ -456,7 +456,7 @@ async function doGuiUpdate(){
   const btn=$("#guiupdbtn");
   if(btn.classList.contains("busy")) return;
   const v=(guiUpd&&guiUpd.latest)||"新版";
-  if(!confirm(`更新界面到 ${v}?\n会从你配置的来源下载、校验数字签名 + SHA-256 后替换并重启(几秒;会话数据不受影响)。`)) return;
+  if(!(await cwConfirm(`更新界面到 ${v}?\n会从你配置的来源下载、校验数字签名 + SHA-256 后替换并重启(几秒;会话数据不受影响)。`))) return;
   btn.classList.add("busy"); btn.textContent="⏳ 更新中…";
   try{
     const r=await api("/api/update/gui/apply",{method:"POST",body:"{}"});
@@ -790,7 +790,7 @@ async function openConnectors(){
           <button class="btn" data-act="toggle">${s.enabled?"停用":"启用"}</button>
           <button class="btn danger" data-act="remove">删</button>`;
         row.querySelector("[data-act=toggle]").onclick=async()=>{ await api("/api/mcp",{method:"POST",body:JSON.stringify({action:"toggle",name:s.name,enabled:!s.enabled})}); drawList(); };
-        row.querySelector("[data-act=remove]").onclick=async()=>{ if(!confirm("删除 MCP server「"+s.name+"」?")) return; await api("/api/mcp",{method:"POST",body:JSON.stringify({action:"remove",name:s.name})}); drawList(); };
+        row.querySelector("[data-act=remove]").onclick=async()=>{ if(!(await cwConfirm("删除 MCP server「"+s.name+"」?"))) return; await api("/api/mcp",{method:"POST",body:JSON.stringify({action:"remove",name:s.name})}); drawList(); };
         list.appendChild(row);
       }
     }catch(e){ list.textContent="加载失败: "+e.message; }
@@ -880,11 +880,11 @@ async function openUpdate(){
 }
 async function applyUpd(btn,endpoint){
   if(endpoint.indexOf("/gui/")>=0){   // 界面更新:异步 + 下载/校验/应用 进度条
-    if(!confirm("开始更新界面?会下载、校验数字签名 + SHA-256 后替换并重启(会话数据不丢)。")) return;
+    if(!(await cwConfirm("开始更新界面?会下载、校验数字签名 + SHA-256 后替换并重启(会话数据不丢)。"))) return;
     return guiUpdateWithProgress(btn.parentNode);
   }
   // 后端(codewhale update):子进程,无细粒度进度,沿用同步
-  if(!confirm("开始更新?会下载、校验后替换并重启(几秒,会话数据不丢)。")) return;
+  if(!(await cwConfirm("开始更新?会下载、校验后替换并重启(几秒,会话数据不丢)。"))) return;
   btn.disabled=true; btn.textContent="⏳ 更新中…";
   try{ const r=await api(endpoint,{method:"POST",body:"{}"});
     if(r.ok){ btn.textContent="✓ 重启中…"; setTimeout(()=>location.reload(),4800); }
