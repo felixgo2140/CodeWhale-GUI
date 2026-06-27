@@ -577,7 +577,103 @@ def _cmp_model(prov):
 _CMP_PIN_MODEL = {"zai": "GLM-5.2"}
 # 真正生效的是「建线程时把 model 钉到 thread 级」——default_text_model="auto" 的自动路由会按 prompt 乱选模型、
 # 无视 provider 与 [providers].model;只有 thread.model 是具体 id 才压得住。建会话/对比建线程时注入这个。
-_CMP_FORCE_MODEL = {"deepseek": "deepseek-v4-pro", "zai": "GLM-5.2", "openai-codex": "gpt-5.5"}
+# claude-code 必须钉 thread.model="sonnet" 做**确定性路由**:default_text_model="auto" 会让 CodeWhale 逐轮自动路由、
+# 时不时把 claude 栏答成 deepseek。"sonnet" 是 claude-code 已注册的合法 wire model(钉它不会 400;钉 "opus" 这种未注册名才会被 deepseek 校验拒)。
+# 它只是"路由键",真正传给 `claude -p` 的模型由 _CLAUDE_CODE_MODEL 经 env 覆盖(见下)——所以钉 sonnet 路由、实际跑 opus 不矛盾。
+_CMP_FORCE_MODEL = {"deepseek": "deepseek-v4-pro", "zai": "GLM-5.2", "openai-codex": "gpt-5.5", "claude-code": "sonnet"}
+_CLAUDE_CODE_MODEL = "claude-opus-4-8"   # claude 订阅列实际调用的模型(显式钉 Opus 4.8;也可填 opus/sonnet/haiku 别名)。绕开注册表直传官方 CLI
+# claude -p 委派的模型常因训练截止误报旧版本(实测 claude-opus-4-8 自报 "Opus 4.6" 甚至否认 4.8 存在),
+# 注入一句权威身份纠正它。切模型时**同时**改这两行保持一致。
+_CLAUDE_CODE_IDENTITY = ("You are Claude Opus 4.8 (model id `claude-opus-4-8`), running via the official Claude CLI. "
+    "When asked which model or version you are, identify as Claude Opus 4.8. "
+    "Your training data may predate this release, so you might instinctively believe the newest model is 4.6 — that belief is outdated. "
+    "Do not deny that Claude Opus 4.8 exists, and do not claim to be 4.6.")
+# claude-code provider = 委派官方 `claude -p`(走 Claude 订阅),只有打了补丁的二进制认得这个 provider。
+# 官方包装器二进制不识别 → 必须用补丁产物。优先稳定副本,回退到 build 目录。
+# 注意:`codewhale app-server` 只是调度器,真正跑 runtime API(threads/turns + claude spawn)的是 sibling `codewhale-tui`。
+# 必须同时备齐两者,并用 DEEPSEEK_TUI_BIN 显式钉死 patched tui(否则调度器找不到/找错 sibling)。
+def _first_exist(*paths):
+    return next((p for p in paths if os.path.exists(p)), None)
+_CW_PATCHED = _first_exist(
+    os.path.expanduser("~/.codewhale-gui/bin/codewhale-claude"),
+    os.path.expanduser("~/codewhale-src/target/release/codewhale"),
+)
+_CW_PATCHED_TUI = _first_exist(
+    os.path.expanduser("~/.codewhale-gui/bin/codewhale-tui"),
+    os.path.expanduser("~/codewhale-src/target/release/codewhale-tui"),
+)
+def _cw_binary(prov):
+    if prov == "claude-code" and _CW_PATCHED:
+        return _CW_PATCHED
+    return CODEWHALE
+# ── claude-code 补丁二进制 自动下载(lazy-fetch)──
+# 在线更新只发 web/server.py(那俩二进制 63MB 太大,且更新通道只许 web/server.py/VERSION)。
+# 所以缺二进制时,从签名 release 自动拉:复用 Ed25519 签名 manifest(携带二进制 SHA-256 + arch)→ 下载 → 验哈希 → ad-hoc 签名。
+# 这样旧机器在线更新到带本逻辑的 server.py 后,首次用 Claude 列即自动补齐二进制,无需重跑安装器。
+_BIN_DIR = os.path.expanduser("~/.codewhale-gui/bin")
+_patched_fetch_lock = threading.Lock()
+_patched_fetch_state = {"phase": "idle", "error": None}   # 供 /api/model 等暴露状态(可选)
+def _download_verified(url, dst, sha256_expected, size_expected):
+    if not _https_or_local(url):
+        raise ValueError("仅允许 HTTPS 下载源")
+    req = urllib.request.Request(url, headers={"User-Agent": "CodeWhale-GUI-Updater"})
+    h = hashlib.sha256(); n = 0; tmp = dst + ".part"
+    with _open_url(req, 180) as r, open(tmp, "wb") as f:
+        while True:
+            chunk = r.read(262144)
+            if not chunk: break
+            n += len(chunk)
+            if size_expected and n > size_expected + 4096:
+                f.close(); os.remove(tmp); raise ValueError("二进制超出预期大小")
+            h.update(chunk); f.write(chunk)
+    if sha256_expected and h.hexdigest() != sha256_expected:
+        os.remove(tmp); raise ValueError("二进制 SHA-256 不符,拒绝(防篡改)")
+    os.replace(tmp, dst)
+def _ensure_patched_binaries(block=True):
+    """缺 claude-code 补丁二进制时从签名 release 自动下载。幂等、线程安全。成功后更新 _CW_PATCHED(_TUI) 全局。"""
+    global _CW_PATCHED, _CW_PATCHED_TUI
+    claude = os.path.join(_BIN_DIR, "codewhale-claude")
+    tui = os.path.join(_BIN_DIR, "codewhale-tui")
+    if os.path.exists(claude) and os.path.exists(tui):
+        return True
+    cfg = _update_cfg()
+    if not (cfg.get("repo") or cfg.get("base_url")) or not _HAVE_CRYPTO:
+        return False
+    if not _patched_fetch_lock.acquire(blocking=block):
+        return False
+    try:
+        if os.path.exists(claude) and os.path.exists(tui):
+            return True
+        _patched_fetch_state.update(phase="downloading", error=None)
+        man = _get_manifest(cfg)                                    # 验签过的清单(SHA-256 可信)
+        arch = __import__("platform").machine()                    # arm64 / x86_64
+        os.makedirs(_BIN_DIR, exist_ok=True)
+        for b in (man.get("binaries") or []):
+            name = b.get("name")
+            if name not in ("codewhale-claude", "codewhale-tui"):
+                continue
+            if b.get("arch") and b["arch"] != arch:                # arm64 二进制不能在 Intel 跑
+                continue
+            dst = os.path.join(_BIN_DIR, name)
+            if os.path.exists(dst):
+                continue
+            _download_verified(_release_url(cfg, name), dst, b.get("sha256"), int(b.get("size") or 0))
+            os.chmod(dst, 0o755)
+            subprocess.run(["xattr", "-d", "com.apple.quarantine", dst], capture_output=True)
+            subprocess.run(["codesign", "-s", "-", "--force", dst], capture_output=True)   # 本机 ad-hoc 签名,确保可运行
+        ok = os.path.exists(claude) and os.path.exists(tui)
+        if ok:
+            _CW_PATCHED, _CW_PATCHED_TUI = claude, tui
+            _patched_fetch_state.update(phase="ready")
+        else:
+            _patched_fetch_state.update(phase="incomplete")
+        return ok
+    except Exception as e:
+        _patched_fetch_state.update(phase="error", error=str(e)[:160])
+        print(f"[claude-code] 补丁二进制自动下载失败: {e}", flush=True)
+        return False
+    finally:
+        _patched_fetch_lock.release()
 def _cmp_safe(prov):
     return re.sub(r'[^a-zA-Z0-9_-]', '_', prov)
 _COMPARE_SKILL_MD = """---
@@ -635,6 +731,8 @@ def _cmp_write_config(prov):
     os.makedirs(CMP_DIR, exist_ok=True)
     _ensure_compare_skill()                                      # 保证高效取数 skill 存在,供 always_load 加载
     s = open(CFG, encoding="utf-8").read()                       # 从主配置派生,带上所有 provider 的 key + 全部 MCP(对比要跟单窗口完全同能力:工具/MCP/skill 都在)。app-server /health 不阻塞 MCP(实测带 8 MCP 仍 1.6s 起),MCP 后台起;3 后端不再一次性并发(openCompare 预热 + 串行 /health 门控)避开早前并发起 24 个 MCP 的资源尖峰
+    if prov == "claude-code":
+        s = _strip_mcp(s)                                        # claude-code 把整个 turn 委派给 `claude -p`(claude 自带全套工具),完全不用 CodeWhale 的 MCP → 剥掉,免去 npx/pip 启动开销与资源争抢(当初"启动超时"的根因)
     if re.search(r'(?m)^provider\s*=', s):
         s = re.sub(r'(?m)^provider\s*=.*$', f'provider = "{prov}"', s, count=1)
     else:
@@ -677,6 +775,9 @@ def _port_up(port):
 def ensure_provider_server(prov):
     if not re.match(r'^[a-zA-Z0-9_-]+$', prov or ""):
         raise ValueError("非法 provider")
+    if prov == "claude-code" and not _CW_PATCHED:                # 缺补丁二进制 → 先自动下载(同步,首次约几十秒)
+        if not _ensure_patched_binaries(block=True):
+            raise RuntimeError("Claude 订阅引擎(补丁二进制)缺失且自动下载失败 —— 检查网络/在线更新配置,或重跑安装器")
     port = CMP_PORTS.get(prov)                                   # 快路径:已知端口且活着 → 立即返回(不进锁,热切换 ~0)
     if port and _port_up(port):
         return port
@@ -697,8 +798,14 @@ def ensure_provider_server(prov):
                 launched_here = True
                 cfg = _cmp_write_config(prov)
                 env = {**_proxy_env(), **os.environ, "PATH": _PATH, "CODEWHALE_PROVIDER": prov}
+                for _v in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"):
+                    env.pop(_v, None)                                # claude-code 列会 spawn `claude -p`,带 CLAUDECODE 会被官方 CLI 拒绝嵌套;清掉(对其它 provider 无害)
+                if prov == "claude-code" and _CW_PATCHED_TUI:
+                    env["DEEPSEEK_TUI_BIN"] = _CW_PATCHED_TUI         # 调度器把 runtime 委派给 sibling tui;显式钉死 patched tui(含 claude spawn + env_remove)
+                    env["CODEWHALE_CLAUDE_MODEL"] = _CLAUDE_CODE_MODEL # 强制 `claude -p` 用的模型(claude-opus-4-8);绕开模型注册表,直传官方 CLI
+                    env["CODEWHALE_CLAUDE_IDENTITY"] = _CLAUDE_CODE_IDENTITY  # 注入权威身份,纠正模型对自身版本的误报
                 logf = open(os.path.expanduser(f"~/codewhale-gui/cmp-{_cmp_safe(prov)}.log"), "a")
-                subprocess.Popen([CODEWHALE, "app-server", "--config", cfg, "--http", "--host", "127.0.0.1",
+                subprocess.Popen([_cw_binary(prov), "app-server", "--config", cfg, "--http", "--host", "127.0.0.1",
                                   "--port", str(port), "--insecure-no-auth"],
                                  env=env, cwd=os.path.expanduser("~"), stdout=logf, stderr=subprocess.STDOUT)
         for _ in range(112):                                     # 就绪等待在锁外:启动 A 不再阻塞切到 B(消除连环卡顿),最多 ~45s(并发起多个后端时留足余量)
@@ -753,16 +860,20 @@ def _model_to_provider(model):   # 从会话真实 model 反推 provider(thread.
     if "kimi" in m or "moonshot" in m: return "moonshot"
     if "gemini" in m:   return "openrouter"
     return None
+_threads_cache = {"v": None, "t": 0.0}    # :7878 summary 随线程数变慢(50 条 ~4.5s),loadThreads 又被频繁调 → TTL 缓存避免重复等
 def aggregate_threads():     # 共享存储::7878 已含全部会话,只查它;provider 标签优先按真实 model 反推,回退锁定表/默认
+    if _threads_cache["v"] is not None and time.time() - _threads_cache["t"] < 6.0:   # TTL 用"上次查完"的时间(查询本身就 ~5s,用开始时间会永远过期)
+        return _threads_cache["v"]
     try:
         arr = json.load(_LOCAL.open(f"http://127.0.0.1:7878/v1/threads/summary?limit=50", timeout=8))
     except Exception:
-        return []
+        return _threads_cache["v"] or []      # 查不到/超时 → 回退上次缓存(总比空列表好)
     if not isinstance(arr, list):
-        return []
+        return _threads_cache["v"] or []
     dflt = _cfg_get("provider") or "deepseek"
     for t in arr:
         t["provider"] = _model_to_provider(t.get("model")) or _tprov.get(t.get("id")) or dflt
+    _threads_cache["v"] = arr; _threads_cache["t"] = time.time()   # 记"查完"时刻
     return arr
 
 # ── fake-ip 环境自动探测 ──
@@ -1077,6 +1188,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0) or 0)
             body = self.rfile.read(length) if length else b"{}"
             prov = _newchat_provider()
+            default_prov = _cfg_get("provider") or "deepseek"        # 默认 provider:建会话与路由都走 UPSTREAM:7878,保持一致
             fm = _CMP_FORCE_MODEL.get(prov)                          # 把 model 钉到 thread 级,绕过 auto 自动路由(否则非 deepseek 会被乱选成 deepseek)
             if fm:
                 try:
@@ -1087,11 +1199,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 except Exception:
                     pass
             try:
-                port = ensure_provider_server(prov)
-                req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/threads", data=body, method="POST", headers={"Content-Type": "application/json"})
+                # ★ 默认 provider → 建在主后端 :7878(UPSTREAM);_route_base 对默认 provider 的 thread 也走 UPSTREAM,
+                #   "建会话的后端"="后续 turns/events 路由的后端",一致。否则建在 per-provider 后端却把 turns/events 路由到
+                #   :7878 → 跨后端 seq 不一致 → 单窗口实时 SSE 只收到 thread.started、收不到 turn 事件 → 消息不显示
+                #   (快照 GET 因 thread 存储跨后端共享仍能加载历史,极具迷惑性)。非默认 provider 才建在 per-provider 后端 + pin。
+                base = UPSTREAM if prov == default_prov else f"http://127.0.0.1:{ensure_provider_server(prov)}"
+                req = urllib.request.Request(f"{base}/v1/threads", data=body, method="POST", headers={"Content-Type": "application/json"})
                 d = json.loads(_LOCAL.open(req, timeout=30).read())   # 必须用关键字 timeout!位置传 30 会被当成 data=30(int)→ http.client "message_body got int"→ 新建对话 502
-                if d.get("id"):
-                    _pin_thread(d["id"], prov)
+                if d.get("id") and prov != default_prov:
+                    _pin_thread(d["id"], prov)                       # 默认 provider 不 pin(本就走 UPSTREAM,pin 反而触发跨后端不一致)
             except Exception as e:
                 return self._json({"error": str(e)[:200]}, 502)
             return self._json(d)
@@ -1263,5 +1379,8 @@ if __name__ == "__main__":
         subprocess.run(["/usr/bin/pkill", "-f", "app-server --config " + CMP_DIR], timeout=5)
     except Exception:
         pass
+    # 缺 claude-code 补丁二进制 → 后台预取(不阻塞启动);等用户点 Claude 列时多半已就绪
+    if not _CW_PATCHED:
+        threading.Thread(target=lambda: _ensure_patched_binaries(block=False), daemon=True).start()
     print(f"CodeWhale GUI server on {BIND}:{PORT}  (token {'ENABLED' if TOKEN else 'off'})")
     Server((BIND, PORT), Handler).serve_forever()

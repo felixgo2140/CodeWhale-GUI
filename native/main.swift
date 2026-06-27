@@ -121,6 +121,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         let handle: (NSApplication.ModalResponse) -> Void = { r in done(r == .alertFirstButtonReturn ? tf.stringValue : nil) }
         if let win = window { a.beginSheetModal(for: win, completionHandler: handle) } else { handle(a.runModal()) }
     }
+    // ── 文件选择面板(WKUIDelegate)── 不实现时 `<input type=file>` 在 WKWebView 里点了静默无效 → 附件 📎 按钮没反应。
+    func webView(_ w: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame f: WKFrameInfo, completionHandler done: @escaping ([URL]?) -> Void) {
+        let p = NSOpenPanel()
+        p.canChooseFiles = true
+        p.canChooseDirectories = parameters.allowsDirectories
+        p.allowsMultipleSelection = parameters.allowsMultipleSelection
+        if let win = window { p.beginSheetModal(for: win) { r in done(r == .OK ? p.urls : nil) } }
+        else { done(p.runModal() == .OK ? p.urls : nil) }
+    }
 
     // 点 Dock 图标:已有窗口就前置,没有就重建 —— 原生"复用窗口",不再开重复窗
     func applicationShouldHandleReopen(_ s: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

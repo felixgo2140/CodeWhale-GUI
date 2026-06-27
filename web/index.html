@@ -484,7 +484,7 @@ function closeStream(){ if(state.es){ state.es.close(); state.es=null; } }
 async function openThread(id){
   if(state.activeId===id && state.es) return;
   closeStream();
-  state.activeId=id; state.items.clear(); state.seen.clear(); state.turnId=null; setRunning(false);
+  state.activeId=id; state.items.clear(); state.seen.clear(); state.turnId=null; state._optimUser=null; setRunning(false);
   state.autoApprove=false; state.allowShell=false; renderAuto(); renderShell(); loadAutoState(id);   // 读该会话真实 auto_approve/allow_shell 如实显示
   renderThreads(); closeDrawer();
   $("#emptyState")?.remove();
@@ -548,7 +548,8 @@ function startItem(id, item){
   const kind=item?.kind||"agent_message";
   const wrap=$("#mwrap"); let el, content;
   if(kind==="user_message"){
-    el=row("user","你"); content=el.querySelector(".content"); content.innerHTML=md(item.detail||item.summary||"");
+    if(state._optimUser){ el=state._optimUser; state._optimUser=null; content=el.querySelector(".content"); content.innerHTML=md(item.detail||item.summary||content.textContent||""); }   // 认领 send() 即时加的乐观气泡 → 不再重复渲染一条
+    else { el=row("user","你"); content=el.querySelector(".content"); content.innerHTML=md(item.detail||item.summary||""); }
   }else if(kind==="agent_reasoning"){
     el=document.createElement("div"); el.className="reason";
     el.innerHTML=`<div class="head"><span class="caret">▸</span> 💭 思考过程</div><div class="rbody"></div>`;
@@ -653,7 +654,10 @@ async function send(queuedText){
   if(text===undefined){ text=inp.value.trim(); if(!text && !state.attachments.length) return; inp.value=""; inp.style.height="auto"; text=withAttachments(text); _stick=true; }   // 新发:折入附件路径 + 贴底
   if(!text) return;
   try{
-    if(!state.activeId){ const t=await createThread(); await loadThreads(); await openThread(t.id); }
+    if(!state.activeId){ const t=await createThread(); await openThread(t.id); loadThreads(); }   // loadThreads 只刷侧栏列表,不阻塞发送(它聚合多后端可能慢几秒);openThread 不依赖它
+    // 乐观渲染:会话就绪后立刻显示用户消息 + 进入"运行中"(思考指示),不等 SSE。否则首条要等后端起 turn(~1s+,推理模型更久),
+    // 这段时间窗口空白,体感像"卡住/过好久才显示"。真 user_message 事件到达时由 startItem 认领这个气泡,不重复。
+    const oel=row("user","你"); oel.querySelector(".content").innerHTML=md(text); $("#mwrap").appendChild(oel); state._optimUser=oel; setRunning(true); scrollDown(true);
     const th=state.threads.find(x=>x.id===state.activeId);
     const freezeName = !th || !th.title || th.title==="New Thread";   // 首条消息 → 把名字锁成这句话,之后后端不再每轮重算
     const r=await api(`/v1/threads/${state.activeId}/turns`,{method:"POST",body:JSON.stringify({prompt:text})});
@@ -666,6 +670,7 @@ async function send(queuedText){
       }).catch(()=>{});
     }
   }catch(e){
+    if(state._optimUser){ state._optimUser.remove(); state._optimUser=null; }   // 发送失败/转排队 → 移除乐观气泡(由排队占位或错误提示接管)
     if(/\b409\b|active turn/i.test(e.message||"")){   // 该对话仍有一轮在跑(切回来误发/连点)→ 不报错,转为排队,turn 完成后自动发
       setRunning(true); state.queue.push({text, el:(()=>{ const el=document.createElement("div"); el.className="msg user queued"; el.innerHTML=`<div class="av">你</div><div class="body"><div class="who">⏳ 排队中(上一轮还在跑)</div><div class="content"></div><button class="qx" title="取消排队">✕</button></div>`; el.querySelector(".content").textContent=text; el.querySelector(".qx").onclick=()=>{ const i=state.queue.findIndex(q=>q.el===el); if(i>=0) state.queue.splice(i,1); el.remove(); }; $("#mwrap").appendChild(el); scrollDown(true); return el; })()});
       return;
@@ -814,15 +819,18 @@ const PROVIDERS=[   // 非 DeepSeek 的 provider 模型填 auto:app-server 把 d
   {id:"moonshot",name:"Kimi (月之暗面)",model:"auto"},
   {id:"openai",name:"OpenAI",model:"auto"},
   {id:"openai-codex",name:"ChatGPT(OAuth 登录)",model:"auto",oauth:true},
-  {id:"anthropic",name:"Claude (Anthropic)",model:"auto"},
+  {id:"claude-code",name:"Claude (订阅 · Claude Code)",model:"auto",oauth:true,newchatOnly:true},   // 委派官方 claude -p 走订阅;单窗口可选但只能当"新对话 provider"(走独立后端 :7900),不能当 launchd 主后端(官方二进制不识别)
+  {id:"anthropic",name:"Claude (Anthropic API Key)",model:"auto"},
   {id:"openrouter",name:"OpenRouter",model:"auto"},
   {id:"deepinfra",name:"DeepInfra",model:"auto"},
 ];
-const PROV_SHORT={deepseek:"DeepSeek",zai:"GLM",moonshot:"Kimi",openai:"OpenAI","openai-codex":"ChatGPT",anthropic:"Claude",openrouter:"OpenRouter",deepinfra:"DeepInfra"};
+const PROV_SHORT={deepseek:"DeepSeek",zai:"GLM",moonshot:"Kimi",openai:"OpenAI","openai-codex":"ChatGPT","claude-code":"Claude",anthropic:"Claude·API",openrouter:"OpenRouter",deepinfra:"DeepInfra"};
 async function loadModelLabel(){ try{ const d=await api("/api/model"); const c=d.current||{};
-  const disp=(c.model && c.model!=="auto") ? c.model : (PROV_SHORT[c.provider]||c.provider||"?");   // 具体模型名;auto 时显示 provider 友好名(zai→GLM)
+  let nc=""; try{ nc=(await api("/api/newchat-provider")).provider||""; }catch(e){}   // "新对话 provider":单窗口新建对话实际走它(可能 != 主配置,如主后端 deepseek 但新对话 claude-code)
+  const prov=nc||c.provider||"?";
+  const disp=(prov===c.provider && c.model && c.model!=="auto") ? c.model : (PROV_SHORT[prov]||prov);   // chip 代表"下一个新对话用什么";newchat 覆盖主配置时显 newchat 友好名
   const nm=$("#modelname"); if(nm) nm.textContent=disp;
-  const chip=$("#modelchip"); if(chip) chip.title=`当前模型:${c.provider||""} / ${c.model||"auto"} — 点击切换`;
+  const chip=$("#modelchip"); if(chip) chip.title=`新对话用:${prov}${nc&&nc!==c.provider?`(主后端 ${c.provider})`:""} — 点击切换`;
 }catch(e){} }
 async function openModelSwitch(){
   openModal("🧠 切换模型");
@@ -833,23 +841,37 @@ async function openModelSwitch(){
     <div class="prow" id="mkeyrow"><input id="mkey" type="password" placeholder="API key"></div>
     <div class="prow"><button class="btn primary" id="mswitch">切换并重启后端</button></div>
     <div id="mhint" style="font-size:11px;color:var(--faint);line-height:1.6">切换后<b>新开的对话</b>会锁定此模型;<b>已有对话各自保留自己的模型不变</b>(不会被切回)。切换会重启后端(几秒,会话数据不丢)。装 GLM:选「GLM」→ 填你在 z.ai / open.bigmodel.cn 申请的 key → 切换。key 存本机,不外传。</div>`;
-  let keyed={};
-  try{ const d=await api("/api/model"); keyed=d.keyed||{}; $("#curmodel").textContent=`${d.current.provider} / ${d.current.model||"(默认)"}`; }catch(e){ $("#curmodel").textContent="读取失败"; }
+  let keyed={}, curNc="";
+  try{ const d=await api("/api/model"); keyed=d.keyed||{};
+    try{ curNc=(await api("/api/newchat-provider")).provider||""; }catch(e){}
+    $("#curmodel").textContent = (curNc && curNc!==d.current.provider)
+      ? `${PROV_SHORT[curNc]||curNc}(新对话)· 主后端 ${d.current.provider}`   // newchat 覆盖主配置时,明确两者
+      : `${d.current.provider} / ${d.current.model||"(默认)"}`;
+  }catch(e){ $("#curmodel").textContent="读取失败"; }
   const sel=$("#mprov");
-  sel.innerHTML=PROVIDERS.map(p=>`<option value="${p.id}">${p.name}${keyed[p.id]?"  ✓已配置":""}</option>`).join("");
+  sel.innerHTML=PROVIDERS.map(p=>`<option value="${p.id}">${p.name}${keyed[p.id]?"  ✓已配置":""}</option>`).join("");   // 含 claude-code(newchatOnly):单窗口可选,选它只设"新对话 provider"(见 mswitch),不动 launchd 主后端
+  if(curNc && PROVIDERS.some(p=>p.id===curNc)) sel.value=curNc;   // 预选当前"新对话 provider",打开即见实际状态
   const sync=()=>{ const p=PROVIDERS.find(x=>x.id===sel.value)||{}; $("#mmodel").value=p.model||"";
     $("#mkeyrow").style.display=p.oauth?"none":"flex";
-    $("#mkey").placeholder=p.oauth?"OAuth 登录,无需 key":(keyed[p.id]?"已配置,留空=不改":"必填:该 provider 的 API key"); };
+    $("#mkey").placeholder=p.oauth?"OAuth 登录,无需 key":(keyed[p.id]?"已配置,留空=不改":"必填:该 provider 的 API key");
+    const sw=$("#mswitch"); if(sw) sw.textContent=p.newchatOnly?"设为新对话模型":"切换并重启后端"; };   // newchatOnly(claude 订阅)不重启主后端
   sel.onchange=sync; sync();
   $("#mswitch").onclick=async()=>{
     const provider=sel.value, model=$("#mmodel").value.trim(), api_key=$("#mkey").value;
     const p=PROVIDERS.find(x=>x.id===provider)||{};
     if(!p.oauth && !keyed[provider] && !api_key){ alert("该 provider 还没配置 key —— 请先填 API key"); return; }
-    const b=$("#mswitch"); b.textContent="切换中,重启后端…"; b.disabled=true;
-    try{ const d=await api("/api/model",{method:"POST",body:JSON.stringify({provider,model,api_key})});
-      if(d.error){ alert("切换失败: "+d.error); b.textContent="切换并重启后端"; b.disabled=false; return; }
-      try{ await api("/api/newchat-provider",{method:"POST",body:JSON.stringify({provider})}); }catch(e){}   // 新对话锁定此 provider(每对话锁模型)
-      b.textContent="✓ 已切换 "+(model&&model!=="auto"?model:provider);
+    const b=$("#mswitch"); b.textContent=p.newchatOnly?"切换中…":"切换中,重启后端…"; b.disabled=true;
+    try{
+      if(p.newchatOnly){
+        // claude-code(订阅,委派 claude -p)不能当 launchd 主后端(官方二进制不识别)→ 只设"新对话 provider":
+        // 新对话走它的独立后端 :7900,主后端 :7878 保持原默认(deepseek)不动、不重启。
+        await api("/api/newchat-provider",{method:"POST",body:JSON.stringify({provider})});
+      } else {
+        const d=await api("/api/model",{method:"POST",body:JSON.stringify({provider,model,api_key})});
+        if(d.error){ alert("切换失败: "+d.error); b.textContent="切换并重启后端"; b.disabled=false; return; }
+        try{ await api("/api/newchat-provider",{method:"POST",body:JSON.stringify({provider})}); }catch(e){}   // 新对话锁定此 provider(每对话锁模型)
+      }
+      b.textContent="✓ 已切换 "+(PROV_SHORT[provider]||provider);
       setTimeout(()=>{ const a=state.activeId; closeModal(); closeStream(); loadThreads(); loadModelLabel(); loadBalance(); if(a) openThread(a); }, 700);   // 软刷新:重拉对话 + 模型名 + 余额 + 重连当前会话流,不整页白屏重载(后端已 health-check 过)
     }catch(e){ alert("切换失败: "+e.message); b.textContent="切换并重启后端"; b.disabled=false; }
   };
@@ -983,21 +1005,21 @@ loadVersion(); checkUpdate(); setInterval(checkUpdate, 3600000);   // CodeWhale 
 checkGuiUpdate(); setInterval(checkGuiUpdate, 3600000);            // GUI 界面:启动 + 每小时查新版(签名验证)
 
 /* ---------- 多模型并排对比 ---------- */
-const CMP={ sel:new Set(), threads:{}, seq:{}, keyed:{}, maxed:null, autoApprove:true, allowShell:false, fakeip:false, turn:{}, running:{}, busy:false, sendQ:[], dispatching:{} };
+const CMP={ sel:new Set(), threads:{}, seq:{}, keyed:{}, maxed:null, autoApprove:true, allowShell:false, fakeip:false, turn:{}, running:{}, busy:false, sendQ:[], dispatching:{}, attachments:[] };
 // 建对比线程时直接把 model 钉到 thread 级,绕过 default_text_model="auto" 的自动路由(它会按 prompt 内容乱选、常落 deepseek,导致 GLM/GPT 栏答错)。
-const CMP_FORCE_MODEL={ deepseek:"deepseek-v4-pro", zai:"GLM-5.2", "openai-codex":"gpt-5.5" };
+const CMP_FORCE_MODEL={ deepseek:"deepseek-v4-pro", zai:"GLM-5.2", "openai-codex":"gpt-5.5", "claude-code":"opus" };   // claude 列徽章显示 opus(实际模型由 server.py 的 CODEWHALE_CLAUDE_MODEL env 控制,非 thread.model 钉死)
 // 本机是否 fake-ip 代理环境(普通机器=false→不发 curl/MCP 引导,fetch_url 照常用;被劫持机器=true→引导走 curl/MCP)
 api("/api/netenv").then(d=>{ CMP.fakeip=!!(d&&d.fakeip); }).catch(()=>{});
 async function openCompare(){
   $("#cmpView").hidden=false;
-  CMP.busy=false; CMP.sendQ=[]; CMP.dispatching={};   // 重开对比视图清掉可能遗留的发送队列/派发锁,避免误判 busy 卡住发送
+  CMP.busy=false; CMP.sendQ=[]; CMP.dispatching={}; CMP.attachments=[];   // 重开对比视图清掉可能遗留的发送队列/派发锁/附件,避免误判 busy 卡住发送
   if(Object.keys(CMP.threads).length===0){ try{ await api("/api/compare/reset",{method:"POST",body:"{}"}); }catch(e){} }   // 没有进行中的对比会话→清掉可能残留的旧后端,确保各栏用当前配置/key 重启,杜绝"GLM/GPT 栏都答 DeepSeek"(残留后端连不上各自端点→回退 DeepSeek);有会话则不清,保留延续
   try{ const d=await api("/api/model"); CMP.keyed=d.keyed||{}; }catch(e){}
   if(CMP.sel.size===0){
     ["deepseek","openai-codex"].forEach(p=>{ if(CMP.keyed[p]) CMP.sel.add(p); });
     if(CMP.sel.size===0) CMP.sel.add("deepseek");
   }
-  renderCmpChips(); renderCmpCols(); renderCmpToggles(); cmpSyncSendUI();
+  renderCmpChips(); renderCmpCols(); renderCmpToggles(); cmpSyncSendUI(); cmpRenderAttach();
   // 预热:后台把选中栏的后端 + 全 MCP 先起好(/health 1.6s,MCP 后台起几秒)→ 用户读题/打字时就绪,发送时不必干等
   api("/api/compare/ensure",{method:"POST",body:JSON.stringify({providers:[...CMP.sel]})}).catch(()=>{});
   setTimeout(()=>{ const i=$("#cmpInput"); if(i) i.focus(); },60);
@@ -1073,14 +1095,14 @@ async function cmpResetBackends(){   // 重启所有对比后端(残留后端连
   if(!(await cwConfirm("重启所有对比后端?会清空各栏当前历史,并用最新配置 / key 重新连接各模型(几秒)。\n用于:某个模型栏回答的不是它本人(回退成了 DeepSeek)。"))) return;
   const btn=$("#cmpResetBtn"); if(btn){ btn.disabled=true; btn.textContent="↻ 重启中…"; }
   try{ await api("/api/compare/reset",{method:"POST",body:"{}"}); }catch(e){}
-  CMP.threads={}; CMP.seq={}; CMP.turn={}; CMP.running={}; CMP.busy=false; CMP.sendQ=[]; CMP.dispatching={}; cmpSyncSendUI();
+  CMP.threads={}; CMP.seq={}; CMP.turn={}; CMP.running={}; CMP.busy=false; CMP.sendQ=[]; CMP.dispatching={}; CMP.attachments=[]; cmpSyncSendUI(); cmpRenderAttach();
   [...CMP.sel].forEach(p=>{ const b=$("#cmpb-"+CSS.escape(p)); if(b) b.innerHTML=""; const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent=""; const stop=$("#cmpstop-"+CSS.escape(p)); if(stop) stop.hidden=true; const cs=$("#cmpcsend-"+CSS.escape(p)); if(cs) cs.disabled=false; });
   if(btn){ btn.disabled=false; btn.textContent="↻ 重启后端"; }
   const i=$("#cmpInput"); if(i) i.focus();
 }
 async function cmpNewChat(){   // 新对话:清空所有栏历史 + 重建会话(学单一窗口的「新建对话」)
   if(Object.keys(CMP.threads).length && !(await cwConfirm("清空所有对比栏的历史,开始新的对话?各模型会重新建会话。"))) return;
-  CMP.threads={}; CMP.seq={}; CMP.turn={}; CMP.running={}; CMP.busy=false; CMP.sendQ=[]; CMP.dispatching={}; cmpSyncSendUI();
+  CMP.threads={}; CMP.seq={}; CMP.turn={}; CMP.running={}; CMP.busy=false; CMP.sendQ=[]; CMP.dispatching={}; CMP.attachments=[]; cmpSyncSendUI(); cmpRenderAttach();
   [...CMP.sel].forEach(p=>{ const b=$("#cmpb-"+CSS.escape(p)); if(b) b.innerHTML=""; const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent=""; const stop=$("#cmpstop-"+CSS.escape(p)); if(stop) stop.hidden=true; const cs=$("#cmpcsend-"+CSS.escape(p)); if(cs) cs.disabled=false; });
   const i=$("#cmpInput"); if(i) i.focus();
 }
@@ -1103,27 +1125,56 @@ function cmpSyncSendUI(){
     else{
       qb.hidden=false;
       qb.innerHTML='<span class="cmpqlbl">⏳ 排队中（完成当前轮后按序自动发）：</span>'+
-        CMP.sendQ.map((t,i)=>`<span class="cmpqchip" title="${esc(t)}"><span>${esc(t)}</span><b data-i="${i}" title="取消这条">✕</b></span>`).join("");
+        CMP.sendQ.map((it,i)=>{const d=(it&&it.disp!==undefined)?it.disp:it;return `<span class="cmpqchip" title="${esc(d)}"><span>${esc(d)}</span><b data-i="${i}" title="取消这条">✕</b></span>`;}).join("");
       qb.querySelectorAll(".cmpqchip b").forEach(x=>x.onclick=()=>{ CMP.sendQ.splice(+x.dataset.i,1); cmpSyncSendUI(); });
     }
   }
 }
 async function cmpSend(){
-  const ta=$("#cmpInput"); const text=(ta.value||"").trim(); if(!text) return;
+  const ta=$("#cmpInput"); const raw=(ta.value||"").trim();
+  if(!raw && !CMP.attachments.length) return;   // 有字或有附件就能发
   ta.value=""; ta.style.height="auto";
+  const atts=CMP.attachments.slice(); CMP.attachments=[]; cmpRenderAttach();   // 取走本轮附件并清空附件栏
+  // sent=发给模型(折入文件路径,让各栏 read_file 读);disp=气泡显示(原文 + 附件名)
+  const sent=atts.length ? `我上传了以下文件,请先用 read_file 读取再回答:\n${atts.map(a=>"- "+a.path).join("\n")}\n\n${raw}`.trim() : raw;
+  const disp=raw+(atts.length?("  📎 "+atts.map(a=>a.name).join(", ")):"");
+  const item={sent,disp};
   // ★ 串行化:上一轮还没渲染完(busy/有栏在跑)就再发 → 缓存进队列,等当前轮全部完成后自动按序发出。
   //   否则两轮的用户气泡会被前置堆叠成「问1 问2 答1 答2」,对话顺序错乱(用户报的"显示混乱")。
-  if(cmpAnyBusy()){ CMP.sendQ.push(text); cmpSyncSendUI(); return; }
-  await cmpDispatch(text);
+  if(cmpAnyBusy()){ CMP.sendQ.push(item); cmpSyncSendUI(); return; }
+  await cmpDispatch(item);
 }
-async function cmpDispatch(text){   // 真正把一条问题发给所有选中栏(原子一轮:先加用户气泡→ensure→并发 cmpRun)
+async function cmpDispatch(item){   // item={sent:发给模型(含附件路径), disp:气泡显示}。原子一轮:先加用户气泡→ensure→并发 cmpRun
   CMP.busy=true; cmpSyncSendUI();
   const provs=[...CMP.sel];
-  provs.forEach(p=>{ cmpAddMsg(p,"u",esc(text)); const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent="启动…"; });   // 立即显示用户气泡 + 启动中,不等后端
+  provs.forEach(p=>{ cmpAddMsg(p,"u",esc(item.disp)); const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent="启动…"; });   // 立即显示用户气泡 + 启动中,不等后端
   let ensured={}; try{ ensured=await api("/api/compare/ensure",{method:"POST",body:JSON.stringify({providers:provs})}); }catch(e){}
-  await Promise.all(provs.map(p=>cmpRun(p,text,ensured[p])));
+  await Promise.all(provs.map(p=>cmpRun(p,item.sent,ensured[p])));
   CMP.busy=false; cmpSyncSendUI();
   cmpMaybeFlush();   // 本轮收尾→若队列里还有缓存的问题,自动发下一条(保持 问→答→问→答 顺序)
+}
+// ── 对比附件(主输入框:文件发给所有栏)── 上传到 /api/upload 拿文件系统路径,各 provider 后端都能 read_file 读
+async function cmpUploadFiles(files){
+  for(const f of files){
+    if(f.size>50*1024*1024){ cwToast("⚠ "+f.name+" 超过 50MB,跳过"); continue; }
+    try{
+      const buf=await f.arrayBuffer();
+      const r=await fetch(url("/api/upload"),{method:"POST",headers:{...auth,"X-Filename":encodeURIComponent(f.name)},body:buf});
+      const d=await r.json();
+      if(d.path) CMP.attachments.push({name:d.name,path:d.path}); else cwToast("⚠ 上传失败: "+(d.error||f.name));
+    }catch(e){ cwToast("⚠ 上传失败: "+e.message); }
+  }
+  cmpRenderAttach();
+}
+function cmpRenderAttach(){   // 附件栏(输入框上方):chip + ✕ 移除
+  const bar=$("#cmpAttachBar"); if(!bar) return;
+  bar.innerHTML=""; bar.hidden=!CMP.attachments.length;
+  CMP.attachments.forEach((a,i)=>{
+    const c=document.createElement("div"); c.className="chip";
+    c.innerHTML=`<span class="nm" title="${esc(a.path)}">📎 ${esc(a.name)}</span><span class="x">✕</span>`;
+    c.querySelector(".x").onclick=()=>{ CMP.attachments.splice(i,1); cmpRenderAttach(); };
+    bar.appendChild(c);
+  });
 }
 function cmpMaybeFlush(){ if(!cmpAnyBusy() && CMP.sendQ.length){ const next=CMP.sendQ.shift(); cmpSyncSendUI(); cmpDispatch(next); } else cmpSyncSendUI(); }
 async function cmpRun(prov,text,ens){
@@ -1229,7 +1280,16 @@ window.addEventListener("DOMContentLoaded",()=>{
   const ca=$("#cmpAutoTgl"); if(ca) ca.onclick=cmpToggleAuto;
   const csh=$("#cmpShellTgl"); if(csh) csh.onclick=cmpToggleShell;
   renderCmpToggles();
-  const ci=$("#cmpInput"); if(ci) ci.addEventListener("keydown",e=>{ if(e.key==="Enter"&&!e.shiftKey){ if(e.isComposing||e.keyCode===229)return; e.preventDefault(); cmpSend(); }});
+  const ci=$("#cmpInput"); if(ci){
+    ci.addEventListener("keydown",e=>{ if(e.key==="Enter"&&!e.shiftKey){ if(e.isComposing||e.keyCode===229)return; e.preventDefault(); cmpSend(); }});
+    ci.addEventListener("paste",e=>{ const fs=[...((e.clipboardData&&e.clipboardData.files)||[])]; if(fs.length){ e.preventDefault(); cmpUploadFiles(fs); } });   // 粘贴文件/图片 → 上传(纯文本粘贴照常)
+  }
+  const cab=$("#cmpAttachBtn"); if(cab) cab.onclick=()=>$("#cmpFileInput").click();
+  const cfi=$("#cmpFileInput"); if(cfi) cfi.onchange=e=>{ if(e.target.files.length) cmpUploadFiles([...e.target.files]); e.target.value=""; };
+  const cvw=$("#cmpView"); if(cvw){   // 拖拽文件到对比视图任意处 → 上传
+    cvw.addEventListener("dragover",e=>{ if(e.dataTransfer&&[...e.dataTransfer.types].includes("Files")) e.preventDefault(); });
+    cvw.addEventListener("drop",e=>{ if(e.dataTransfer&&e.dataTransfer.files.length){ e.preventDefault(); cmpUploadFiles([...e.dataTransfer.files]); } });
+  }
 });
 </script>
 <style>
@@ -1292,11 +1352,21 @@ window.addEventListener("DOMContentLoaded",()=>{
 .cmpqchip span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .cmpqchip b{cursor:pointer;color:var(--faint);font-weight:600;font-size:11px;padding:0 2px;flex:0 0 auto}
 .cmpqchip b:hover{color:var(--err)}
+#cmpAttachBtn{flex:0 0 auto;width:42px;border:1px solid var(--line);background:var(--bg);color:var(--dim);border-radius:8px;font-size:16px;cursor:pointer}
+#cmpAttachBtn:hover{color:var(--accent);border-color:var(--accent)}
+#cmpAttachBar{display:flex;flex-wrap:wrap;gap:6px;padding:0 0 7px}
+#cmpAttachBar[hidden]{display:none}
+#cmpAttachBar .chip{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:2px 5px 2px 9px;font-size:12px;color:var(--dim);max-width:280px}
+#cmpAttachBar .chip .nm{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+#cmpAttachBar .chip .x{cursor:pointer;color:var(--faint);font-weight:600;font-size:11px;flex:0 0 auto}
+#cmpAttachBar .chip .x:hover{color:var(--err)}
 </style>
 <div id="cmpView" hidden>
   <div id="cmpTop">
     <div id="cmpHead"><b>⚖️ 多模型对比</b><div id="cmpChips"></div><div id="cmpShellTgl" class="tgl" title="开 = 允许 exec_shell 跑命令(跳出沙箱)。注:MCP / web_search / 读取等工具跟单窗口一样一直可用,此开关只额外控制 shell 命令"><span class="sw"></span>💻 Shell</div><div id="cmpAutoTgl" class="tgl" title="工具调用自动批准(对比无逐栏审批 UI,开 Shell 时建议开)"><span class="sw"></span>⚡ 自动批准</div><button id="cmpNewBtn" title="清空所有栏的历史,开始新的对比对话">＋ 新对话</button><button id="cmpResetBtn" title="某栏回答的不是它本人(回退成了 DeepSeek)?点这里用最新配置/key 重启所有对比后端">↻ 重启后端</button><button id="cmpClose">✕ 退出</button></div>
-    <div id="cmpInputRow"><textarea id="cmpInput" placeholder="输入一个问题,同时发给所有选中的模型…（Enter 发送 · Shift+Enter 换行）"></textarea><button id="cmpSendBtn">发送</button></div>
+    <div id="cmpAttachBar" hidden></div>
+    <div id="cmpInputRow"><button id="cmpAttachBtn" title="上传文件(文本/代码,各模型会 read_file 读取;也可直接粘贴/拖拽。图片当前模型看不了)">📎</button><textarea id="cmpInput" placeholder="输入一个问题,同时发给所有选中的模型…（Enter 发送 · Shift+Enter 换行 · 可粘贴/拖拽文件）"></textarea><button id="cmpSendBtn">发送</button></div>
+    <input type="file" id="cmpFileInput" multiple style="display:none">
     <div id="cmpQueue" hidden></div>
   </div>
   <div id="cmpCols"></div>

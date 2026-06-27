@@ -69,6 +69,26 @@ chmod 600 "$HOME/.codewhale-gui/token"
 # 更新验签需要 cryptography(失败也不阻断安装,只是自动更新会暂时禁用)
 "$PY" -m pip install --user cryptography >/dev/null 2>&1 || "$PY" -m pip install --break-system-packages cryptography >/dev/null 2>&1 || echo "  (cryptography 没装上:在线更新会暂时禁用,不影响其他功能)"
 
+# ── 5.7 Claude 订阅引擎(claude-code 补丁二进制 → 跑「Claude (订阅)」/ Opus)──
+# 官方 codewhale 不识别 claude-code provider;前端用这俩补丁二进制起独立后端,委派官方 `claude -p` 走你的 Claude 订阅。
+if [ -d "$HERE/bin" ] && [ -f "$HERE/bin/codewhale-claude" ] && [ -f "$HERE/bin/codewhale-tui" ]; then
+  echo "→ 安装 Claude 订阅引擎(Opus)…"
+  mkdir -p "$HOME/.codewhale-gui/bin"
+  cp "$HERE/bin/codewhale-claude" "$HOME/.codewhale-gui/bin/codewhale-claude"
+  cp "$HERE/bin/codewhale-tui"    "$HOME/.codewhale-gui/bin/codewhale-tui"
+  xattr -dr com.apple.quarantine  "$HOME/.codewhale-gui/bin" 2>/dev/null || true   # 去隔离,免 Gatekeeper 拦下载来的二进制
+  chmod +x "$HOME/.codewhale-gui/bin/codewhale-claude" "$HOME/.codewhale-gui/bin/codewhale-tui"
+  codesign -s - --force "$HOME/.codewhale-gui/bin/codewhale-claude" >/dev/null 2>&1 || true   # 本机重新 ad-hoc 签名,确保可运行(arm64 必须有签名)
+  codesign -s - --force "$HOME/.codewhale-gui/bin/codewhale-tui"    >/dev/null 2>&1 || true
+  if command -v claude >/dev/null 2>&1; then
+    echo "  ✓ Claude 订阅引擎就绪(已检测到官方 claude CLI)"
+  else
+    echo "  ⚠ 还没装官方 claude CLI ——「Claude (订阅)」要靠它跑。装 + 登录你的订阅:"
+    echo "       npm install -g @anthropic-ai/claude-code   然后   claude   (按提示登录)"
+  fi
+  echo "  用法:app 里左下「🧠 模型」→ 选「Claude (订阅 · Claude Code)」→ 设为新对话模型 → 新对话即 Opus 4.8"
+fi
+
 # ── 5.6 CA 证书包(修代理 TLS 解密 / python.org 版 Python 空 CA 包导致的余额、联网校验失败)──
 # 合并:钥匙串里的系统根 + System/login 钥匙串(含用户本机代理 TLS 解密用的自签根)+ certifi(若有)。
 # 让前端 server.py 的 HTTPS 校验既认公网证书、也认本机代理重签的证书;每台机器按各自钥匙串生成。
