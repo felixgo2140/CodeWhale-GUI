@@ -993,6 +993,8 @@ window.addEventListener("keydown",e=>{
 
 renderAuto(); renderShell();
 loadThreads(); loadBalance(); loadPins(); loadModelLabel(); checkSetup();   // loadPins:服务端拉置顶;loadModelLabel:侧栏显当前模型;checkSetup:免 key 安装后引导配置
+// 原生 App 后台刷新(在线更新带来的新壳):下载替换需几秒,延迟轮询几次,更新了就提示退出重开
+setTimeout(async()=>{ for(let i=0;i<5;i++){ try{ const s=await api("/api/app-refresh-status"); if(s&&s.updated){ cwToast("✅ CodeWhale 原生 App 已更新 — 退出(⌘Q)再打开即生效"); break; } }catch(e){} await new Promise(r=>setTimeout(r,4000)); } }, 5000);
 async function checkSetup(){   // 当前 provider 还没配 key(且非 OAuth)→ 自动弹「🧠 模型」引导首次配置
   try{ const d=await api("/api/model"); const p=d.current&&d.current.provider; const keyed=d.keyed||{};
     if(p && !keyed[p]){ setTimeout(()=>{ if(!$("#modal").classList.contains("show")) openModelSwitch(); }, 600); }

@@ -692,6 +692,68 @@ def _ensure_patched_binaries(block=True, refresh=False):
         return have
     finally:
         _patched_fetch_lock.release()
+# ── 原生 App 版本感知刷新 ──
+# 原生 CodeWhale.app(WKWebView 壳)的改动(文件选择 runOpenPanel、菜单、JS 对话框等)以前只能靠重装安装器。
+# 现把 app 作为签名 release 资产(CodeWhale.app.tar.gz,~0.5MB),启动时比对 manifest 的 native_app SHA,
+# 变了就下载+替换 ~/Applications/CodeWhale.app + 去隔离 + ad-hoc 签名。退出重开即用新壳,无需重装。
+_APP_DEST = os.path.expanduser("~/Applications/CodeWhale.app")
+_APPSHA_MARKER = os.path.expanduser("~/.codewhale-gui/.appsha")
+_app_refresh_lock = threading.Lock()
+_app_refresh_state = {"phase": "idle", "updated": False, "error": None}
+def _refresh_native_app():
+    cfg = _update_cfg()
+    if not (cfg.get("repo") or cfg.get("base_url")) or not _HAVE_CRYPTO:
+        return
+    if not _app_refresh_lock.acquire(blocking=False):
+        return
+    try:
+        man = _get_manifest(cfg)
+        na = man.get("native_app")
+        if not na or not na.get("name") or not na.get("sha256"):
+            return
+        sha = na["sha256"]
+        try: marker = open(_APPSHA_MARKER).read().strip()
+        except Exception: marker = ""
+        if marker == sha and os.path.exists(_APP_DEST):                # 已是最新 → 不动
+            return
+        _app_refresh_state.update(phase="downloading", error=None)
+        tmpf = os.path.join(tempfile.gettempdir(), "cw-app.tar.gz")
+        _download_verified(_release_url(cfg, na["name"]), tmpf, sha, int(na.get("size") or 0))
+        tmpd = tempfile.mkdtemp(prefix="cw-app-")
+        try:
+            with tarfile.open(tmpf, "r:gz") as tf:
+                for mem in tf.getmembers():                            # 逐成员安全校验:禁链接/穿越,只许 CodeWhale.app/**
+                    n = mem.name.lstrip("./")
+                    if mem.issym() or mem.islnk(): raise ValueError("含链接,拒绝")
+                    if n.startswith("/") or ".." in n.split("/"): raise ValueError("路径穿越,拒绝")
+                    if not (n == "CodeWhale.app" or n.startswith("CodeWhale.app/")): raise ValueError("非法成员:" + n)
+                tf.extractall(tmpd)
+            newapp = os.path.join(tmpd, "CodeWhale.app")
+            if not os.path.isdir(newapp): raise ValueError("包内无 CodeWhale.app")
+            os.makedirs(os.path.dirname(_APP_DEST), exist_ok=True)
+            bak = _APP_DEST + ".bak"; shutil.rmtree(bak, ignore_errors=True)
+            if os.path.exists(_APP_DEST): shutil.move(_APP_DEST, bak)
+            try:
+                shutil.move(newapp, _APP_DEST)
+                subprocess.run(["xattr", "-dr", "com.apple.quarantine", _APP_DEST], capture_output=True)
+                subprocess.run(["codesign", "-s", "-", "--force", "--deep", _APP_DEST], capture_output=True)
+                subprocess.run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-f", _APP_DEST], capture_output=True)
+                open(_APPSHA_MARKER, "w").write(sha)
+                shutil.rmtree(bak, ignore_errors=True)
+                _app_refresh_state.update(phase="updated", updated=True)   # 前端可据此提示"退出重开生效"
+                print("[native-app] 已更新 ~/Applications/CodeWhale.app —— 退出重开 CodeWhale 生效", flush=True)
+            except Exception:
+                if os.path.exists(bak) and not os.path.exists(_APP_DEST): shutil.move(bak, _APP_DEST)  # 回滚
+                raise
+        finally:
+            shutil.rmtree(tmpd, ignore_errors=True)
+            try: os.remove(tmpf)
+            except Exception: pass
+    except Exception as e:
+        _app_refresh_state.update(phase="error", error=str(e)[:160])
+        print(f"[native-app] 刷新失败: {e}", flush=True)
+    finally:
+        _app_refresh_lock.release()
 def _cmp_safe(prov):
     return re.sub(r'[^a-zA-Z0-9_-]', '_', prov)
 _COMPARE_SKILL_MD = """---
@@ -1121,6 +1183,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not self._authed():
                 return self._deny()
             return self._json(gui_update_progress())
+        if p == "/api/app-refresh-status":    # 原生 App 是否被后台刷新了(前端据此提示退出重开)
+            if not self._authed():
+                return self._deny()
+            return self._json(dict(_app_refresh_state))
         if p == "/api/pins":
             if not self._authed():
                 return self._deny()
@@ -1399,7 +1465,8 @@ if __name__ == "__main__":
         subprocess.run(["/usr/bin/pkill", "-f", "app-server --config " + CMP_DIR], timeout=5)
     except Exception:
         pass
-    # 后台检查补丁二进制:缺则下载,SHA 变了则刷新(OCR 等二进制升级经此自动传播);不阻塞启动
+    # 后台检查补丁二进制 + 原生 App:缺则下载,SHA 变了则刷新(OCR/二进制/原生壳 升级经此自动传播);不阻塞启动
     threading.Thread(target=lambda: _ensure_patched_binaries(block=False, refresh=True), daemon=True).start()
+    threading.Thread(target=_refresh_native_app, daemon=True).start()
     print(f"CodeWhale GUI server on {BIND}:{PORT}  (token {'ENABLED' if TOKEN else 'off'})")
     Server((BIND, PORT), Handler).serve_forever()
