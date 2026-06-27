@@ -1,5 +1,12 @@
 # 更新日志
 
+## v2.5.5 — Claude 推理 effort 选择 + 修对比单变体列点击 bug
+
+### 新增
+- **Claude 推理 effort**(低/中/高):对比窗口 Claude 列头部、单窗口「🧠 模型」选 Claude 时,多一个 effort 下拉 —— 经 `claude -p --effort` 调 Opus/Sonnet 的思考深度(其它 provider 的 runtime 不支持传 reasoning effort,故只 Claude 有)。effort 走 env,改后自动重启 claude 独立后端,下条生效。
+
+### 修复
+- **对比窗口 GPT / Kimi 列点模型徽章不显示(反而误触发最大化)**:单变体 provider 之前渲染成静态徽章、点击落到"最大化列"。现所有有预设变体的列都用下拉(单变体也是),点击不再误最大化。
 ## v2.5.4 — 每 provider 可选模型变体(单窗口 + 对比窗口)
 
 ### 新增

@@ -882,6 +882,7 @@ async function openModelSwitch(){
   body.innerHTML=`<div style="font-size:13px;margin-bottom:12px">当前:<b id="curmodel">…</b></div>
     <div class="prow"><select id="mprov" class="msearch" style="margin:0"></select></div>
     <div class="prow" id="mvariantrow" style="display:none"><select id="mvariant" class="msearch" style="margin:0" title="模型变体"></select></div>
+    <div class="prow" id="meffortrow" style="display:none"><select id="meffort" class="msearch" style="margin:0" title="Claude 推理 effort"><option value="">推理 effort:默认</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></div>
     <div class="prow"><input id="mmodel" placeholder="模型名(可改)"></div>
     <div class="prow" id="mkeyrow"><input id="mkey" type="password" placeholder="API key"></div>
     <div class="prow"><button class="btn primary" id="mswitch">切换并重启后端</button></div>
@@ -889,7 +890,7 @@ async function openModelSwitch(){
   let keyed={}, curNc="", prefs={};
   try{ const d=await api("/api/model"); keyed=d.keyed||{};
     try{ curNc=(await api("/api/newchat-provider")).provider||""; }catch(e){}
-    try{ prefs=(await api("/api/model-pref")).prefs||{}; }catch(e){}   // 各 provider 当前所选模型变体
+    try{ const mp=await api("/api/model-pref"); prefs=mp.prefs||{}; window._effortPrefs=mp.effort||{}; }catch(e){}   // 各 provider 当前所选模型变体 + claude effort
     $("#curmodel").textContent = (curNc && curNc!==d.current.provider)
       ? `${PROV_SHORT[curNc]||curNc}(新对话)· 主后端 ${d.current.provider}`   // newchat 覆盖主配置时,明确两者
       : `${d.current.provider} / ${d.current.model||"(默认)"}`;
@@ -903,6 +904,8 @@ async function openModelSwitch(){
       const cm=prefs[sel.value]||p.model||(vars[0]&&vars[0].id);
       $("#mvariant").innerHTML=vars.map(v=>`<option value="${v.id}" ${v.id===cm?"selected":""}>${v.name}</option>`).join("");
     } else { $("#mvariantrow").style.display="none"; $("#mmodel").parentElement.style.display="flex"; $("#mmodel").value=p.model||""; }
+    if(sel.value==="claude-code"){ $("#meffortrow").style.display="flex"; $("#meffort").value=(window._effortPrefs&&window._effortPrefs["claude-code"])||""; }   // 仅 Claude 有推理 effort
+    else $("#meffortrow").style.display="none";
     $("#mkeyrow").style.display=p.oauth?"none":"flex";
     $("#mkey").placeholder=p.oauth?"OAuth 登录,无需 key":(keyed[p.id]?"已配置,留空=不改":"必填:该 provider 的 API key");
     const sw=$("#mswitch"); if(sw) sw.textContent=p.newchatOnly?"设为新对话模型":"切换并重启后端"; };   // newchatOnly(claude 订阅)不重启主后端
@@ -926,7 +929,8 @@ async function openModelSwitch(){
         if(d.error){ alert("切换失败: "+d.error); b.textContent="切换并重启后端"; b.disabled=false; return; }
         try{ await api("/api/newchat-provider",{method:"POST",body:JSON.stringify({provider})}); }catch(e){}   // 新对话锁定此 provider(每对话锁模型)
       }
-      if(variant){ try{ await api("/api/model-pref",{method:"POST",body:JSON.stringify({provider,model:variant})}); }catch(e){} }   // 模型变体存 pref(thread 级生效,单窗口+对比共用)
+      const body={provider}; if(variant) body.model=variant; if(provider==="claude-code") body.effort=$("#meffort").value;   // 模型变体 + Claude effort 存 pref(单窗口+对比共用)
+      if(body.model||"effort" in body){ try{ await api("/api/model-pref",{method:"POST",body:JSON.stringify(body)}); }catch(e){} }
       b.textContent="✓ 已切换 "+(PROV_SHORT[provider]||provider)+(variant?(" · "+variant):"");
       setTimeout(()=>{ const a=state.activeId; closeModal(); closeStream(); loadThreads(); loadModelLabel(); loadBalance(); if(a) openThread(a); }, 700);   // 软刷新:重拉对话 + 模型名 + 余额 + 重连当前会话流,不整页白屏重载(后端已 health-check 过)
     }catch(e){ alert("切换失败: "+e.message); b.textContent="切换并重启后端"; b.disabled=false; }
@@ -1087,7 +1091,7 @@ async function openCompare(){
   CMP.busy=false; CMP.sendQ=[]; CMP.dispatching={}; CMP.attachments=[];   // 重开对比视图清掉可能遗留的发送队列/派发锁/附件,避免误判 busy 卡住发送
   if(Object.keys(CMP.threads).length===0){ try{ await api("/api/compare/reset",{method:"POST",body:"{}"}); }catch(e){} }   // 没有进行中的对比会话→清掉可能残留的旧后端,确保各栏用当前配置/key 重启,杜绝"GLM/GPT 栏都答 DeepSeek"(残留后端连不上各自端点→回退 DeepSeek);有会话则不清,保留延续
   try{ const d=await api("/api/model"); CMP.keyed=d.keyed||{}; }catch(e){}
-  try{ const mp=await api("/api/model-pref"); CMP.modelPrefs=mp.prefs||{}; }catch(e){}   // 各列当前所选模型变体(下拉选中用)
+  try{ const mp=await api("/api/model-pref"); CMP.modelPrefs=mp.prefs||{}; CMP.modelEffort=mp.effort||{}; }catch(e){}   // 各列当前所选模型变体 + claude effort(下拉选中用)
   if(CMP.sel.size===0){
     ["deepseek","openai-codex"].forEach(p=>{ if(CMP.keyed[p]) CMP.sel.add(p); });
     if(CMP.sel.size===0) CMP.sel.add("deepseek");
@@ -1112,6 +1116,13 @@ async function cmpSetModel(prov, model){   // 选了某栏的模型变体:存 pr
   delete CMP.threads[prov]; CMP.seq[prov]=0;
   const b=$("#cmpb-"+prov); if(b) b.innerHTML="";
   cwToast((PROV_SHORT[prov]||prov)+" 模型 → "+model+"(下一条起生效)");
+}
+async function cmpSetEffort(prov, effort){   // Claude 推理 effort:存 pref(走 env,后端重启)+ 清空该栏,下条生效
+  CMP.modelEffort=CMP.modelEffort||{}; CMP.modelEffort[prov]=effort;
+  try{ await api("/api/model-pref",{method:"POST",body:JSON.stringify({provider:prov,effort})}); }catch(e){}
+  delete CMP.threads[prov]; CMP.seq[prov]=0;
+  const b=$("#cmpb-"+prov); if(b) b.innerHTML="";
+  cwToast((PROV_SHORT[prov]||prov)+" 推理 → "+(effort||"默认")+"(下一条起生效)");
 }
 function renderCmpToggles(){ const a=$("#cmpAutoTgl"), s=$("#cmpShellTgl"); if(a) a.classList.toggle("on",CMP.autoApprove); if(s) s.classList.toggle("on",CMP.allowShell); }
 async function cmpApplyFlags(){   // 把当前开关同步到所有已建对比会话
@@ -1140,9 +1151,14 @@ function renderCmpCols(){   // diff:保留已有栏内容,只增删变化的
     const nm=PROV_SHORT[p.id]||p.name;
     const vars=MODEL_VARIANTS[p.id]||[];
     const cur=(CMP.modelPrefs&&CMP.modelPrefs[p.id])||CMP_FORCE_MODEL[p.id]||(vars[0]&&vars[0].id)||"auto";
-    const modelEl = (vars.length>1)
+    // 模型下拉:只要有预设变体就用下拉(单变体也是,避免点静态徽章误触发最大化)
+    let modelEl = vars.length
       ? `<select class="cmpmodel cmpmodelsel" data-p="${p.id}" title="选这栏的模型变体(下条起生效)">${vars.map(v=>`<option value="${esc(v.id)}" ${v.id===cur?"selected":""}>${esc(v.name)}</option>`).join("")}</select>`
-      : `<span class="cmpmodel" title="此栏实际调用的模型">${esc(vars[0]?vars[0].name:cur)}</span>`;
+      : `<span class="cmpmodel" title="此栏实际调用的模型">${esc(cur)}</span>`;
+    if(p.id==="claude-code"){   // Claude 额外:推理 effort 下拉(claude -p --effort low/medium/high)
+      const ce=(CMP.modelEffort&&CMP.modelEffort["claude-code"])||"";
+      modelEl += `<select class="cmpmodel cmpeffortsel" data-p="${p.id}" title="推理 effort(下条起生效)"><option value="" ${ce===""?"selected":""}>effort:默认</option><option value="low" ${ce==="low"?"selected":""}>低</option><option value="medium" ${ce==="medium"?"selected":""}>中</option><option value="high" ${ce==="high"?"selected":""}>高</option></select>`;
+    }
     d.innerHTML=`<div class="cmpcol-h" data-p="${p.id}"><span class="cnm">${nm}</span>`+
       modelEl+
       `<span class="st" id="cmpst-${p.id}"></span>`+
@@ -1151,7 +1167,8 @@ function renderCmpCols(){   // diff:保留已有栏内容,只增删变化的
       `<div class="cmpcol-f"><textarea class="cmpcolin" id="cmpin-${p.id}" rows="1" placeholder="只追问 ${nm}…（Enter 发送）"></textarea><button class="cmpcolsend" id="cmpcsend-${p.id}" title="只发给 ${nm}（单独继续这个对话）">→</button></div>`;
     box.appendChild(d);
     const sel=d.querySelector(".cmpmodelsel"); if(sel){ sel.addEventListener("click",e=>e.stopPropagation()); sel.addEventListener("change",e=>{ e.stopPropagation(); cmpSetModel(p.id, e.target.value); }); }
-    d.querySelector(".cmpcol-h").onclick=(e)=>{ if(e.target.closest(".cmpstop")||e.target.closest(".cmpmodelsel")) return; toggleMax(p.id); };   // 点头部=最大化;点「停止」/模型下拉 不触发
+    const esl=d.querySelector(".cmpeffortsel"); if(esl){ esl.addEventListener("click",e=>e.stopPropagation()); esl.addEventListener("change",e=>{ e.stopPropagation(); cmpSetEffort(p.id, e.target.value); }); }
+    d.querySelector(".cmpcol-h").onclick=(e)=>{ if(e.target.closest(".cmpstop")||e.target.closest(".cmpmodelsel")||e.target.closest(".cmpeffortsel")) return; toggleMax(p.id); };   // 点头部=最大化;点「停止」/下拉 不触发
     d.querySelector(".cmpstop").onclick=(e)=>{ e.stopPropagation(); cmpStop(p.id); };
     const ci=d.querySelector(".cmpcolin"), cs=d.querySelector(".cmpcolsend");
     cs.onclick=()=>cmpRunOne(p.id);
@@ -1412,7 +1429,7 @@ window.addEventListener("DOMContentLoaded",()=>{
 .cmpcol-h{padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel);font-size:12px;font-weight:600;color:var(--txt);display:flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap}
 .cmpcol-h .st{font-size:11px;font-weight:400;color:var(--faint);margin-left:auto}
 .cmpcol-h .cmpmodel{font-size:10px;font-weight:500;color:var(--accent);background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 6px;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-select.cmpmodelsel{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:6px} select.cmpmodelsel:hover{border-color:var(--accent)}
+select.cmpmodelsel,select.cmpeffortsel{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:6px} select.cmpmodelsel:hover,select.cmpeffortsel:hover{border-color:var(--accent)}
 .cmpcol-h:hover{color:var(--accent)}
 .cmpcol-h:hover .cmpmodel{color:var(--accent)}
 .cmpcol-b{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:9px;font-size:var(--chat-fs,14px)}
