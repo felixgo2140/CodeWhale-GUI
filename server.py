@@ -603,7 +603,9 @@ _CW_PATCHED_TUI = _first_exist(
     os.path.expanduser("~/codewhale-src/target/release/codewhale-tui"),
 )
 def _cw_binary(prov):
-    if prov == "claude-code" and _CW_PATCHED:
+    # 补丁二进制是 v0.8.65 全功能(claude-code + OCR 中文增强);对 deepseek/zai/openai-codex 行为同 stock。
+    # 所有对比后端都用它 → 各列都吃到 image_ocr 的中文/小字增强(不止 claude 列)。缺失时回退官方。
+    if _CW_PATCHED:
         return _CW_PATCHED
     return CODEWHALE
 # ── claude-code 补丁二进制 自动下载(lazy-fetch)──
@@ -629,24 +631,34 @@ def _download_verified(url, dst, sha256_expected, size_expected):
     if sha256_expected and h.hexdigest() != sha256_expected:
         os.remove(tmp); raise ValueError("二进制 SHA-256 不符,拒绝(防篡改)")
     os.replace(tmp, dst)
-def _ensure_patched_binaries(block=True):
-    """缺 claude-code 补丁二进制时从签名 release 自动下载。幂等、线程安全。成功后更新 _CW_PATCHED(_TUI) 全局。"""
+_BINSHA_MARKER = os.path.join(_BIN_DIR, ".binsha")               # 记已装二进制的 SHA,供"版本感知刷新"比对
+def _read_binsha():
+    try: return json.load(open(_BINSHA_MARKER))
+    except Exception: return {}
+def _local_sha(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for c in iter(lambda: f.read(1 << 20), b""): h.update(c)
+    return h.hexdigest()
+def _ensure_patched_binaries(block=True, refresh=False):
+    """缺/过期 claude-code 补丁二进制时从签名 release 自动下载。refresh=True 比对 manifest SHA,变了就重下
+    (OCR 等二进制层升级经此传播到旧机器,无需重装)。幂等、线程安全。成功后更新 _CW_PATCHED(_TUI) 全局。"""
     global _CW_PATCHED, _CW_PATCHED_TUI
     claude = os.path.join(_BIN_DIR, "codewhale-claude")
     tui = os.path.join(_BIN_DIR, "codewhale-tui")
-    if os.path.exists(claude) and os.path.exists(tui):
+    have = os.path.exists(claude) and os.path.exists(tui)
+    if have and not refresh:                                       # 同步快路径:有就用,不查网
         return True
     cfg = _update_cfg()
     if not (cfg.get("repo") or cfg.get("base_url")) or not _HAVE_CRYPTO:
-        return False
+        return have
     if not _patched_fetch_lock.acquire(blocking=block):
-        return False
+        return have
     try:
-        if os.path.exists(claude) and os.path.exists(tui):
-            return True
-        _patched_fetch_state.update(phase="downloading", error=None)
+        _patched_fetch_state.update(phase="checking", error=None)
         man = _get_manifest(cfg)                                    # 验签过的清单(SHA-256 可信)
         arch = __import__("platform").machine()                    # arm64 / x86_64
+        marker = _read_binsha()
         os.makedirs(_BIN_DIR, exist_ok=True)
         for b in (man.get("binaries") or []):
             name = b.get("name")
@@ -654,13 +666,19 @@ def _ensure_patched_binaries(block=True):
                 continue
             if b.get("arch") and b["arch"] != arch:                # arm64 二进制不能在 Intel 跑
                 continue
-            dst = os.path.join(_BIN_DIR, name)
+            dst = os.path.join(_BIN_DIR, name); sha = b.get("sha256")
             if os.path.exists(dst):
-                continue
-            _download_verified(_release_url(cfg, name), dst, b.get("sha256"), int(b.get("size") or 0))
+                local = marker.get(name) or _local_sha(dst)        # 无标记 → 实算一次(避免误重下手装的二进制)
+                if local == sha:                                   # 已是最新 → 回填标记,跳过
+                    marker[name] = sha; continue
+            _patched_fetch_state.update(phase="downloading")
+            _download_verified(_release_url(cfg, name), dst, sha, int(b.get("size") or 0))
             os.chmod(dst, 0o755)
             subprocess.run(["xattr", "-d", "com.apple.quarantine", dst], capture_output=True)
             subprocess.run(["codesign", "-s", "-", "--force", dst], capture_output=True)   # 本机 ad-hoc 签名,确保可运行
+            marker[name] = sha
+        try: json.dump(marker, open(_BINSHA_MARKER, "w"))
+        except Exception: pass
         ok = os.path.exists(claude) and os.path.exists(tui)
         if ok:
             _CW_PATCHED, _CW_PATCHED_TUI = claude, tui
@@ -670,8 +688,8 @@ def _ensure_patched_binaries(block=True):
         return ok
     except Exception as e:
         _patched_fetch_state.update(phase="error", error=str(e)[:160])
-        print(f"[claude-code] 补丁二进制自动下载失败: {e}", flush=True)
-        return False
+        print(f"[claude-code] 补丁二进制下载/刷新失败: {e}", flush=True)
+        return have
     finally:
         _patched_fetch_lock.release()
 def _cmp_safe(prov):
@@ -775,8 +793,9 @@ def _port_up(port):
 def ensure_provider_server(prov):
     if not re.match(r'^[a-zA-Z0-9_-]+$', prov or ""):
         raise ValueError("非法 provider")
-    if prov == "claude-code" and not _CW_PATCHED:                # 缺补丁二进制 → 先自动下载(同步,首次约几十秒)
-        if not _ensure_patched_binaries(block=True):
+    if not _CW_PATCHED:                                          # 缺补丁二进制 → 先自动下载(同步,首次约几十秒)。所有对比列都靠它吃 OCR 增强
+        ok = _ensure_patched_binaries(block=True)
+        if not ok and prov == "claude-code":                    # claude-code 没补丁就跑不了(致命);其它列回退官方二进制(只是没 OCR 增强)
             raise RuntimeError("Claude 订阅引擎(补丁二进制)缺失且自动下载失败 —— 检查网络/在线更新配置,或重跑安装器")
     port = CMP_PORTS.get(prov)                                   # 快路径:已知端口且活着 → 立即返回(不进锁,热切换 ~0)
     if port and _port_up(port):
@@ -800,8 +819,9 @@ def ensure_provider_server(prov):
                 env = {**_proxy_env(), **os.environ, "PATH": _PATH, "CODEWHALE_PROVIDER": prov}
                 for _v in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"):
                     env.pop(_v, None)                                # claude-code 列会 spawn `claude -p`,带 CLAUDECODE 会被官方 CLI 拒绝嵌套;清掉(对其它 provider 无害)
-                if prov == "claude-code" and _CW_PATCHED_TUI:
-                    env["DEEPSEEK_TUI_BIN"] = _CW_PATCHED_TUI         # 调度器把 runtime 委派给 sibling tui;显式钉死 patched tui(含 claude spawn + env_remove)
+                if _CW_PATCHED_TUI:
+                    env["DEEPSEEK_TUI_BIN"] = _CW_PATCHED_TUI         # 所有对比后端都委派给 patched tui(含 OCR 中文增强 + claude spawn + env_remove)
+                if prov == "claude-code":
                     env["CODEWHALE_CLAUDE_MODEL"] = _CLAUDE_CODE_MODEL # 强制 `claude -p` 用的模型(claude-opus-4-8);绕开模型注册表,直传官方 CLI
                     env["CODEWHALE_CLAUDE_IDENTITY"] = _CLAUDE_CODE_IDENTITY  # 注入权威身份,纠正模型对自身版本的误报
                 logf = open(os.path.expanduser(f"~/codewhale-gui/cmp-{_cmp_safe(prov)}.log"), "a")
@@ -1379,8 +1399,7 @@ if __name__ == "__main__":
         subprocess.run(["/usr/bin/pkill", "-f", "app-server --config " + CMP_DIR], timeout=5)
     except Exception:
         pass
-    # 缺 claude-code 补丁二进制 → 后台预取(不阻塞启动);等用户点 Claude 列时多半已就绪
-    if not _CW_PATCHED:
-        threading.Thread(target=lambda: _ensure_patched_binaries(block=False), daemon=True).start()
+    # 后台检查补丁二进制:缺则下载,SHA 变了则刷新(OCR 等二进制升级经此自动传播);不阻塞启动
+    threading.Thread(target=lambda: _ensure_patched_binaries(block=False, refresh=True), daemon=True).start()
     print(f"CodeWhale GUI server on {BIND}:{PORT}  (token {'ENABLED' if TOKEN else 'off'})")
     Server((BIND, PORT), Handler).serve_forever()
