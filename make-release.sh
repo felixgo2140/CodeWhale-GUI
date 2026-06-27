@@ -17,13 +17,20 @@ BINDIR="$HOME/.codewhale-gui/bin"
 for b in codewhale-claude codewhale-tui; do
   if [ -f "$BINDIR/$b" ]; then cp "$BINDIR/$b" "$OUT/$b"; else echo "  ⚠ 缺补丁二进制 $b —— lazy-fetch 将不可用"; fi
 done
-# 原生 App(CodeWhale.app):从 repo 源码构建 universal → 打 tar.gz → 进发布目录(供 server.py 版本感知刷新自动下载,在线更新也能更新原生壳,无需重装)
+# 原生 App(CodeWhale.app):main.swift 没变就**复用上版 tar**(swiftc 非确定性 SHA 否则每版都变 → 触发所有机器无谓重下 + 误报"重开");变了才重建。
 NATIVE_BUILD="$HOME/codewhale-gui-repo/native/build.sh"
-if [ -f "$NATIVE_BUILD" ]; then
+SWIFT_SRC="$HOME/codewhale-gui-repo/native/main.swift"
+SWIFT_MARK="$HOME/codewhale-release/.swift_sha"
+PREV_APP="$(ls -t "$HOME/codewhale-release/dist"/*/CodeWhale.app.tar.gz 2>/dev/null | grep -v "/$VERSION/" | head -1)"
+CUR_SWIFT="$( [ -f "$SWIFT_SRC" ] && shasum -a256 "$SWIFT_SRC" | cut -d' ' -f1 )"
+if [ -n "$CUR_SWIFT" ] && [ "$CUR_SWIFT" = "$(cat "$SWIFT_MARK" 2>/dev/null)" ] && [ -n "$PREV_APP" ]; then
+  cp "$PREV_APP" "$OUT/CodeWhale.app.tar.gz"; echo "  + 原生 App 复用上版(main.swift 未变,SHA 不变 → 各机不会无谓重下)"
+elif [ -f "$NATIVE_BUILD" ]; then
   rm -rf "$OUT/CodeWhale.app"
   if bash "$NATIVE_BUILD" "$OUT/CodeWhale.app" >/dev/null 2>&1; then
     ( cd "$OUT" && COPYFILE_DISABLE=1 tar --exclude='.DS_Store' -czf CodeWhale.app.tar.gz CodeWhale.app ) && rm -rf "$OUT/CodeWhale.app"
-    echo "  + 原生 App 打包 CodeWhale.app.tar.gz"
+    [ -n "$CUR_SWIFT" ] && echo "$CUR_SWIFT" > "$SWIFT_MARK"
+    echo "  + 原生 App 重建打包(main.swift 变了)"
   else echo "  ⚠ 原生 App 构建失败 —— 在线更新将不带原生壳"; fi
 else echo "  ⚠ 找不到 $NATIVE_BUILD —— 在线更新将不带原生壳"; fi
 python3 - "$VERSION" "$NOTES" "$OUT/$BUNDLE" "$BUNDLE" "$KEY" "$OUT" <<'PY'
