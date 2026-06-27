@@ -1,5 +1,13 @@
 # 更新日志
 
+## v2.5.6 — GPT 推理 effort + 多模型对比独立窗口
+
+### 新增
+- **GPT 也能选推理 effort**(低/中/高):CodeWhale 的 Responses 客户端本就支持,之前只在 auto 路由时取、钉死模型时丢了。改 runtime 读 `CODEWHALE_REASONING_EFFORT` env → 钉死模型也能用 effort。对比 GPT 列头部 + 单窗口选 GPT 时多 effort 下拉。(Claude 走 `claude -p --effort`;两家都支持。其它家 runtime 不传 effort,故只这俩有。)
+- **多模型对比独立窗口**:对比窗口头部「⤢ 独立窗口」—— 把对比弹到一个**独立原生窗口**(可最大化/缩放/最小化),当前窗口回到主页。从此**对比和主页可来回切,不用关掉对比**。原生壳 `createWebViewWith` 接管 `window.open`,新窗口带标准 macOS 窗控。
+
+### 修复
+- 接上版:对比单变体列(GPT/Kimi)的下拉点击。
 ## v2.5.5 — Claude 推理 effort 选择 + 修对比单变体列点击 bug
 
 ### 新增

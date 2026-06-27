@@ -904,7 +904,7 @@ async function openModelSwitch(){
       const cm=prefs[sel.value]||p.model||(vars[0]&&vars[0].id);
       $("#mvariant").innerHTML=vars.map(v=>`<option value="${v.id}" ${v.id===cm?"selected":""}>${v.name}</option>`).join("");
     } else { $("#mvariantrow").style.display="none"; $("#mmodel").parentElement.style.display="flex"; $("#mmodel").value=p.model||""; }
-    if(sel.value==="claude-code"){ $("#meffortrow").style.display="flex"; $("#meffort").value=(window._effortPrefs&&window._effortPrefs["claude-code"])||""; }   // 仅 Claude 有推理 effort
+    if(EFFORT_PROVIDERS.includes(sel.value)){ $("#meffortrow").style.display="flex"; $("#meffort").value=(window._effortPrefs&&window._effortPrefs[sel.value])||""; }   // Claude / GPT 有推理 effort
     else $("#meffortrow").style.display="none";
     $("#mkeyrow").style.display=p.oauth?"none":"flex";
     $("#mkey").placeholder=p.oauth?"OAuth 登录,无需 key":(keyed[p.id]?"已配置,留空=不改":"必填:该 provider 的 API key");
@@ -929,7 +929,7 @@ async function openModelSwitch(){
         if(d.error){ alert("切换失败: "+d.error); b.textContent="切换并重启后端"; b.disabled=false; return; }
         try{ await api("/api/newchat-provider",{method:"POST",body:JSON.stringify({provider})}); }catch(e){}   // 新对话锁定此 provider(每对话锁模型)
       }
-      const body={provider}; if(variant) body.model=variant; if(provider==="claude-code") body.effort=$("#meffort").value;   // 模型变体 + Claude effort 存 pref(单窗口+对比共用)
+      const body={provider}; if(variant) body.model=variant; if(EFFORT_PROVIDERS.includes(provider)) body.effort=$("#meffort").value;   // 模型变体 + Claude/GPT effort 存 pref(单窗口+对比共用)
       if(body.model||"effort" in body){ try{ await api("/api/model-pref",{method:"POST",body:JSON.stringify(body)}); }catch(e){} }
       b.textContent="✓ 已切换 "+(PROV_SHORT[provider]||provider)+(variant?(" · "+variant):"");
       setTimeout(()=>{ const a=state.activeId; closeModal(); closeStream(); loadThreads(); loadModelLabel(); loadBalance(); if(a) openThread(a); }, 700);   // 软刷新:重拉对话 + 模型名 + 余额 + 重连当前会话流,不整页白屏重载(后端已 health-check 过)
@@ -1084,6 +1084,9 @@ const MODEL_VARIANTS={
   "openai-codex":[{id:"gpt-5.5",name:"GPT-5.5"}],
   moonshot:[{id:"kimi-k2",name:"Kimi K2"}],
 };
+// 支持推理 effort 的 provider:claude-code(claude -p --effort)、openai-codex(GPT,Responses reasoning.effort)。其它家 runtime 不传 effort。
+const EFFORT_PROVIDERS=["claude-code","openai-codex"];
+const EFFORT_OPTS=[{v:"",n:"effort:默认"},{v:"low",n:"低"},{v:"medium",n:"中"},{v:"high",n:"高"}];
 // 本机是否 fake-ip 代理环境(普通机器=false→不发 curl/MCP 引导,fetch_url 照常用;被劫持机器=true→引导走 curl/MCP)
 api("/api/netenv").then(d=>{ CMP.fakeip=!!(d&&d.fakeip); }).catch(()=>{});
 async function openCompare(){
@@ -1155,9 +1158,9 @@ function renderCmpCols(){   // diff:保留已有栏内容,只增删变化的
     let modelEl = vars.length
       ? `<select class="cmpmodel cmpmodelsel" data-p="${p.id}" title="选这栏的模型变体(下条起生效)">${vars.map(v=>`<option value="${esc(v.id)}" ${v.id===cur?"selected":""}>${esc(v.name)}</option>`).join("")}</select>`
       : `<span class="cmpmodel" title="此栏实际调用的模型">${esc(cur)}</span>`;
-    if(p.id==="claude-code"){   // Claude 额外:推理 effort 下拉(claude -p --effort low/medium/high)
-      const ce=(CMP.modelEffort&&CMP.modelEffort["claude-code"])||"";
-      modelEl += `<select class="cmpmodel cmpeffortsel" data-p="${p.id}" title="推理 effort(下条起生效)"><option value="" ${ce===""?"selected":""}>effort:默认</option><option value="low" ${ce==="low"?"selected":""}>低</option><option value="medium" ${ce==="medium"?"selected":""}>中</option><option value="high" ${ce==="high"?"selected":""}>高</option></select>`;
+    if(EFFORT_PROVIDERS.includes(p.id)){   // Claude / GPT:推理 effort 下拉(下条起生效)
+      const ce=(CMP.modelEffort&&CMP.modelEffort[p.id])||"";
+      modelEl += `<select class="cmpmodel cmpeffortsel" data-p="${p.id}" title="推理 effort(下条起生效)">${EFFORT_OPTS.map(o=>`<option value="${o.v}" ${o.v===ce?"selected":""}>${o.n}</option>`).join("")}</select>`;
     }
     d.innerHTML=`<div class="cmpcol-h" data-p="${p.id}"><span class="cnm">${nm}</span>`+
       modelEl+
@@ -1383,6 +1386,12 @@ async function cmpRun(prov,text,ens){
 window.addEventListener("DOMContentLoaded",()=>{
   const cb=$("#cmpbtn"); if(cb) cb.onclick=openCompare;
   const cc=$("#cmpClose"); if(cc) cc.onclick=closeCompare;
+  const cp=$("#cmpPopBtn"); if(cp) cp.onclick=()=>{   // 弹到独立原生窗口(原生壳 createWebViewWith 接管 window.open)+ 当前窗口回主页
+    const tk=new URLSearchParams(location.search).get("token")||"";
+    window.open(location.origin+location.pathname+"?compare=1"+(tk?("&token="+encodeURIComponent(tk)):""), "_blank");
+    closeCompare();
+  };
+  if(new URLSearchParams(location.search).get("compare")==="1") setTimeout(openCompare, 200);   // ?compare=1(独立窗口)→ 自动进对比视图
   const cn=$("#cmpNewBtn"); if(cn) cn.onclick=cmpNewChat;
   const cr=$("#cmpResetBtn"); if(cr) cr.onclick=cmpResetBackends;
   const cs=$("#cmpSendBtn"); if(cs) cs.onclick=cmpSend;
@@ -1479,7 +1488,7 @@ select.cmpmodelsel,select.cmpeffortsel{cursor:pointer;-webkit-appearance:none;ap
 </style>
 <div id="cmpView" hidden>
   <div id="cmpTop">
-    <div id="cmpHead"><b>⚖️ 多模型对比</b><div id="cmpChips"></div><div id="cmpShellTgl" class="tgl" title="开 = 允许 exec_shell 跑命令(跳出沙箱)。注:MCP / web_search / 读取等工具跟单窗口一样一直可用,此开关只额外控制 shell 命令"><span class="sw"></span>💻 Shell</div><div id="cmpAutoTgl" class="tgl" title="工具调用自动批准(对比无逐栏审批 UI,开 Shell 时建议开)"><span class="sw"></span>⚡ 自动批准</div><div id="cmpLayout" title="排列方式:横列 / 竖列 / 田字格"><button class="laybtn" data-l="row">横</button><button class="laybtn" data-l="col">竖</button><button class="laybtn" data-l="grid">田</button></div><button id="cmpNewBtn" title="清空所有栏的历史,开始新的对比对话">＋ 新对话</button><button id="cmpResetBtn" title="某栏回答的不是它本人(回退成了 DeepSeek)?点这里用最新配置/key 重启所有对比后端">↻ 重启后端</button><button id="cmpClose">✕ 退出</button></div>
+    <div id="cmpHead"><b>⚖️ 多模型对比</b><div id="cmpChips"></div><div id="cmpShellTgl" class="tgl" title="开 = 允许 exec_shell 跑命令(跳出沙箱)。注:MCP / web_search / 读取等工具跟单窗口一样一直可用,此开关只额外控制 shell 命令"><span class="sw"></span>💻 Shell</div><div id="cmpAutoTgl" class="tgl" title="工具调用自动批准(对比无逐栏审批 UI,开 Shell 时建议开)"><span class="sw"></span>⚡ 自动批准</div><div id="cmpLayout" title="排列方式:横列 / 竖列 / 田字格"><button class="laybtn" data-l="row">横</button><button class="laybtn" data-l="col">竖</button><button class="laybtn" data-l="grid">田</button></div><button id="cmpNewBtn" title="清空所有栏的历史,开始新的对比对话">＋ 新对话</button><button id="cmpResetBtn" title="某栏回答的不是它本人(回退成了 DeepSeek)?点这里用最新配置/key 重启所有对比后端">↻ 重启后端</button><button id="cmpPopBtn" title="把对比弹到独立窗口(可最大化/缩放/最小化),当前窗口回到主页">⤢ 独立窗口</button><button id="cmpClose">✕ 退出</button></div>
     <div id="cmpAttachBar" hidden></div>
     <div id="cmpInputRow"><button id="cmpAttachBtn" title="上传文件(文本/代码,各模型会 read_file 读取;也可直接粘贴/拖拽。图片当前模型看不了)">📎</button><textarea id="cmpInput" placeholder="输入一个问题,同时发给所有选中的模型…（Enter 发送 · Shift+Enter 换行 · 可粘贴/拖拽文件）"></textarea><button id="cmpSendBtn">发送</button></div>
     <input type="file" id="cmpFileInput" multiple style="display:none">

@@ -34,6 +34,7 @@ func ensureServices() {
 class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate {
     var window: NSWindow!
     var web: WKWebView!
+    var extraWindows: [NSWindow] = []   // window.open() 开的独立窗口(多模型对比单独开窗),保留引用避免被释放
 
     func applicationDidFinishLaunching(_ note: Notification) {
         buildMenu()      // 没主菜单 → Cmd+C/V/X/A 无处分发,文本框复制粘贴失灵
@@ -129,6 +130,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         p.allowsMultipleSelection = parameters.allowsMultipleSelection
         if let win = window { p.beginSheetModal(for: win) { r in done(r == .OK ? p.urls : nil) } }
         else { done(p.runModal() == .OK ? p.urls : nil) }
+    }
+
+    // ── window.open() → 独立原生窗口(自带最大化/缩放/最小化)。多模型对比可单独开窗、和主页面来回切,不必关掉对比。
+    func webView(_ w: WKWebView, createWebViewWith config: WKWebViewConfiguration, for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        config.websiteDataStore = .default()        // 共享 localStorage/cookies(置顶、token、字号等)
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780),
+                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                           backing: .buffered, defer: false)
+        win.title = "CodeWhale 对比"
+        win.center()
+        win.isReleasedWhenClosed = false
+        let nweb = WKWebView(frame: NSRect(x: 0, y: 0, width: 1180, height: 780), configuration: config)
+        nweb.navigationDelegate = self
+        nweb.uiDelegate = self
+        nweb.allowsBackForwardNavigationGestures = false
+        win.contentView = nweb
+        win.minSize = NSSize(width: 720, height: 480)
+        win.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        extraWindows.append(win)
+        if action.request.url != nil { nweb.load(action.request) }   // window.open(url):有的 WebKit 版本不自动 load,手动兜底
+        return nweb
     }
 
     // 点 Dock 图标:已有窗口就前置,没有就重建 —— 原生"复用窗口",不再开重复窗
