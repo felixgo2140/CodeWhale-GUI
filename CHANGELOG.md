@@ -1,5 +1,13 @@
 # 更新日志
 
+## v2.5.4 — 每 provider 可选模型变体(单窗口 + 对比窗口)
+
+### 新增
+- **每列/每窗口选模型变体**:Claude(Opus 4.8 / Sonnet 4.6 / Haiku 4.5)、DeepSeek(V4 Pro / Flash)、GLM(5.2 / 4.6)等,**单窗口的「🧠 模型」和对比窗口的每栏头部下拉**都能选,两窗口**共用一份 pref**(一处选、两边生效)。存 `~/.codewhale-gui/model_prefs.json`。
+- Claude 切变体时**身份串跟着走**(切 Sonnet 就如实报 Sonnet 4.6,不再硬报 Opus);claude 走 env 故改后自动重启它的独立后端;其它 provider 是 thread 级钉,新对话自然生效。
+
+### 备注
+- 模型变体是 thread-locked:换了在**下一条新对话**生效(已有对话保留原模型)。对比窗口换某栏模型会清空该栏、下条用新模型。
 ## v2.5.3 — 完整 Markdown 渲染 + 字号调节 + 对比窗口排列(横/竖/田)
 
 ### 新增

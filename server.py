@@ -581,13 +581,37 @@ _CMP_PIN_MODEL = {"zai": "GLM-5.2"}
 # 时不时把 claude 栏答成 deepseek。"sonnet" 是 claude-code 已注册的合法 wire model(钉它不会 400;钉 "opus" 这种未注册名才会被 deepseek 校验拒)。
 # 它只是"路由键",真正传给 `claude -p` 的模型由 _CLAUDE_CODE_MODEL 经 env 覆盖(见下)——所以钉 sonnet 路由、实际跑 opus 不矛盾。
 _CMP_FORCE_MODEL = {"deepseek": "deepseek-v4-pro", "zai": "GLM-5.2", "openai-codex": "gpt-5.5", "claude-code": "sonnet"}
-_CLAUDE_CODE_MODEL = "claude-opus-4-8"   # claude 订阅列实际调用的模型(显式钉 Opus 4.8;也可填 opus/sonnet/haiku 别名)。绕开注册表直传官方 CLI
+_CLAUDE_CODE_MODEL = "opus"   # claude 订阅列实际调用的模型(显式钉 Opus 4.8;也可填 opus/sonnet/haiku 别名)。绕开注册表直传官方 CLI
 # claude -p 委派的模型常因训练截止误报旧版本(实测 claude-opus-4-8 自报 "Opus 4.6" 甚至否认 4.8 存在),
 # 注入一句权威身份纠正它。切模型时**同时**改这两行保持一致。
 _CLAUDE_CODE_IDENTITY = ("You are Claude Opus 4.8 (model id `claude-opus-4-8`), running via the official Claude CLI. "
     "When asked which model or version you are, identify as Claude Opus 4.8. "
     "Your training data may predate this release, so you might instinctively believe the newest model is 4.6 — that belief is outdated. "
     "Do not deny that Claude Opus 4.8 exists, and do not claim to be 4.6.")
+# ── 每 provider 可选模型变体:用户在 UI 选(存 model_prefs.json),thread 创建 + claude env 读它,无则回退默认钉死值。
+#    单窗口 + 对比窗口共用这份 pref(同一 provider 一处选、两窗口都生效)。
+_MODEL_PREFS_FILE = os.path.expanduser("~/.codewhale-gui/model_prefs.json")
+_CLAUDE_NAMES = {"claude-opus-4-8": "Claude Opus 4.8", "opus": "Claude Opus 4.8",
+                 "claude-sonnet-4-6": "Claude Sonnet 4.6", "sonnet": "Claude Sonnet 4.6",
+                 "claude-haiku-4-5": "Claude Haiku 4.5", "haiku": "Claude Haiku 4.5"}
+def _claude_identity(model):                                          # 身份串跟着所选模型走(否则切 sonnet 还自报 Opus)
+    name = _CLAUDE_NAMES.get(model, "Claude (Anthropic)")
+    return (f"You are {name} (model id `{model}`), running via the official Claude CLI. "
+            f"When asked which model or version you are, identify as {name}. "
+            "Your training data may predate this release — do not claim to be an older version than your actual one.")
+def _model_prefs():
+    try: return json.load(open(_MODEL_PREFS_FILE))
+    except Exception: return {}
+def _set_model_pref(prov, model):
+    d = _model_prefs(); d[prov] = model
+    os.makedirs(os.path.dirname(_MODEL_PREFS_FILE), exist_ok=True)
+    json.dump(d, open(_MODEL_PREFS_FILE, "w"))
+def _model_pref(prov):                                                # 用户选的实际模型;无则默认
+    p = (_model_prefs().get(prov) or "").strip()
+    if p: return p
+    return _CLAUDE_CODE_MODEL if prov == "claude-code" else _CMP_FORCE_MODEL.get(prov)
+def _thread_model(prov):                                              # 建 thread 钉的"路由模型":claude-code 永远 sonnet(合法路由键),其它=所选模型
+    return "sonnet" if prov == "claude-code" else _model_pref(prov)
 # claude-code provider = 委派官方 `claude -p`(走 Claude 订阅),只有打了补丁的二进制认得这个 provider。
 # 官方包装器二进制不识别 → 必须用补丁产物。优先稳定副本,回退到 build 目录。
 # 注意:`codewhale app-server` 只是调度器,真正跑 runtime API(threads/turns + claude spawn)的是 sibling `codewhale-tui`。
@@ -884,8 +908,9 @@ def ensure_provider_server(prov):
                 if _CW_PATCHED_TUI:
                     env["DEEPSEEK_TUI_BIN"] = _CW_PATCHED_TUI         # 所有对比后端都委派给 patched tui(含 OCR 中文增强 + claude spawn + env_remove)
                 if prov == "claude-code":
-                    env["CODEWHALE_CLAUDE_MODEL"] = _CLAUDE_CODE_MODEL # 强制 `claude -p` 用的模型(claude-opus-4-8);绕开模型注册表,直传官方 CLI
-                    env["CODEWHALE_CLAUDE_IDENTITY"] = _CLAUDE_CODE_IDENTITY  # 注入权威身份,纠正模型对自身版本的误报
+                    _cm = _model_pref("claude-code")                  # 用户选的 claude 模型(默认 opus 4.8)
+                    env["CODEWHALE_CLAUDE_MODEL"] = _cm               # 强制 `claude -p` 用的模型;绕开模型注册表,直传官方 CLI
+                    env["CODEWHALE_CLAUDE_IDENTITY"] = _claude_identity(_cm)  # 身份串跟着所选模型走
                 logf = open(os.path.expanduser(f"~/codewhale-gui/cmp-{_cmp_safe(prov)}.log"), "a")
                 subprocess.Popen([_cw_binary(prov), "app-server", "--config", cfg, "--http", "--host", "127.0.0.1",
                                   "--port", str(port), "--insecure-no-auth"],
@@ -1073,7 +1098,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 bd = json.loads(raw or b"{}")
                 if not bd.get("model"):
-                    bd["model"] = _CMP_FORCE_MODEL[prov]
+                    bd["model"] = _thread_model(prov)
                 body = json.dumps(bd).encode()
             except Exception:
                 body = raw
@@ -1187,6 +1212,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not self._authed():
                 return self._deny()
             return self._json(dict(_app_refresh_state))
+        if p == "/api/model-pref":            # 各 provider 当前所选模型(含默认),前端画下拉用
+            if not self._authed():
+                return self._deny()
+            prefs = _model_prefs()
+            out = {pv: (prefs.get(pv) or _model_pref(pv)) for pv in list(_CMP_FORCE_MODEL.keys()) + ["claude-code"]}
+            return self._json({"prefs": out})
         if p == "/api/pins":
             if not self._authed():
                 return self._deny()
@@ -1257,6 +1288,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json({"error": "非法 provider"}, 400)
             _set_newchat_provider(prov)
             return self._json({"ok": True, "provider": prov})
+        if p == "/api/model-pref":   # 设置某 provider 选用的模型变体(单窗口 + 对比共用)
+            if not self._authed():
+                return self._deny()
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            prov = (data.get("provider") or "").strip(); model = (data.get("model") or "").strip()
+            if not re.match(r'^[a-zA-Z0-9_-]+$', prov) or not re.match(r'^[A-Za-z0-9._-]+$', model):
+                return self._json({"error": "非法 provider/model"}, 400)
+            _set_model_pref(prov, model)
+            # claude-code 的模型走 env(后端启动时定),改了要重启它的后端;其它 provider 是 thread 级钉,新对话自然生效
+            restarted = False
+            if prov == "claude-code":
+                port = CMP_PORTS.get(prov)
+                if port:
+                    try:
+                        pid = subprocess.run(["lsof","-nP","-tiTCP:%d"%port,"-sTCP:LISTEN"],capture_output=True,text=True).stdout.strip()
+                        for x in pid.split(): subprocess.run(["kill","-9",x],capture_output=True)
+                        CMP_PORTS.pop(prov, None); _PORT_UP.pop(port, None); restarted = True   # 下次 ensure 用新 env 重起
+                    except Exception: pass
+            return self._json({"ok": True, "provider": prov, "model": model, "restarted": restarted})
         if p == "/api/pin-thread":   # 把对话锁定到某 provider(对比模式建会话后调,让主窗口侧栏正确标 provider,不再误显默认)
             if not self._authed():
                 return self._deny()
@@ -1275,7 +1326,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             body = self.rfile.read(length) if length else b"{}"
             prov = _newchat_provider()
             default_prov = _cfg_get("provider") or "deepseek"        # 默认 provider:建会话与路由都走 UPSTREAM:7878,保持一致
-            fm = _CMP_FORCE_MODEL.get(prov)                          # 把 model 钉到 thread 级,绕过 auto 自动路由(否则非 deepseek 会被乱选成 deepseek)
+            fm = _thread_model(prov) if _CMP_FORCE_MODEL.get(prov) else None   # 把(用户选的)model 钉到 thread 级,绕过 auto 自动路由;claude-code 钉 sonnet 路由键
             if fm:
                 try:
                     bd = json.loads(body or b"{}")
