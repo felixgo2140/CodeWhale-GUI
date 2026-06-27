@@ -53,6 +53,12 @@
   #updatebar:hover{background:var(--accent2)}
   #updatebar.busy{background:var(--panel2);color:var(--dim);cursor:default}
   #threads{flex:1;overflow-y:auto;padding:8px}
+  .grp{display:flex;align-items:center;gap:6px;padding:9px 8px 4px;margin-top:2px;font-size:11px;font-weight:700;color:var(--faint);letter-spacing:.3px;cursor:pointer;user-select:none}
+  .grp:first-child{margin-top:0}
+  .grp:hover{color:var(--dim)}
+  .grp .gcount{font-weight:500;opacity:.65}
+  .grp .gcar{margin-left:auto;font-size:8px;opacity:.7;transition:transform .15s}
+  .grp.collapsed .gcar{transform:rotate(-90deg)}
   .thread{padding:9px 10px;border-radius:9px;cursor:pointer;margin-bottom:3px;border:1px solid transparent}
   .thread:hover{background:var(--panel2)}
   .thread.active{background:var(--panel2);border-color:var(--line)}
@@ -306,7 +312,10 @@ const auth = TOKEN ? {Authorization:"Bearer "+TOKEN} : {};
 
 const $ = s => document.querySelector(s);
 const state = { threads:[], activeId:null, es:null, items:new Map(), seen:new Set(), turnId:null, running:false,
-  pinned:new Set(JSON.parse(localStorage.getItem("cw_pinned")||"[]")), autoApprove:false, allowShell:false, queue:[], attachments:[] };  // 按会话,不再全局持久
+  pinned:new Set(JSON.parse(localStorage.getItem("cw_pinned")||"[]")),
+  cmpThreads:new Set(JSON.parse(localStorage.getItem("cw_cmp")||"[]")),                 // 多模型对比建的 thread → 侧栏单独归一组
+  grpCollapsed:new Set(JSON.parse(localStorage.getItem("cw_grpcollapsed")||"[]")),      // 折叠的分组(置顶/对比/对话)
+  autoApprove:false, allowShell:false, queue:[], attachments:[] };  // 按会话,不再全局持久
 
 async function api(path, opts={}){
   const r = await fetch(url(path), {...opts, headers:{...(opts.body?{"Content-Type":"application/json"}:{}),...auth,...(opts.headers||{})}});
@@ -381,40 +390,72 @@ async function loadThreads(){
     setConn(true); state.threads=t;
     const at=t.find(x=>x.id===state.activeId);   // 兜底:SSE 漏收 turn.completed 时,靠轮询发现活动会话已结束 → 收尾 + 发队列
     if(at && state.running && ["completed","failed","interrupted","canceled","cancelled"].includes(at.latest_turn_status)){ setRunning(false); processQueue(); }
-    const sig=JSON.stringify(t.map(x=>[x.id,x.title,x.latest_turn_status,x.updated_at,x.provider]))+"|"+[...state.pinned].sort().join(",")+"|"+state.activeId;   // 含 provider:模型标签变了也会重渲染侧栏
+    const sig=JSON.stringify(t.map(x=>[x.id,x.title,x.latest_turn_status,x.updated_at,x.provider]))+"|"+[...state.pinned].sort().join(",")+"|"+[...state.cmpThreads].sort().join(",")+"|"+[...state.grpCollapsed].sort().join(",")+"|"+state.activeId;   // 含 provider/对比集/折叠态:任一变都重渲染侧栏
     if(sig!==state._sig){ state._sig=sig; renderThreads(); }   // 仅当列表真变化才重建 DOM,避免轮询吞掉点击
   }catch(e){ setConn(false); console.warn(e); }
   finally{ state._loadingThreads=false; }
 }
 function setConn(up){ const c=$("#conn"); c.classList.toggle("up",up); $("#connt").textContent = up?"已连接 7878":"未连接"; }
+const CMP_ONLY_PROV=new Set(["zai","openai-codex","moonshot"]);   // 只在多模型对比里出现的 provider(单窗口用 deepseek 默认 / claude-code 新对话)→ 侧栏归对比组兜底
+function threadEl(t){   // 单条对话 DOM
+  const pinned=state.pinned.has(t.id);
+  const d=document.createElement("div"); d.className="thread"+(t.id===state.activeId?" active":"");
+  const st=t.latest_turn_status||"";
+  let dotCls = (st==="inprogress"||st==="in_progress"||st==="queued"||st==="running") ? "running"   // summary 返回的是 inprogress(无下划线)
+               : st==="completed" ? "ok"
+               : (["failed","interrupted","canceled","cancelled","error"].includes(st) ? "err" : "idle");
+  let dotTitle = st||"空闲";
+  if(dotCls==="running"){
+    const age=(Date.now()-new Date(t.updated_at).getTime())/1000;   // inprogress 但久未更新 → 多半是卡死/孤儿 turn
+    if(age>240){ dotCls="stalled"; dotTitle=`约 ${Math.round(age/60)} 分钟无更新 — 可能在等你审批、或卡住;点开查看`; }
+    else dotTitle="运行中";
+  }
+  const stalled = dotCls==="stalled";
+  d.innerHTML=`<div class="t1"><span class="dot ${dotCls}" title="${dotTitle}"></span><span class="title">${pinned?"📌 ":""}${stalled?"⚠ ":""}${esc(t.title||"未命名")}</span>`+
+    `<span class="actions"><button class="act rename" title="重命名">✎</button><button class="act pin" title="${pinned?"取消置顶":"置顶"}">${pinned?"📍":"📌"}</button><button class="act del" title="删除">🗑</button></span></div>`+
+    (t.preview?`<div class="prev">${esc(t.preview)}</div>`:"")+
+    `<div class="meta"><span>${esc(PROV_SHORT[t.provider]||t.provider||t.model||"")}</span><span>${relTime(t.updated_at)}</span></div>`;
+  d.onclick=()=>openThread(t.id);
+  d.querySelector(".pin").onclick=(e)=>{e.stopPropagation();togglePin(t.id);};
+  d.querySelector(".del").onclick=(e)=>{e.stopPropagation();deleteThread(t.id,t.title);};
+  d.querySelector(".rename").onclick=(e)=>{e.stopPropagation();renameThread(t.id,t.title);};
+  return d;
+}
 function renderThreads(){
   const box=$("#threads"); box.innerHTML="";
   if(!state.threads.length){ box.innerHTML='<div style="padding:14px;color:var(--faint);font-size:12px">还没有对话,点上方新建</div>'; return; }
-  const list=[...state.threads].sort((a,b)=>(state.pinned.has(b.id)?1:0)-(state.pinned.has(a.id)?1:0)); // 置顶在前
-  for(const t of list){
-    const pinned=state.pinned.has(t.id);
-    const d=document.createElement("div"); d.className="thread"+(t.id===state.activeId?" active":"");
-    const st=t.latest_turn_status||"";
-    let dotCls = (st==="inprogress"||st==="in_progress"||st==="queued"||st==="running") ? "running"   // summary 返回的是 inprogress(无下划线)
-                 : st==="completed" ? "ok"
-                 : (["failed","interrupted","canceled","cancelled","error"].includes(st) ? "err" : "idle");
-    let dotTitle = st||"空闲";
-    if(dotCls==="running"){
-      const age=(Date.now()-new Date(t.updated_at).getTime())/1000;   // inprogress 但久未更新 → 多半是卡死/孤儿 turn
-      if(age>240){ dotCls="stalled"; dotTitle=`约 ${Math.round(age/60)} 分钟无更新 — 可能在等你审批、或卡住;点开查看`; }
-      else dotTitle="运行中";
-    }
-    const stalled = dotCls==="stalled";
-    d.innerHTML=`<div class="t1"><span class="dot ${dotCls}" title="${dotTitle}"></span><span class="title">${pinned?"📌 ":""}${stalled?"⚠ ":""}${esc(t.title||"未命名")}</span>`+
-      `<span class="actions"><button class="act rename" title="重命名">✎</button><button class="act pin" title="${pinned?"取消置顶":"置顶"}">${pinned?"📍":"📌"}</button><button class="act del" title="删除">🗑</button></span></div>`+
-      (t.preview?`<div class="prev">${esc(t.preview)}</div>`:"")+
-      `<div class="meta"><span>${esc(PROV_SHORT[t.provider]||t.provider||t.model||"")}</span><span>${relTime(t.updated_at)}</span></div>`;
-    d.onclick=()=>openThread(t.id);
-    d.querySelector(".pin").onclick=(e)=>{e.stopPropagation();togglePin(t.id);};
-    d.querySelector(".del").onclick=(e)=>{e.stopPropagation();deleteThread(t.id,t.title);};
-    d.querySelector(".rename").onclick=(e)=>{e.stopPropagation();renameThread(t.id,t.title);};
-    box.appendChild(d);
+  const byTime=(a,b)=>new Date(b.updated_at||0)-new Date(a.updated_at||0);
+  // gpt/glm/kimi 这些 provider 单窗口从不用、只出现在对比里 → 即使没登记也按对比归组(兜底,登记表负责 deepseek/claude 这类既单窗口又对比的歧义 provider)
+  const isCmp=t=>state.cmpThreads.has(t.id)||CMP_ONLY_PROV.has(t.provider);
+  const pinG=[], cmpG=[], normG=[];                       // 置顶 / 多模型对比 / 普通对话 三组
+  for(const t of state.threads){
+    if(state.pinned.has(t.id)) pinG.push(t);              // 置顶优先(对比的也归这里,保证置顶都在最上)
+    else if(isCmp(t)) cmpG.push(t);                       // 对比对话单独成组,不再灌进普通列表
+    else normG.push(t);
   }
+  pinG.sort(byTime); cmpG.sort(byTime); normG.sort(byTime);
+  const groups=[
+    {key:"pin",  label:"📌 置顶",      items:pinG},
+    {key:"cmp",  label:"⊞ 多模型对比", items:cmpG},
+    {key:"norm", label:"💬 对话",      items:normG},
+  ].filter(g=>g.items.length);
+  const showHeaders = groups.length>1;                   // 只有一组时不显分组头,保持简洁(跟旧版一样平铺)
+  for(const g of groups){
+    if(showHeaders){
+      const collapsed=state.grpCollapsed.has(g.key);
+      const h=document.createElement("div"); h.className="grp"+(collapsed?" collapsed":"");
+      h.innerHTML=`<span>${g.label}</span><span class="gcount">${g.items.length}</span><span class="gcar">▼</span>`;
+      h.onclick=()=>toggleGroup(g.key);
+      box.appendChild(h);
+      if(collapsed) continue;                             // 折叠 → 跳过该组内容
+    }
+    for(const t of g.items) box.appendChild(threadEl(t));
+  }
+}
+function toggleGroup(key){
+  state.grpCollapsed.has(key)?state.grpCollapsed.delete(key):state.grpCollapsed.add(key);
+  localStorage.setItem("cw_grpcollapsed",JSON.stringify([...state.grpCollapsed]));
+  renderThreads();
 }
 function savePins(){ const arr=[...state.pinned]; localStorage.setItem("cw_pinned",JSON.stringify(arr)); api("/api/pins",{method:"POST",body:JSON.stringify({ids:arr})}).catch(()=>{}); }  // 同时写本地缓存 + 服务端(跨窗口/手机共享)
 async function loadPins(){ try{ const r=await api("/api/pins"); if(!Array.isArray(r)) return;
@@ -423,6 +464,16 @@ async function loadPins(){ try{ const r=await api("/api/pins"); if(!Array.isArra
     state.pinned=new Set(r.map(String)); localStorage.setItem("cw_pinned",JSON.stringify([...state.pinned])); state._sig=null; renderThreads();   // 否则服务端为准
   }catch(e){ /* 离线:沿用 localStorage,不报错 */ } }
 function togglePin(id){ state.pinned.has(id)?state.pinned.delete(id):state.pinned.add(id); savePins(); renderThreads(); }
+// ── 对比 thread 注册表(侧栏分组用):本地即时 + 服务端只增并集(跨窗口/设备共享,不互相覆盖)──
+function saveCmp(){ const arr=[...state.cmpThreads]; localStorage.setItem("cw_cmp",JSON.stringify(arr)); api("/api/cmp-threads",{method:"POST",body:JSON.stringify({ids:arr})}).catch(()=>{}); }
+function markCmp(id){ if(id && !state.cmpThreads.has(id)){ state.cmpThreads.add(id); saveCmp(); state._sig=null; renderThreads(); } }   // 新对比 thread 登记 → 立刻归入对比组
+async function loadCmp(){ try{ const r=await api("/api/cmp-threads"); if(!Array.isArray(r)) return;
+    const before=state.cmpThreads.size;
+    const merged=new Set([...state.cmpThreads,...r.map(String)]);                     // 本地 ∪ 服务端,不丢
+    state.cmpThreads=merged; localStorage.setItem("cw_cmp",JSON.stringify([...merged]));
+    if(merged.size>r.length) saveCmp();                                               // 本地有服务端没有的 → 推上去
+    if(merged.size!==before){ state._sig=null; renderThreads(); }
+  }catch(e){ /* 离线:沿用 localStorage */ } }
 async function renameThread(id, cur){
   const t = prompt("重命名对话:", cur||"");
   if(t===null) return;                      // 取消
@@ -1059,7 +1110,7 @@ window.addEventListener("keydown",e=>{
 },{capture:true});
 
 renderAuto(); renderShell();
-loadThreads(); loadBalance(); loadPins(); loadModelLabel(); checkSetup();   // loadPins:服务端拉置顶;loadModelLabel:侧栏显当前模型;checkSetup:免 key 安装后引导配置
+loadThreads(); loadBalance(); loadPins(); loadCmp(); loadModelLabel(); checkSetup();   // loadPins:服务端拉置顶;loadCmp:拉对比 thread 注册表分组;loadModelLabel:侧栏显当前模型;checkSetup:免 key 安装后引导配置
 // 原生 App 后台刷新(在线更新带来的新壳):下载替换需几秒,延迟轮询几次,更新了就提示退出重开
 setTimeout(async()=>{ for(let i=0;i<5;i++){ try{ const s=await api("/api/app-refresh-status"); if(s&&s.updated){ cwToast("✅ CodeWhale 原生 App 已更新 — 退出(⌘Q)再打开即生效"); break; } }catch(e){} await new Promise(r=>setTimeout(r,4000)); } }, 5000);
 async function checkSetup(){   // 当前 provider 还没配 key(且非 OAuth)→ 自动弹「🧠 模型」引导首次配置
@@ -1310,6 +1361,7 @@ async function cmpRun(prov,text,ens){
       const t=await (await fetch(url(`/cmp/${prov}/v1/threads`),{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})).json();   // 不前端钉 model,由服务端按 model_prefs 注入(claude-code→sonnet 路由键,其它→所选变体)
       CMP.threads[prov]=t.id; CMP.seq[prov]=0;
       api("/api/pin-thread",{method:"POST",body:JSON.stringify({tid:t.id,provider:prov})}).catch(()=>{});   // 锁定到本 provider → 主窗口侧栏正确标 GLM/GPT,不再误显默认 DeepSeek
+      markCmp(t.id);   // 登记为对比 thread → 主窗口侧栏归入「多模型对比」组,不灌进普通对话列表
     }
     const tid=CMP.threads[prov];
     cmpSetRunning(prov,true);

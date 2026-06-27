@@ -18,6 +18,7 @@ WEB = os.path.join(ROOT, "web")
 CFG = os.path.expanduser("~/.codewhale/config.toml")
 TOKEN_FILE = os.path.expanduser("~/.codewhale-gui/token")
 PINS_FILE = os.path.expanduser("~/.codewhale-gui/pins.json")
+CMP_THREADS_FILE = os.path.expanduser("~/.codewhale-gui/cmp_threads.json")   # 多模型对比建的 thread id 集合 → 侧栏按组归类(对比/普通分开),跨窗口共享
 UPSTREAM = "http://127.0.0.1:7878"
 _LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))   # 本机 app-server 请求绝不走代理(代理会劫持 127.0.0.1 导致超时)
 BIND = os.environ.get("CW_BIND", "0.0.0.0")
@@ -424,6 +425,37 @@ def write_pins(ids):
         json.dump(ids, f)
     os.replace(tmp, PINS_FILE)   # 原子写,防并发半截文件
     return ids
+
+def read_cmp_threads():   # 对比 thread 注册表(服务端共享一份,所有窗口/设备一致分组)
+    try:
+        d = json.load(open(CMP_THREADS_FILE))
+        return [str(x) for x in d] if isinstance(d, list) else []
+    except Exception:
+        return []
+def write_cmp_threads(ids):
+    ids = [str(x) for x in ids if isinstance(x, (str, int))][:2000]   # 上限大些:对比每问建 N 条
+    os.makedirs(os.path.dirname(CMP_THREADS_FILE), exist_ok=True)
+    tmp = CMP_THREADS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(ids, f)
+    os.replace(tmp, CMP_THREADS_FILE)
+    return ids
+def _seed_cmp_from_tprov():
+    """一次性回溯迁移:本功能之前建的对比 thread 没登记 → 从 _tprov 反推。
+    _tprov 里被 pin 到 provider 的 thread = 对比建的,或单窗口新对话路由到非默认 provider 的。
+    后者只有 newchat provider(此机=claude-code)会产生 → 排除它 + 旧 anthropic;其余
+    (gpt/glm/kimi/以及 compare 的 deepseek——单窗口默认 deepseek 不 pin,故 deepseek 入表必是对比)都是对比。
+    幂等:只做并集追加,不删;新装机器/已登记的不受影响。"""
+    try:
+        newchat = _newchat_provider()
+        existing = set(read_cmp_threads())
+        add = [tid for tid, prov in _tprov.items()
+               if prov not in (newchat, "anthropic") and tid not in existing]
+        if add:
+            write_cmp_threads(list(read_cmp_threads()) + add)
+            print(f"[cmp-group] 回溯登记 {len(add)} 条历史对比对话(排除 newchat={newchat}/anthropic)", flush=True)
+    except Exception as e:
+        print("[cmp-group] 回溯种子失败:", e, flush=True)
 
 # ── 文件上传:存到 ~/codewhale-uploads(在 agent workspace=$HOME 下,read_file 能读)──
 UPLOAD_DIR = os.path.expanduser("~/codewhale-uploads")
@@ -1244,6 +1276,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p == "/api/cmp-threads":   # 对比 thread 注册表(侧栏分组用)
+            if not self._authed():
+                return self._deny()
+            try:
+                out = read_cmp_threads()
+            except Exception:
+                out = []
+            b = json.dumps(out).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+            return
         if p in ("/api/mcp", "/api/skills", "/api/model") or p == "/api/skills/read":
             if not self._authed():
                 return self._deny()
@@ -1333,6 +1380,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not re.match(r'^thr_[a-zA-Z0-9_-]+$', tid) or not re.match(r'^[a-zA-Z0-9_-]+$', prov):
                 return self._json({"error": "非法 tid/provider"}, 400)
             _pin_thread(tid, prov)
+            try: write_cmp_threads(list(dict.fromkeys(read_cmp_threads() + [tid])))   # 本端点只被对比 cmpRun 调用(单窗口走 _pin_thread() 函数直连不经此)→ 顺带登记为对比 thread,侧栏分组,老前端也生效、compare-claude 也对
+            except Exception: pass
             return self._json({"ok": True})
         if p == "/v1/threads":   # 新对话:建在"新对话默认 provider"的独立后端,并记 tid->port(每对话锁模型)
             if not self._authed():
@@ -1424,6 +1473,25 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 data = json.loads(raw or b"[]")
                 ids = data.get("ids", []) if isinstance(data, dict) else data
                 out = write_pins(ids if isinstance(ids, list) else [])
+            except Exception as e:
+                out = {"error": str(e)[:200]}
+            b = json.dumps(out).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+            return
+        if p == "/api/cmp-threads":   # 前端登记对比建的 thread id(合并写入,只增不删,避免并发窗口互相覆盖丢标记)
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                raw = self.rfile.read(length) if length else b"[]"
+                data = json.loads(raw or b"[]")
+                ids = data.get("ids", []) if isinstance(data, dict) else data
+                merged = list(dict.fromkeys(read_cmp_threads() + [str(x) for x in (ids if isinstance(ids, list) else [])]))   # 并集去重,保序
+                out = write_cmp_threads(merged)
             except Exception as e:
                 out = {"error": str(e)[:200]}
             b = json.dumps(out).encode()
@@ -1534,5 +1602,6 @@ if __name__ == "__main__":
     # 后台检查补丁二进制 + 原生 App:缺则下载,SHA 变了则刷新(OCR/二进制/原生壳 升级经此自动传播);不阻塞启动
     threading.Thread(target=lambda: _ensure_patched_binaries(block=False, refresh=True), daemon=True).start()
     threading.Thread(target=_refresh_native_app, daemon=True).start()
+    _seed_cmp_from_tprov()   # 一次性回溯:把历史对比对话登记进侧栏分组
     print(f"CodeWhale GUI server on {BIND}:{PORT}  (token {'ENABLED' if TOKEN else 'off'})")
     Server((BIND, PORT), Handler).serve_forever()
