@@ -93,7 +93,7 @@
   .badge{background:var(--panel2);border:1px solid var(--line);padding:1px 8px;border-radius:20px;font-size:11px;color:var(--dim)}
   #interruptbtn{display:none;padding:5px 12px;border:1px solid var(--err);background:transparent;color:var(--err);border-radius:8px;cursor:pointer;font-size:12px}
   #interruptbtn:hover{background:var(--err);color:#fff}
-  #fswrap{display:inline-flex;align-items:center}   /* A−/A+ 连成一个紧凑小药丸,不显字号数字 */
+  #fswrap,#cmpFswrap{display:inline-flex;align-items:center}   /* A−/A+ 连成一个紧凑小药丸,不显字号数字 */
   .fsbtn{border:1px solid var(--line);background:var(--panel2);color:var(--dim);width:23px;height:21px;cursor:pointer;font-size:11px;line-height:1;padding:0;font-weight:600}
   .fsbtn:first-child{border-radius:6px 0 0 6px}
   .fsbtn:last-child{border-radius:0 6px 6px 0;border-left:none}
@@ -1148,6 +1148,12 @@ let _fs=Math.max(11,Math.min(26,parseInt(localStorage.getItem("cw_fs"))||14));
 function applyFs(){ document.documentElement.style.setProperty("--chat-fs",_fs+"px"); const b=document.getElementById("fsval"); if(b)b.textContent=_fs; }
 function setFs(v){ _fs=Math.max(11,Math.min(26,v)); try{localStorage.setItem("cw_fs",_fs);}catch(e){} applyFs(); }
 function bumpFs(d){ setFs(_fs+d); }   // 内联 onclick 调全局函数(读 _fs 从本作用域,可靠)
+// 对比窗口独立字号(--cmp-fs):对比是窄列/常独立窗口,跟主窗口分开调更合适;默认 13
+let _cmpFs=Math.max(11,Math.min(26,parseInt(localStorage.getItem("cw_cmpfs"))||13));
+function applyCmpFs(){ document.documentElement.style.setProperty("--cmp-fs",_cmpFs+"px"); }
+function setCmpFs(v){ _cmpFs=Math.max(11,Math.min(26,v)); try{localStorage.setItem("cw_cmpfs",_cmpFs);}catch(e){} applyCmpFs(); }
+function bumpCmpFs(d){ setCmpFs(_cmpFs+d); }
+applyCmpFs();
 applyFs();
 window.addEventListener("keydown",e=>{
   if(!(e.metaKey||e.ctrlKey)||e.altKey) return;             // 仅 ⌘/Ctrl(不含 Alt)组合,避免干扰正常输入
@@ -1585,8 +1591,8 @@ window.addEventListener("DOMContentLoaded",()=>{
 select.cmpmodelsel,select.cmpeffortsel{cursor:pointer;-webkit-appearance:none;appearance:none;padding-right:6px} select.cmpmodelsel:hover,select.cmpeffortsel:hover{border-color:var(--accent)}
 .cmpcol-h:hover{color:var(--accent)}
 .cmpcol-h:hover .cmpmodel{color:var(--accent)}
-.cmpcol-b{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:9px;font-size:var(--chat-fs,14px)}
-.cmpmsg{font-size:13px;line-height:1.55}
+.cmpcol-b{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:9px;font-size:var(--cmp-fs,13px)}
+.cmpmsg{font-size:var(--cmp-fs,13px);line-height:1.55}
 .cmpmsg.u{align-self:flex-end;max-width:88%;background:var(--user);color:var(--usertxt);padding:6px 10px;border-radius:10px;white-space:pre-wrap;word-break:break-word}
 .cmpmsg.a{white-space:normal;word-break:break-word;color:var(--txt)}
 .cmpmsg.a .ans{white-space:pre-wrap}
@@ -1632,7 +1638,7 @@ select.cmpmodelsel,select.cmpeffortsel{cursor:pointer;-webkit-appearance:none;ap
 </style>
 <div id="cmpView" hidden>
   <div id="cmpTop">
-    <div id="cmpHead"><b>⚖️ 多模型对比</b><div id="cmpChips"></div><div id="cmpShellTgl" class="tgl" title="开 = 允许 exec_shell 跑命令(跳出沙箱)。注:MCP / web_search / 读取等工具跟单窗口一样一直可用,此开关只额外控制 shell 命令"><span class="sw"></span>💻 Shell</div><div id="cmpAutoTgl" class="tgl" title="工具调用自动批准(对比无逐栏审批 UI,开 Shell 时建议开)"><span class="sw"></span>⚡ 自动批准</div><div id="cmpLayout" title="排列方式:横列 / 竖列 / 田字格"><button class="laybtn" data-l="row">横</button><button class="laybtn" data-l="col">竖</button><button class="laybtn" data-l="grid">田</button></div><button id="cmpNewBtn" title="在当前窗口开新一轮对比(上一轮已自动存进侧栏「多模型对比」会话,随时点回,不会丢)">＋ 新对话</button><button id="cmpResetBtn" title="某栏回答的不是它本人(回退成了 DeepSeek)?点这里用最新配置/key 重启所有对比后端">↻ 重启后端</button><button id="cmpClose" title="关闭这个对比窗口">✕ 退出</button></div>
+    <div id="cmpHead"><b>⚖️ 多模型对比</b><div id="cmpChips"></div><div id="cmpShellTgl" class="tgl" title="开 = 允许 exec_shell 跑命令(跳出沙箱)。注:MCP / web_search / 读取等工具跟单窗口一样一直可用,此开关只额外控制 shell 命令"><span class="sw"></span>💻 Shell</div><div id="cmpAutoTgl" class="tgl" title="工具调用自动批准(对比无逐栏审批 UI,开 Shell 时建议开)"><span class="sw"></span>⚡ 自动批准</div><div id="cmpLayout" title="排列方式:横列 / 竖列 / 田字格"><button class="laybtn" data-l="row">横</button><button class="laybtn" data-l="col">竖</button><button class="laybtn" data-l="grid">田</button></div><div id="cmpFswrap" title="对比文字大小(独立于主窗口)"><button class="fsbtn" onclick="bumpCmpFs(-1)" title="字小一点">A−</button><button class="fsbtn" onclick="bumpCmpFs(1)" title="字大一点">A+</button></div><button id="cmpNewBtn" title="在当前窗口开新一轮对比(上一轮已自动存进侧栏「多模型对比」会话,随时点回,不会丢)">＋ 新对话</button><button id="cmpResetBtn" title="某栏回答的不是它本人(回退成了 DeepSeek)?点这里用最新配置/key 重启所有对比后端">↻ 重启后端</button><button id="cmpClose" title="关闭这个对比窗口">✕ 退出</button></div>
     <div id="cmpAttachBar" hidden></div>
     <div id="cmpInputRow"><button id="cmpAttachBtn" title="上传文件(文本/代码,各模型会 read_file 读取;也可直接粘贴/拖拽。图片当前模型看不了)">📎</button><textarea id="cmpInput" placeholder="输入一个问题,同时发给所有选中的模型…（Enter 发送 · Shift+Enter 换行 · 可粘贴/拖拽文件）"></textarea><button id="cmpSendBtn">发送</button></div>
     <input type="file" id="cmpFileInput" multiple style="display:none">
