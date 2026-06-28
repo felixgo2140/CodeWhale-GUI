@@ -473,8 +473,9 @@ function renderThreads(){
   const byTime=(a,b)=>new Date(b.updated_at||0)-new Date(a.updated_at||0);
   const sessionTids=new Set();                            // 已被某对比会话收编的 thread → 不再单独显示(由会话行代表)
   for(const s of state.cmpSessions) for(const tid of Object.values(s.threads||{})) sessionTids.add(tid);
-  // gpt/glm/kimi 这些 provider 单窗口从不用、只出现在对比里 → 即使没登记也按对比归组(兜底,登记表负责 deepseek/claude 这类既单窗口又对比的歧义 provider)
-  const isCmp=t=>state.cmpThreads.has(t.id)||CMP_ONLY_PROV.has(t.provider);
+  // 对比归组判定:① 服务端权威标记 t.compare(取后端 cmp_threads 注册表,每次刷新,不依赖前端本地是否同步——根治"对比对话散落进单聊");
+  // ② 前端本地登记(即时,新建对比当下就归组);③ gpt/glm/kimi 这些 provider 单窗口从不用 → 兜底
+  const isCmp=t=>t.compare||state.cmpThreads.has(t.id)||CMP_ONLY_PROV.has(t.provider);
   const pinG=[], cmpLeftover=[], normG=[];               // 置顶 / 对比散条(无会话的历史) / 普通对话
   for(const t of state.threads){
     if(state.pinned.has(t.id)){ pinG.push(t); continue; }  // 置顶优先
@@ -1363,6 +1364,7 @@ function cmpSetRunning(prov,on){
   CMP.running[prov]=on;
   const stop=$("#cmpstop-"+CSS.escape(prov)); if(stop) stop.hidden=!on;
   const cs=$("#cmpcsend-"+CSS.escape(prov)); if(cs) cs.disabled=on;
+  cmpSyncSendUI();   // 刷新「引导」按钮显隐(列停了就收起)
 }
 async function cmpStop(prov){   // 暂停单个对话:中断该栏当前 turn(中断后 SSE 会发 completed/interrupted → finish 收尾)
   const tid=CMP.threads[prov], turn=CMP.turn[prov];
@@ -1423,6 +1425,22 @@ function cmpSyncSendUI(){
       qb.querySelectorAll(".cmpqchip b").forEach(x=>x.onclick=()=>{ CMP.sendQ.splice(+x.dataset.i,1); cmpSyncSendUI(); });
     }
   }
+  const sb=$("#cmpSteerBtn"); if(sb) sb.hidden=![...CMP.sel].some(p=>CMP.running[p]&&CMP.turn[p]);   // 有正在跑(且有活动 turn)的列才显「引导」
+}
+// 引导:把输入插进所有正在跑的列的当前 turn(steering),实时改变它们的输出。全模型支持(实测 deepseek/gpt 都被引导停)。
+async function cmpSteer(){
+  const ta=$("#cmpInput"); const text=(ta.value||"").trim();
+  if(!text) return;
+  const running=[...CMP.sel].filter(p=>CMP.running[p] && CMP.threads[p] && CMP.turn[p]);   // 正在跑且有活动 turn 的列
+  if(!running.length){ cwToast("没有正在运行的对话可引导;直接「发送」即可"); return; }
+  ta.value=""; ta.style.height="auto";
+  running.forEach(p=>cmpAddMsg(p,"u steer",'⤵ 引导:'+esc(text)));   // 显示引导气泡
+  await Promise.allSettled(running.map(p=>
+    fetch(url(`/cmp/${p}/v1/threads/${CMP.threads[p]}/turns/${CMP.turn[p]}/steer`),
+      {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:text})})
+      .then(r=>{ if(!r.ok) return r.text().then(t=>{throw new Error(t.slice(0,80))}); })
+      .catch(e=>cmpAddMsg(p,"a err","✗ 引导失败:"+esc(String(e&&e.message||e))))
+  ));
 }
 async function cmpSend(){
   const ta=$("#cmpInput"); const raw=(ta.value||"").trim();
@@ -1541,7 +1559,7 @@ async function cmpRun(prov,text,ens){
         bump();   // 每收到一个事件就重置空闲计时:模型在干活就别超时
         if(ev.seq) CMP.seq[prov]=ev.seq;
         const pl=ev.payload||{};
-        if(k==="turn.started"){ CMP.turn[prov]=ev.turn_id||(pl.turn||{}).id||CMP.turn[prov]; }   // 记下 turn_id 供「停止」中断
+        if(k==="turn.started"){ CMP.turn[prov]=ev.turn_id||(pl.turn||{}).id||CMP.turn[prov]; cmpSyncSendUI(); }   // 记下 turn_id 供「停止」中断 + 引导;turn 活了刷「引导」按钮
         else if(k==="item.delta"){
           if(pl.kind==="agent_message"){ if(grace){clearTimeout(grace);grace=null;} ans.textContent+=pl.delta||""; setPhase("输出中"); scroll(); }
           else if(pl.kind==="agent_reasoning"){ rsn.textContent+=pl.delta||""; setPhase("思考中"); }   // 思考收进折叠的过程块,不挤占答案
@@ -1585,6 +1603,7 @@ window.addEventListener("DOMContentLoaded",()=>{
   const cn=$("#cmpNewBtn"); if(cn) cn.onclick=cmpNewChat;
   const cr=$("#cmpResetBtn"); if(cr) cr.onclick=cmpResetBackends;
   const cs=$("#cmpSendBtn"); if(cs) cs.onclick=cmpSend;
+  const csb=$("#cmpSteerBtn"); if(csb) csb.onclick=cmpSteer;
   const ca=$("#cmpAutoTgl"); if(ca) ca.onclick=cmpToggleAuto;
   const csh=$("#cmpShellTgl"); if(csh) csh.onclick=cmpToggleShell;
   renderCmpToggles();
@@ -1613,6 +1632,8 @@ window.addEventListener("DOMContentLoaded",()=>{
 #cmpClose{border:1px solid var(--line);background:var(--bg);border-radius:7px;padding:4px 10px;font-size:12px;cursor:pointer;color:var(--dim)}
 #cmpInputRow{display:flex;gap:8px}
 #cmpInput{flex:1;min-height:44px;max-height:130px;resize:vertical;border:1px solid var(--line);border-radius:8px;padding:9px 11px;font:inherit;font-size:13px;background:var(--bg);color:var(--txt)}
+#cmpSteerBtn{border:1px solid var(--accent);background:transparent;color:var(--accent);border-radius:8px;padding:0 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+#cmpSteerBtn:hover{background:var(--accent);color:#fff}
 #cmpSendBtn{border:none;background:var(--accent);color:#fff;border-radius:8px;padding:0 18px;font-size:13px;font-weight:600;cursor:pointer}
 #cmpSendBtn:disabled{opacity:.5;cursor:default}
 #cmpCols{flex:1;display:flex;gap:1px;background:var(--line);overflow:hidden}
@@ -1680,7 +1701,7 @@ select.cmpmodelsel,select.cmpeffortsel{cursor:pointer;-webkit-appearance:none;ap
   <div id="cmpTop">
     <div id="cmpHead"><b>⚖️ 多模型对比</b><div id="cmpChips"></div><div id="cmpShellTgl" class="tgl" title="开 = 允许 exec_shell 跑命令(跳出沙箱)。注:MCP / web_search / 读取等工具跟单窗口一样一直可用,此开关只额外控制 shell 命令"><span class="sw"></span>💻 Shell</div><div id="cmpAutoTgl" class="tgl" title="工具调用自动批准(对比无逐栏审批 UI,开 Shell 时建议开)"><span class="sw"></span>⚡ 自动批准</div><div id="cmpLayout" title="排列方式:横列 / 竖列 / 田字格"><button class="laybtn" data-l="row">横</button><button class="laybtn" data-l="col">竖</button><button class="laybtn" data-l="grid">田</button></div><div id="cmpFswrap" title="对比文字大小(独立于主窗口)"><button class="fsbtn" onclick="bumpCmpFs(-1)" title="字小一点">A−</button><button class="fsbtn" onclick="bumpCmpFs(1)" title="字大一点">A+</button></div><button id="cmpNewBtn" title="在当前窗口开新一轮对比(上一轮已自动存进侧栏「多模型对比」会话,随时点回,不会丢)">＋ 新对话</button><button id="cmpResetBtn" title="某栏回答的不是它本人(回退成了 DeepSeek)?点这里用最新配置/key 重启所有对比后端">↻ 重启后端</button><button id="cmpClose" title="关闭这个对比窗口">✕ 退出</button></div>
     <div id="cmpAttachBar" hidden></div>
-    <div id="cmpInputRow"><button id="cmpAttachBtn" title="上传文件(文本/代码,各模型会 read_file 读取;也可直接粘贴/拖拽。图片当前模型看不了)">📎</button><textarea id="cmpInput" placeholder="输入一个问题,同时发给所有选中的模型…（Enter 发送 · Shift+Enter 换行 · 可粘贴/拖拽文件）"></textarea><button id="cmpSendBtn">发送</button></div>
+    <div id="cmpInputRow"><button id="cmpAttachBtn" title="上传文件(文本/代码,各模型会 read_file 读取;也可直接粘贴/拖拽。图片当前模型看不了)">📎</button><textarea id="cmpInput" placeholder="输入一个问题,同时发给所有选中的模型…（Enter 发送 · Shift+Enter 换行 · 可粘贴/拖拽文件）"></textarea><button id="cmpSteerBtn" hidden title="把这句插进正在运行的对话,实时引导它们(全模型支持);「发送」则是排队、等当前轮完再发">⤵ 引导</button><button id="cmpSendBtn">发送</button></div>
     <input type="file" id="cmpFileInput" multiple style="display:none">
     <div id="cmpQueue" hidden></div>
   </div>
