@@ -1,5 +1,12 @@
 # 更新日志
 
+## v2.5.10 — 删掉多余的 OpenAI(API key)provider
+
+### 修改
+- 删掉 **OpenAI**(id `openai`,API key 版、未配置只显 ⚠)—— 和能用的 **ChatGPT**(OAuth 登录,id `openai-codex`)重复。GPT 走 ChatGPT 那条即可。
+
+### 备注
+- 纯网页改动,在线更新 ⌘R 即见,二进制/原生 app 不变、不重下。
 ## v2.5.9 — 多模型对比窗口加独立字号调整
 
 ### 新增

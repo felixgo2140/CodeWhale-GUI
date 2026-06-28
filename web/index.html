@@ -962,11 +962,10 @@ const PROVIDERS=[   // 非 DeepSeek 的 provider 模型填 auto:app-server 把 d
   {id:"deepseek",name:"DeepSeek V4",model:"deepseek-v4-pro"},
   {id:"zai",name:"GLM (智谱 / Z.ai)",model:"auto"},
   {id:"moonshot",name:"Kimi (月之暗面)",model:"auto"},
-  {id:"openai",name:"OpenAI",model:"auto"},
   {id:"openai-codex",name:"ChatGPT(OAuth 登录)",model:"auto",oauth:true},
   {id:"claude-code",name:"Claude (订阅)",model:"auto",oauth:true,newchatOnly:true},   // 委派官方 claude -p 走订阅(免 API key,真正能用的那条);单窗口可选但只能当"新对话 provider"(走独立后端 :7900),不能当 launchd 主后端(官方二进制不识别)。已合并掉原 anthropic(API Key)条:它对订阅令牌走 x-api-key 必 401,且会误显"已配置"
 ];   // 已删 OpenRouter / DeepInfra(felix 不用、未配置只显 ⚠)
-const PROV_SHORT={deepseek:"DeepSeek",zai:"GLM",moonshot:"Kimi",openai:"OpenAI","openai-codex":"ChatGPT","claude-code":"Claude"};
+const PROV_SHORT={deepseek:"DeepSeek",zai:"GLM",moonshot:"Kimi","openai-codex":"ChatGPT","claude-code":"Claude"};
 async function loadModelLabel(){ try{ const d=await api("/api/model"); const c=d.current||{};
   let nc=""; try{ nc=(await api("/api/newchat-provider")).provider||""; }catch(e){}   // "新对话 provider":单窗口新建对话实际走它(可能 != 主配置,如主后端 deepseek 但新对话 claude-code)
   const prov=nc||c.provider||"?";
