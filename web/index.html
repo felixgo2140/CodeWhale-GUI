@@ -60,6 +60,9 @@
   .grp .gcar{margin-left:auto;font-size:8px;opacity:.7;transition:transform .15s}
   .grp.collapsed .gcar{transform:rotate(-90deg)}
   .thread{padding:9px 10px;border-radius:9px;cursor:pointer;margin-bottom:3px;border:1px solid transparent}
+  .thread.cmpsess{background:color-mix(in srgb,var(--accent) 6%,transparent)}              /* 对比会话行:淡强调底,和单聊区分 */
+  .thread.cmpsess:hover{background:color-mix(in srgb,var(--accent) 12%,transparent)}
+  .thread.cmpsess .title{font-weight:600}
   .thread:hover{background:var(--panel2)}
   .thread.active{background:var(--panel2);border-color:var(--line)}
   .thread .t1{display:flex;align-items:center;gap:7px}
@@ -90,9 +93,11 @@
   .badge{background:var(--panel2);border:1px solid var(--line);padding:1px 8px;border-radius:20px;font-size:11px;color:var(--dim)}
   #interruptbtn{display:none;padding:5px 12px;border:1px solid var(--err);background:transparent;color:var(--err);border-radius:8px;cursor:pointer;font-size:12px}
   #interruptbtn:hover{background:var(--err);color:#fff}
-  #fswrap{display:flex;align-items:center;gap:4px}
-  .fsbtn{border:1px solid var(--line);background:var(--panel2);color:var(--dim);border-radius:6px;width:25px;height:22px;cursor:pointer;font-size:11px;line-height:1;padding:0;font-weight:600} .fsbtn:hover{color:var(--accent);border-color:var(--accent)}
-  #fsval{min-width:18px;text-align:center;font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
+  #fswrap{display:inline-flex;align-items:center}   /* A−/A+ 连成一个紧凑小药丸,不显字号数字 */
+  .fsbtn{border:1px solid var(--line);background:var(--panel2);color:var(--dim);width:23px;height:21px;cursor:pointer;font-size:11px;line-height:1;padding:0;font-weight:600}
+  .fsbtn:first-child{border-radius:6px 0 0 6px}
+  .fsbtn:last-child{border-radius:0 6px 6px 0;border-left:none}
+  .fsbtn:hover{color:var(--accent);border-color:var(--accent);position:relative;z-index:1}
 
   #messages{flex:1;overflow-y:auto;padding:24px 0}
   #mwrap{max-width:760px;margin:0 auto;padding:0 24px}
@@ -268,9 +273,8 @@
       <div id="shellwrap" class="tgl" title="授权 agent 运行 shell/终端命令"><span class="sw"></span>Shell</div>
       <div id="autowrap" class="tgl" title="工具调用弹确认时自动批准"><span class="sw"></span>自动批准</div>
       <div id="fswrap" title="对话文字大小(⌘+/⌘− 是整页缩放)">
-        <button class="fsbtn" onclick="bumpFs(-1)">A−</button>
-        <span id="fsval">14</span>
-        <button class="fsbtn" onclick="bumpFs(1)">A+</button>
+        <button class="fsbtn" onclick="bumpFs(-1)" title="字小一点">A−</button>
+        <button class="fsbtn" onclick="bumpFs(1)" title="字大一点">A+</button>
       </div>
       <button id="interruptbtn">■ 停止</button>
     </div>
@@ -314,6 +318,7 @@ const $ = s => document.querySelector(s);
 const state = { threads:[], activeId:null, es:null, items:new Map(), seen:new Set(), turnId:null, running:false,
   pinned:new Set(JSON.parse(localStorage.getItem("cw_pinned")||"[]")),
   cmpThreads:new Set(JSON.parse(localStorage.getItem("cw_cmp")||"[]")),                 // 多模型对比建的 thread → 侧栏单独归一组
+  cmpSessions:JSON.parse(localStorage.getItem("cw_cmp_sessions")||"[]"),                // 对比会话:[{id,topic,ts,threads:{prov:tid}}] → 侧栏每会话一行,点击回到当时对比
   grpCollapsed:new Set(JSON.parse(localStorage.getItem("cw_grpcollapsed")||"[]")),      // 折叠的分组(置顶/对比/对话)
   autoApprove:false, allowShell:false, queue:[], attachments:[] };  // 按会话,不再全局持久
 
@@ -390,7 +395,7 @@ async function loadThreads(){
     setConn(true); state.threads=t;
     const at=t.find(x=>x.id===state.activeId);   // 兜底:SSE 漏收 turn.completed 时,靠轮询发现活动会话已结束 → 收尾 + 发队列
     if(at && state.running && ["completed","failed","interrupted","canceled","cancelled"].includes(at.latest_turn_status)){ setRunning(false); processQueue(); }
-    const sig=JSON.stringify(t.map(x=>[x.id,x.title,x.latest_turn_status,x.updated_at,x.provider]))+"|"+[...state.pinned].sort().join(",")+"|"+[...state.cmpThreads].sort().join(",")+"|"+[...state.grpCollapsed].sort().join(",")+"|"+state.activeId;   // 含 provider/对比集/折叠态:任一变都重渲染侧栏
+    const sig=JSON.stringify(t.map(x=>[x.id,x.title,x.latest_turn_status,x.updated_at,x.provider]))+"|"+[...state.pinned].sort().join(",")+"|"+[...state.cmpThreads].sort().join(",")+"|"+state.cmpSessions.map(s=>s.id+":"+Object.keys(s.threads||{}).length).join(",")+"|"+[...state.grpCollapsed].sort().join(",")+"|"+state.activeId;   // 含 provider/对比集/会话/折叠态:任一变都重渲染侧栏
     if(sig!==state._sig){ state._sig=sig; renderThreads(); }   // 仅当列表真变化才重建 DOM,避免轮询吞掉点击
   }catch(e){ setConn(false); console.warn(e); }
   finally{ state._loadingThreads=false; }
@@ -421,35 +426,55 @@ function threadEl(t){   // 单条对话 DOM
   d.querySelector(".rename").onclick=(e)=>{e.stopPropagation();renameThread(t.id,t.title);};
   return d;
 }
+function cmpSessionEl(s){   // 对比会话行:点=回到当时整场对比
+  const provs=Object.keys(s.threads||{});
+  const d=document.createElement("div"); d.className="thread cmpsess"+(s.id===CMP.sessionId&&!$("#cmpView")?.hidden?" active":"");
+  const names=provs.map(p=>PROV_SHORT[p]||p).join(" · ");
+  d.innerHTML=`<div class="t1"><span class="dot ok" title="对比会话(点击回到当时对比)"></span><span class="title">⊞ ${esc(s.topic||"对比")}</span>`+
+    `<span class="actions"><button class="act del" title="从列表删除此对比会话">🗑</button></span></div>`+
+    `<div class="meta"><span>${provs.length} 模型 · ${esc(names)}</span><span>${relTime(s.ts||0)}</span></div>`;
+  d.onclick=()=>openCompareWindow(s.id);   // 点会话 → 新开一个独立窗口还原那场对比(主窗口不受影响)
+  d.querySelector(".del").onclick=(e)=>{e.stopPropagation();deleteCmpSession(s.id,s.topic);};
+  return d;
+}
+async function deleteCmpSession(id,topic){
+  if(!(await cwConfirm(`从列表删除对比会话「${topic||"对比"}」?\n(只是不再单独成行;各模型的原始对话仍在,会回到对比组里散条显示)`))) return;
+  state.cmpSessions=state.cmpSessions.filter(s=>s.id!==id);
+  saveCmpSessions(); state._sig=null; renderThreads();
+}
 function renderThreads(){
   const box=$("#threads"); box.innerHTML="";
-  if(!state.threads.length){ box.innerHTML='<div style="padding:14px;color:var(--faint);font-size:12px">还没有对话,点上方新建</div>'; return; }
   const byTime=(a,b)=>new Date(b.updated_at||0)-new Date(a.updated_at||0);
+  const sessionTids=new Set();                            // 已被某对比会话收编的 thread → 不再单独显示(由会话行代表)
+  for(const s of state.cmpSessions) for(const tid of Object.values(s.threads||{})) sessionTids.add(tid);
   // gpt/glm/kimi 这些 provider 单窗口从不用、只出现在对比里 → 即使没登记也按对比归组(兜底,登记表负责 deepseek/claude 这类既单窗口又对比的歧义 provider)
   const isCmp=t=>state.cmpThreads.has(t.id)||CMP_ONLY_PROV.has(t.provider);
-  const pinG=[], cmpG=[], normG=[];                       // 置顶 / 多模型对比 / 普通对话 三组
+  const pinG=[], cmpLeftover=[], normG=[];               // 置顶 / 对比散条(无会话的历史) / 普通对话
   for(const t of state.threads){
-    if(state.pinned.has(t.id)) pinG.push(t);              // 置顶优先(对比的也归这里,保证置顶都在最上)
-    else if(isCmp(t)) cmpG.push(t);                       // 对比对话单独成组,不再灌进普通列表
-    else normG.push(t);
+    if(state.pinned.has(t.id)){ pinG.push(t); continue; }  // 置顶优先
+    if(sessionTids.has(t.id)) continue;                    // 属某会话 → 跳过,会话行代表它
+    if(isCmp(t)){ cmpLeftover.push(t); continue; }
+    normG.push(t);
   }
-  pinG.sort(byTime); cmpG.sort(byTime); normG.sort(byTime);
-  const groups=[
-    {key:"pin",  label:"📌 置顶",      items:pinG},
-    {key:"cmp",  label:"⊞ 多模型对比", items:cmpG},
-    {key:"norm", label:"💬 对话",      items:normG},
-  ].filter(g=>g.items.length);
-  const showHeaders = groups.length>1;                   // 只有一组时不显分组头,保持简洁(跟旧版一样平铺)
+  pinG.sort(byTime); cmpLeftover.sort(byTime); normG.sort(byTime);
+  const sessions=[...state.cmpSessions].sort((a,b)=>(b.ts||0)-(a.ts||0));
+  const cmpCount=sessions.length+cmpLeftover.length;
+  const groups=[];
+  if(pinG.length)  groups.push({key:"pin", label:"📌 置顶", count:pinG.length, render:b=>pinG.forEach(t=>b.appendChild(threadEl(t)))});
+  if(cmpCount)     groups.push({key:"cmp", label:"⊞ 多模型对比", count:cmpCount, render:b=>{ sessions.forEach(s=>b.appendChild(cmpSessionEl(s))); cmpLeftover.forEach(t=>b.appendChild(threadEl(t))); }});
+  if(normG.length) groups.push({key:"norm",label:"💬 对话", count:normG.length, render:b=>normG.forEach(t=>b.appendChild(threadEl(t)))});
+  if(!groups.length){ box.innerHTML='<div style="padding:14px;color:var(--faint);font-size:12px">还没有对话,点上方新建</div>'; return; }
+  const showHeaders=groups.length>1;                     // 只有一组时不显分组头,保持简洁
   for(const g of groups){
     if(showHeaders){
       const collapsed=state.grpCollapsed.has(g.key);
       const h=document.createElement("div"); h.className="grp"+(collapsed?" collapsed":"");
-      h.innerHTML=`<span>${g.label}</span><span class="gcount">${g.items.length}</span><span class="gcar">▼</span>`;
+      h.innerHTML=`<span>${g.label}</span><span class="gcount">${g.count}</span><span class="gcar">▼</span>`;
       h.onclick=()=>toggleGroup(g.key);
       box.appendChild(h);
-      if(collapsed) continue;                             // 折叠 → 跳过该组内容
+      if(collapsed) continue;
     }
-    for(const t of g.items) box.appendChild(threadEl(t));
+    g.render(box);
   }
 }
 function toggleGroup(key){
@@ -473,6 +498,30 @@ async function loadCmp(){ try{ const r=await api("/api/cmp-threads"); if(!Array.
     state.cmpThreads=merged; localStorage.setItem("cw_cmp",JSON.stringify([...merged]));
     if(merged.size>r.length) saveCmp();                                               // 本地有服务端没有的 → 推上去
     if(merged.size!==before){ state._sig=null; renderThreads(); }
+  }catch(e){ /* 离线:沿用 localStorage */ } }
+// ── 对比会话:一次对比(一个主题)= 一个会话,含各模型的 thread → 侧栏每会话一行、点击回到当时对比 ──
+function saveCmpSessions(){
+  try{ localStorage.setItem("cw_cmp_sessions",JSON.stringify(state.cmpSessions.slice(0,500))); }catch(e){}
+  api("/api/cmp-sessions",{method:"POST",body:JSON.stringify({sessions:state.cmpSessions.slice(0,500)})}).catch(()=>{});
+}
+function cmpSessionUpsert(sess){   // 按 id 覆盖或新增(新会话置顶)
+  const i=state.cmpSessions.findIndex(s=>s.id===sess.id);
+  if(i>=0) state.cmpSessions[i]=sess; else state.cmpSessions.unshift(sess);
+  saveCmpSessions(); state._sig=null; renderThreads();
+}
+function cmpSessionRecordThread(prov,tid){   // cmpRun 建好某栏 thread → 记进当前会话
+  if(!CMP.sessionId||!tid) return;
+  const s=state.cmpSessions.find(x=>x.id===CMP.sessionId); if(!s) return;
+  if(s.threads[prov]!==tid){ s.threads[prov]=tid; s.providers=Object.keys(s.threads); saveCmpSessions(); state._sig=null; renderThreads(); }
+}
+async function loadCmpSessions(){ try{ const r=await api("/api/cmp-sessions"); if(!Array.isArray(r)) return;
+    const byId=new Map(state.cmpSessions.map(s=>[s.id,s]));
+    for(const s of r){ const cur=byId.get(s.id);   // 服务端 ∪ 本地:同 id 取 thread 更全的那份
+      if(!cur || Object.keys(s.threads||{}).length>=Object.keys(cur.threads||{}).length) byId.set(s.id,s); }
+    const merged=[...byId.values()].sort((a,b)=>(b.ts||0)-(a.ts||0));
+    const changed=merged.length!==state.cmpSessions.length;
+    state.cmpSessions=merged; try{ localStorage.setItem("cw_cmp_sessions",JSON.stringify(merged.slice(0,500))); }catch(e){}
+    if(changed){ state._sig=null; renderThreads(); }
   }catch(e){ /* 离线:沿用 localStorage */ } }
 async function renameThread(id, cur){
   const t = prompt("重命名对话:", cur||"");
@@ -916,10 +965,8 @@ const PROVIDERS=[   // 非 DeepSeek 的 provider 模型填 auto:app-server 把 d
   {id:"openai",name:"OpenAI",model:"auto"},
   {id:"openai-codex",name:"ChatGPT(OAuth 登录)",model:"auto",oauth:true},
   {id:"claude-code",name:"Claude (订阅)",model:"auto",oauth:true,newchatOnly:true},   // 委派官方 claude -p 走订阅(免 API key,真正能用的那条);单窗口可选但只能当"新对话 provider"(走独立后端 :7900),不能当 launchd 主后端(官方二进制不识别)。已合并掉原 anthropic(API Key)条:它对订阅令牌走 x-api-key 必 401,且会误显"已配置"
-  {id:"openrouter",name:"OpenRouter",model:"auto"},
-  {id:"deepinfra",name:"DeepInfra",model:"auto"},
-];
-const PROV_SHORT={deepseek:"DeepSeek",zai:"GLM",moonshot:"Kimi",openai:"OpenAI","openai-codex":"ChatGPT","claude-code":"Claude",openrouter:"OpenRouter",deepinfra:"DeepInfra"};
+];   // 已删 OpenRouter / DeepInfra(felix 不用、未配置只显 ⚠)
+const PROV_SHORT={deepseek:"DeepSeek",zai:"GLM",moonshot:"Kimi",openai:"OpenAI","openai-codex":"ChatGPT","claude-code":"Claude"};
 async function loadModelLabel(){ try{ const d=await api("/api/model"); const c=d.current||{};
   let nc=""; try{ nc=(await api("/api/newchat-provider")).provider||""; }catch(e){}   // "新对话 provider":单窗口新建对话实际走它(可能 != 主配置,如主后端 deepseek 但新对话 claude-code)
   const prov=nc||c.provider||"?";
@@ -1110,7 +1157,7 @@ window.addEventListener("keydown",e=>{
 },{capture:true});
 
 renderAuto(); renderShell();
-loadThreads(); loadBalance(); loadPins(); loadCmp(); loadModelLabel(); checkSetup();   // loadPins:服务端拉置顶;loadCmp:拉对比 thread 注册表分组;loadModelLabel:侧栏显当前模型;checkSetup:免 key 安装后引导配置
+loadThreads(); loadBalance(); loadPins(); loadCmp(); loadCmpSessions(); loadModelLabel(); checkSetup();   // loadPins:服务端拉置顶;loadCmp:对比 thread 分组;loadCmpSessions:对比会话归集;loadModelLabel:侧栏显当前模型;checkSetup:免 key 安装后引导配置
 // 原生 App 后台刷新(在线更新带来的新壳):下载替换需几秒,延迟轮询几次,更新了就提示退出重开
 setTimeout(async()=>{ for(let i=0;i<5;i++){ try{ const s=await api("/api/app-refresh-status"); if(s&&s.updated){ cwToast("✅ CodeWhale 原生 App 已更新 — 退出(⌘Q)再打开即生效"); break; } }catch(e){} await new Promise(r=>setTimeout(r,4000)); } }, 5000);
 async function checkSetup(){   // 当前 provider 还没配 key(且非 OAuth)→ 自动弹「🧠 模型」引导首次配置
@@ -1124,7 +1171,7 @@ loadVersion(); checkUpdate(); setInterval(checkUpdate, 3600000);   // CodeWhale 
 checkGuiUpdate(); setInterval(checkGuiUpdate, 3600000);            // GUI 界面:启动 + 每小时查新版(签名验证)
 
 /* ---------- 多模型并排对比 ---------- */
-const CMP={ sel:new Set(), threads:{}, seq:{}, keyed:{}, maxed:null, autoApprove:true, allowShell:false, fakeip:false, turn:{}, running:{}, busy:false, sendQ:[], dispatching:{}, attachments:[] };
+const CMP={ sel:new Set(), threads:{}, seq:{}, keyed:{}, maxed:null, autoApprove:true, allowShell:false, fakeip:false, turn:{}, running:{}, busy:false, sendQ:[], dispatching:{}, attachments:[], sessionId:null };  // sessionId:当前对比会话(null=未开始,首次发送时建)
 // 建对比线程时直接把 model 钉到 thread 级,绕过 default_text_model="auto" 的自动路由(它会按 prompt 内容乱选、常落 deepseek,导致 GLM/GPT 栏答错)。
 const CMP_FORCE_MODEL={ deepseek:"deepseek-v4-pro", zai:"GLM-5.2", "openai-codex":"gpt-5.5", "claude-code":"opus" };   // 各 provider 默认模型(徽章/下拉的默认选中);实际由 server.py model_prefs 决定
 // 每 provider 可选模型变体(下拉)。claude-code 用别名(opus/sonnet/haiku),server 端 env 传给 claude -p + 身份串跟着走。
@@ -1158,6 +1205,46 @@ async function openCompare(){
   setTimeout(()=>{ const i=$("#cmpInput"); if(i) i.focus(); },60);
 }
 function closeCompare(){ $("#cmpView").hidden=true; }
+function openCompareWindow(sessionId){   // 开一个全新独立对比窗口(原生壳 createWebViewWith → 新 NSWindow,可拖/缩放/最小化、能同时开多个);带 sessionId 则在新窗口里还原那场对比
+  const tk=new URLSearchParams(location.search).get("token")||"";
+  let u=location.origin+location.pathname+"?compare=1";
+  if(tk) u+="&token="+encodeURIComponent(tk);
+  if(sessionId) u+="&session="+encodeURIComponent(sessionId);
+  const w=window.open(u,"_blank");
+  if(!w) cwToast("浏览器拦截了新窗口?请允许弹出窗口");   // 原生壳不会拦;普通浏览器可能拦
+}
+async function restoreCompareSession(sess){   // 点侧栏对比会话 → 打开对比窗口,恢复各栏 thread + 逐栏回填历史,回到当时对话
+  closeDrawer();
+  CMP.sessionId=sess.id;
+  CMP.threads={...(sess.threads||{})}; CMP.seq={}; CMP.turn={}; CMP.running={}; CMP.busy=false; CMP.sendQ=[]; CMP.dispatching={}; CMP.attachments=[]; CMP.maxed=null;
+  CMP.sel=new Set(Object.keys(sess.threads||{}));
+  if(CMP.sel.size===0) CMP.sel.add("deepseek");
+  $("#cmpView").hidden=false;
+  try{ const d=await api("/api/model"); CMP.keyed=d.keyed||{}; }catch(e){}
+  try{ const mp=await api("/api/model-pref"); CMP.modelPrefs=mp.prefs||{}; CMP.modelEffort=mp.effort||{}; }catch(e){}
+  renderCmpChips(); renderCmpCols(); renderCmpToggles(); cmpSyncSendUI(); cmpRenderAttach();
+  setCmpLayout(_cmpLay);
+  document.querySelectorAll("#cmpLayout .laybtn").forEach(b=>b.onclick=()=>setCmpLayout(b.dataset.l));
+  api("/api/compare/ensure",{method:"POST",body:JSON.stringify({providers:[...CMP.sel]})}).catch(()=>{});   // 起后端(载历史只读不依赖它,但追问要)
+  for(const prov of CMP.sel){ cmpLoadHistory(prov, sess.threads[prov]); }   // 并发逐栏回填
+  setTimeout(()=>{ const i=$("#cmpInput"); if(i) i.focus(); },60);
+}
+async function cmpLoadHistory(prov,tid){   // 拉某栏 thread 全部 item,渲染成问答气泡(过程/工具项略过,回看以对话为主)
+  const b=$("#cmpb-"+CSS.escape(prov)); if(b) b.innerHTML='<div class="cmpmsg a sysnote">· 载入历史…</div>';
+  if(!tid){ if(b) b.innerHTML=""; return; }
+  try{
+    const rec=await (await fetch(url(`/cmp/${prov}/v1/threads/${tid}`))).json();
+    CMP.seq[prov]=rec.latest_seq||0;
+    if(b) b.innerHTML="";
+    let n=0;
+    for(const it of (rec.items||[])){
+      const k=it.kind||"", txt = it.text!=null?it.text : (it.detail!=null?it.detail : (it.summary||""));
+      if(k==="user_message"||k==="user"){ cmpAddMsg(prov,"u",esc(txt.replace(/^【本机网络环境[\s\S]*?】\s*/,""))); n++; }   // 旧会话存进去的 prompt 可能带历史遗留的网络指引前缀,显示时去掉
+      else if(k==="agent_message"){ cmpAddMsg(prov,"a",'<span class="ans">'+md(txt)+'</span>'); n++; }
+    }
+    if(!n) cmpAddMsg(prov,"a sysnote","(无历史内容)");
+  }catch(e){ if(b) b.innerHTML=""; cmpAddMsg(prov,"a err","✗ 载入历史失败:"+esc(e.message||"")); }
+}
 let _cmpLay = localStorage.getItem("cw_cmplay") || "row";   // 对比栏排列:row 横列 / col 竖列 / grid 田字格(持久化)
 function setCmpLayout(l){
   _cmpLay = (["row","col","grid"].includes(l)?l:"row"); try{localStorage.setItem("cw_cmplay",_cmpLay);}catch(e){}
@@ -1259,13 +1346,15 @@ async function cmpResetBackends(){   // 重启所有对比后端(残留后端连
   if(!(await cwConfirm("重启所有对比后端?会清空各栏当前历史,并用最新配置 / key 重新连接各模型(几秒)。\n用于:某个模型栏回答的不是它本人(回退成了 DeepSeek)。"))) return;
   const btn=$("#cmpResetBtn"); if(btn){ btn.disabled=true; btn.textContent="↻ 重启中…"; }
   try{ await api("/api/compare/reset",{method:"POST",body:"{}"}); }catch(e){}
+  CMP.sessionId=null;   // 重启后端=清历史→开新会话边界
   CMP.threads={}; CMP.seq={}; CMP.turn={}; CMP.running={}; CMP.busy=false; CMP.sendQ=[]; CMP.dispatching={}; CMP.attachments=[]; cmpSyncSendUI(); cmpRenderAttach();
   [...CMP.sel].forEach(p=>{ const b=$("#cmpb-"+CSS.escape(p)); if(b) b.innerHTML=""; const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent=""; const stop=$("#cmpstop-"+CSS.escape(p)); if(stop) stop.hidden=true; const cs=$("#cmpcsend-"+CSS.escape(p)); if(cs) cs.disabled=false; });
   if(btn){ btn.disabled=false; btn.textContent="↻ 重启后端"; }
   const i=$("#cmpInput"); if(i) i.focus();
 }
 async function cmpNewChat(){   // 新对话:清空所有栏历史 + 重建会话(学单一窗口的「新建对话」)
-  if(Object.keys(CMP.threads).length && !(await cwConfirm("清空所有对比栏的历史,开始新的对话?各模型会重新建会话。"))) return;
+  if(Object.keys(CMP.threads).length && !(await cwConfirm("在这个窗口开新一轮对比?\n当前这轮已自动存进侧栏「多模型对比」会话,随时点回、不会丢。"))) return;
+  CMP.sessionId=null;   // 开新对比会话 → 下次发送建新主题(旧会话已存,侧栏可点回)
   CMP.threads={}; CMP.seq={}; CMP.turn={}; CMP.running={}; CMP.busy=false; CMP.sendQ=[]; CMP.dispatching={}; CMP.attachments=[]; cmpSyncSendUI(); cmpRenderAttach();
   [...CMP.sel].forEach(p=>{ const b=$("#cmpb-"+CSS.escape(p)); if(b) b.innerHTML=""; const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent=""; const stop=$("#cmpstop-"+CSS.escape(p)); if(stop) stop.hidden=true; const cs=$("#cmpcsend-"+CSS.escape(p)); if(cs) cs.disabled=false; });
   const i=$("#cmpInput"); if(i) i.focus();
@@ -1311,6 +1400,11 @@ async function cmpSend(){
 async function cmpDispatch(item){   // item={sent:发给模型(含附件路径), disp:气泡显示}。原子一轮:先加用户气泡→ensure→并发 cmpRun
   CMP.busy=true; cmpSyncSendUI();
   const provs=[...CMP.sel];
+  if(!CMP.sessionId){   // 新对比的首次发送 → 建会话(主题=首个问题,后续追问沿用同会话)
+    CMP.sessionId="cmps_"+Math.random().toString(36).slice(2,9)+state.cmpSessions.length;
+    const topic=((item.disp||"").replace(/\s*📎.*$/,"").trim().slice(0,80))||"(无标题对比)";
+    cmpSessionUpsert({id:CMP.sessionId, topic, ts:Date.now(), providers:provs.slice(), threads:{}});
+  }
   provs.forEach(p=>{ cmpAddMsg(p,"u",esc(item.disp)); const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent="启动…"; });   // 立即显示用户气泡 + 启动中,不等后端
   let ensured={}; try{ ensured=await api("/api/compare/ensure",{method:"POST",body:JSON.stringify({providers:provs})}); }catch(e){}
   await Promise.all(provs.map(p=>cmpRun(p,item.sent,ensured[p])));
@@ -1362,6 +1456,7 @@ async function cmpRun(prov,text,ens){
       CMP.threads[prov]=t.id; CMP.seq[prov]=0;
       api("/api/pin-thread",{method:"POST",body:JSON.stringify({tid:t.id,provider:prov})}).catch(()=>{});   // 锁定到本 provider → 主窗口侧栏正确标 GLM/GPT,不再误显默认 DeepSeek
       markCmp(t.id);   // 登记为对比 thread → 主窗口侧栏归入「多模型对比」组,不灌进普通对话列表
+      cmpSessionRecordThread(prov,t.id);   // 记进当前对比会话 → 侧栏会话行能点回来恢复这一栏
     }
     const tid=CMP.threads[prov];
     cmpSetRunning(prov,true);
@@ -1371,13 +1466,10 @@ async function cmpRun(prov,text,ens){
     //   否则追问时会把上一轮的 turn.completed/旧增量重放进来,导致 ✓0s 误收尾、流式不同步、答案吞掉。
     let since=CMP.seq[prov]||0;
     try{ const ti=await (await fetch(url(`/cmp/${prov}/v1/threads/${tid}`))).json(); if(typeof ti.latest_seq==="number") since=ti.latest_seq; }catch(e){}
-    // Shell 关=纯问答(发指令禁工具,干净对比);Shell 开=放开,让模型用工具/命令/联网
-    // Shell 开时附一句网络指引:本机 fake-ip 代理下内置 fetch_url 抓全文会被 SSRF 守卫拦(域名解析成 198.18.x.x 保留地址),引导走 curl/MCP;web_search 不受影响照常用。指令只进 prompt,不进界面气泡(用户气泡显示的是原文 text)。
-    const NETHINT="【本机网络环境:内置 fetch_url 抓取网页全文会被拦(域名解析到保留地址 198.18.x.x)。需要读网页全文时请用 exec_shell 跑 curl(如 curl -sS --max-time 15 '网址')或 MCP 的 fetch / searxng;web_search 可正常使用,无需绕行。】\n\n";
-    // 只有 fake-ip 机器(CMP.fakeip)才加这句引导;普通机器 fetch_url 正常,不发以免误导
-    // 跟单窗口完全同能力:工具 / MCP / skill 始终可用,不再发"禁用工具"指令。
-    // Shell 开关只控制 exec_shell(上面 PATCH 的 allow_shell);MCP / web_search / 读取等非 shell 工具一直在,模型自行决定用不用。
-    const sendText=(CMP.fakeip?NETHINT:"")+text;
+    // 不再往用户 prompt 里前置任何网络指引——它会被模型复述、或在恢复历史时显示出来(felix 嫌它显示)。
+    // fake-ip 下「fetch_url 被拦 → 用 curl / web_search」的引导已写在 compare-research skill 的系统提示里(server.py ~876 行),
+    // 对模型不可见地生效;非 shell 工具 / MCP / web_search 始终可用,Shell 开关只额外控制 exec_shell(上面 PATCH 的 allow_shell)。
+    const sendText=text;
     let myTurn=null;
     try{ const tr=await (await fetch(url(`/cmp/${prov}/v1/threads/${tid}/turns`),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:sendText})})).json();
       myTurn=(tr&&((tr.turn&&tr.turn.id)||tr.id))||null;   // 本轮 turn id:SSE 只认本轮事件,重放的旧轮一律忽略
@@ -1436,14 +1528,14 @@ async function cmpRun(prov,text,ens){
 }
 // 对比的 overlay HTML 在本 <script> 之后才解析 → 绑定必须等 DOMContentLoaded,否则 #cmpSendBtn 等还不存在,点了没反应
 window.addEventListener("DOMContentLoaded",()=>{
-  const cb=$("#cmpbtn"); if(cb) cb.onclick=openCompare;
-  const cc=$("#cmpClose"); if(cc) cc.onclick=closeCompare;
-  const cp=$("#cmpPopBtn"); if(cp) cp.onclick=()=>{   // 弹到独立原生窗口(原生壳 createWebViewWith 接管 window.open)+ 当前窗口回主页
-    const tk=new URLSearchParams(location.search).get("token")||"";
-    window.open(location.origin+location.pathname+"?compare=1"+(tk?("&token="+encodeURIComponent(tk)):""), "_blank");
-    closeCompare();
-  };
-  if(new URLSearchParams(location.search).get("compare")==="1") setTimeout(openCompare, 200);   // ?compare=1(独立窗口)→ 自动进对比视图
+  const IS_CMP_WIN = new URLSearchParams(location.search).get("compare")==="1";   // 本页是不是一个独立对比窗口
+  const cb=$("#cmpbtn"); if(cb) cb.onclick=()=>openCompareWindow();   // 「⚖️ 对比」→ 每点开一个全新独立窗口(原生壳新 NSWindow),可同时跑多个;不再页内覆盖
+  const cc=$("#cmpClose"); if(cc) cc.onclick=()=> IS_CMP_WIN ? window.close() : closeCompare();   // 专用对比窗口:退出=关窗;万一在主窗口(理论上不会)则只收覆盖层
+  if(IS_CMP_WIN) setTimeout(async ()=>{   // ?compare=1 自动进对比;带 ?session 则还原那场对比
+    const sid=new URLSearchParams(location.search).get("session");
+    if(sid){ try{ await loadCmpSessions(); }catch(e){} const s=state.cmpSessions.find(x=>x.id===sid); if(s){ restoreCompareSession(s); return; } }
+    openCompare();
+  }, 200);
   const cn=$("#cmpNewBtn"); if(cn) cn.onclick=cmpNewChat;
   const cr=$("#cmpResetBtn"); if(cr) cr.onclick=cmpResetBackends;
   const cs=$("#cmpSendBtn"); if(cs) cs.onclick=cmpSend;
@@ -1540,7 +1632,7 @@ select.cmpmodelsel,select.cmpeffortsel{cursor:pointer;-webkit-appearance:none;ap
 </style>
 <div id="cmpView" hidden>
   <div id="cmpTop">
-    <div id="cmpHead"><b>⚖️ 多模型对比</b><div id="cmpChips"></div><div id="cmpShellTgl" class="tgl" title="开 = 允许 exec_shell 跑命令(跳出沙箱)。注:MCP / web_search / 读取等工具跟单窗口一样一直可用,此开关只额外控制 shell 命令"><span class="sw"></span>💻 Shell</div><div id="cmpAutoTgl" class="tgl" title="工具调用自动批准(对比无逐栏审批 UI,开 Shell 时建议开)"><span class="sw"></span>⚡ 自动批准</div><div id="cmpLayout" title="排列方式:横列 / 竖列 / 田字格"><button class="laybtn" data-l="row">横</button><button class="laybtn" data-l="col">竖</button><button class="laybtn" data-l="grid">田</button></div><button id="cmpNewBtn" title="清空所有栏的历史,开始新的对比对话">＋ 新对话</button><button id="cmpResetBtn" title="某栏回答的不是它本人(回退成了 DeepSeek)?点这里用最新配置/key 重启所有对比后端">↻ 重启后端</button><button id="cmpPopBtn" title="把对比弹到独立窗口(可最大化/缩放/最小化),当前窗口回到主页">⤢ 独立窗口</button><button id="cmpClose">✕ 退出</button></div>
+    <div id="cmpHead"><b>⚖️ 多模型对比</b><div id="cmpChips"></div><div id="cmpShellTgl" class="tgl" title="开 = 允许 exec_shell 跑命令(跳出沙箱)。注:MCP / web_search / 读取等工具跟单窗口一样一直可用,此开关只额外控制 shell 命令"><span class="sw"></span>💻 Shell</div><div id="cmpAutoTgl" class="tgl" title="工具调用自动批准(对比无逐栏审批 UI,开 Shell 时建议开)"><span class="sw"></span>⚡ 自动批准</div><div id="cmpLayout" title="排列方式:横列 / 竖列 / 田字格"><button class="laybtn" data-l="row">横</button><button class="laybtn" data-l="col">竖</button><button class="laybtn" data-l="grid">田</button></div><button id="cmpNewBtn" title="在当前窗口开新一轮对比(上一轮已自动存进侧栏「多模型对比」会话,随时点回,不会丢)">＋ 新对话</button><button id="cmpResetBtn" title="某栏回答的不是它本人(回退成了 DeepSeek)?点这里用最新配置/key 重启所有对比后端">↻ 重启后端</button><button id="cmpClose" title="关闭这个对比窗口">✕ 退出</button></div>
     <div id="cmpAttachBar" hidden></div>
     <div id="cmpInputRow"><button id="cmpAttachBtn" title="上传文件(文本/代码,各模型会 read_file 读取;也可直接粘贴/拖拽。图片当前模型看不了)">📎</button><textarea id="cmpInput" placeholder="输入一个问题,同时发给所有选中的模型…（Enter 发送 · Shift+Enter 换行 · 可粘贴/拖拽文件）"></textarea><button id="cmpSendBtn">发送</button></div>
     <input type="file" id="cmpFileInput" multiple style="display:none">

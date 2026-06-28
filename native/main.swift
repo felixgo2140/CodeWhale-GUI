@@ -153,6 +153,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         if action.request.url != nil { nweb.load(action.request) }   // window.open(url):有的 WebKit 版本不自动 load,手动兜底
         return nweb
     }
+    // ── window.close() → 关掉对应的独立窗口。对比窗口的「✕ 退出」按钮调 window.close();不实现此法 WKWebView 不会真的关窗(点了没反应)。
+    func webViewDidClose(_ webView: WKWebView) {
+        if let win = extraWindows.first(where: { ($0.contentView as? WKWebView) === webView }) {
+            extraWindows.removeAll { $0 === win }
+            win.close()
+        }
+    }
 
     // 点 Dock 图标:已有窗口就前置,没有就重建 —— 原生"复用窗口",不再开重复窗
     func applicationShouldHandleReopen(_ s: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

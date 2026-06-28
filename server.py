@@ -19,6 +19,7 @@ CFG = os.path.expanduser("~/.codewhale/config.toml")
 TOKEN_FILE = os.path.expanduser("~/.codewhale-gui/token")
 PINS_FILE = os.path.expanduser("~/.codewhale-gui/pins.json")
 CMP_THREADS_FILE = os.path.expanduser("~/.codewhale-gui/cmp_threads.json")   # 多模型对比建的 thread id 集合 → 侧栏按组归类(对比/普通分开),跨窗口共享
+CMP_SESSIONS_FILE = os.path.expanduser("~/.codewhale-gui/cmp_sessions.json")  # 对比会话 [{id,topic,ts,threads:{prov:tid}}] → 侧栏每会话一行、点回当时对比,跨窗口共享
 UPSTREAM = "http://127.0.0.1:7878"
 _LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))   # 本机 app-server 请求绝不走代理(代理会劫持 127.0.0.1 导致超时)
 BIND = os.environ.get("CW_BIND", "0.0.0.0")
@@ -440,6 +441,39 @@ def write_cmp_threads(ids):
         json.dump(ids, f)
     os.replace(tmp, CMP_THREADS_FILE)
     return ids
+
+def read_cmp_sessions():
+    try:
+        d = json.load(open(CMP_SESSIONS_FILE))
+        return d if isinstance(d, list) else []
+    except Exception:
+        return []
+def _valid_session(s):
+    return (isinstance(s, dict) and isinstance(s.get("id"), str) and s.get("id")
+            and isinstance(s.get("threads"), dict))
+def write_cmp_sessions(sessions):
+    sessions = [s for s in sessions if _valid_session(s)][:500]
+    os.makedirs(os.path.dirname(CMP_SESSIONS_FILE), exist_ok=True)
+    tmp = CMP_SESSIONS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(sessions, f, ensure_ascii=False)
+    os.replace(tmp, CMP_SESSIONS_FILE)
+    return sessions
+def upsert_cmp_sessions(incoming):
+    """按 id 合并:同 id 取 thread 更全的那份(并发窗口不互相截断);新 id 追加。返回合并后列表。"""
+    by_id = {}
+    order = []
+    for s in read_cmp_sessions() + [s for s in incoming if _valid_session(s)]:
+        sid = s["id"]
+        if sid not in by_id:
+            order.append(sid); by_id[sid] = s
+        else:                                  # 取 threads 更多的(更完整的一次对比)
+            if len(s.get("threads") or {}) >= len(by_id[sid].get("threads") or {}):
+                by_id[sid] = s
+    merged = [by_id[sid] for sid in order]
+    merged.sort(key=lambda s: s.get("ts") or 0, reverse=True)   # 新会话在前
+    return write_cmp_sessions(merged)
+
 def _seed_cmp_from_tprov():
     """一次性回溯迁移:本功能之前建的对比 thread 没登记 → 从 _tprov 反推。
     _tprov 里被 pin 到 provider 的 thread = 对比建的,或单窗口新对话路由到非默认 provider 的。
@@ -1291,6 +1325,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p == "/api/cmp-sessions":   # 对比会话(侧栏每会话一行、点回当时对比)
+            if not self._authed():
+                return self._deny()
+            try:
+                out = read_cmp_sessions()
+            except Exception:
+                out = []
+            b = json.dumps(out, ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+            return
         if p in ("/api/mcp", "/api/skills", "/api/model") or p == "/api/skills/read":
             if not self._authed():
                 return self._deny()
@@ -1495,6 +1544,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception as e:
                 out = {"error": str(e)[:200]}
             b = json.dumps(out).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+            return
+        if p == "/api/cmp-sessions":   # 前端 upsert 对比会话(按 id 合并,thread 更全者胜,跨窗口不互相截断)
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                raw = self.rfile.read(length) if length else b"{}"
+                data = json.loads(raw or b"{}")
+                sessions = data.get("sessions", []) if isinstance(data, dict) else data
+                out = upsert_cmp_sessions(sessions if isinstance(sessions, list) else [])
+            except Exception as e:
+                out = {"error": str(e)[:200]}
+            b = json.dumps(out, ensure_ascii=False).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(b)))
