@@ -458,8 +458,14 @@ function cmpSessionEl(s){   // 对比会话行:点=回到当时整场对比
   return d;
 }
 async function deleteCmpSession(id,topic){
-  if(!(await cwConfirm(`从列表删除对比会话「${topic||"对比"}」?\n(只是不再单独成行;各模型的原始对话仍在,会回到对比组里散条显示)`))) return;
-  state.cmpSessions=state.cmpSessions.filter(s=>s.id!==id);
+  const s=state.cmpSessions.find(x=>x.id===id);
+  const tids=s?Object.values(s.threads||{}).filter(Boolean):[];
+  if(!(await cwConfirm(`删除对比会话「${topic||"对比"}」及其 ${tids.length} 个模型对话?\n(整组归档移出列表;后端可恢复)`))) return;
+  await Promise.allSettled(tids.map(tid=>api(`/v1/threads/${tid}`,{method:"PATCH",body:JSON.stringify({archived:true})})));   // 归档每个模型的原始 thread
+  state.threads=state.threads.filter(t=>!tids.includes(t.id));   // 从列表移除
+  let pinChanged=false; tids.forEach(tid=>{ state.cmpThreads.delete(tid); if(state.pinned.delete(tid)) pinChanged=true; });   // 从对比注册表/置顶清掉
+  saveCmp(); if(pinChanged) savePins();
+  state.cmpSessions=state.cmpSessions.filter(x=>x.id!==id);   // 删会话本身
   saveCmpSessions(); state._sig=null; renderThreads();
 }
 function renderThreads(){
