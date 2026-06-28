@@ -1044,21 +1044,46 @@ def _model_to_provider(model):   # 从会话真实 model 反推 provider(thread.
     if "kimi" in m or "moonshot" in m: return "moonshot"
     if "gemini" in m:   return "openrouter"
     return None
-_threads_cache = {"v": None, "t": 0.0}    # :7878 summary 随线程数变慢(50 条 ~4.5s),loadThreads 又被频繁调 → TTL 缓存避免重复等
-def aggregate_threads():     # 共享存储::7878 已含全部会话,只查它;provider 标签优先按真实 model 反推,回退锁定表/默认
-    if _threads_cache["v"] is not None and time.time() - _threads_cache["t"] < 6.0:   # TTL 用"上次查完"的时间(查询本身就 ~5s,用开始时间会永远过期)
-        return _threads_cache["v"]
+# ── 线程列表 stale-while-revalidate ──
+# :7878 的 summary 随线程数变慢(felix 90+ 条 → >8s,会撞 8s 超时)。旧逻辑每次缓存过期就**同步**死等它 →
+# 每次开程序干等 8s。改:有缓存就**立刻返回**(哪怕过期),过期时只在**后台**刷新、绝不阻塞请求;
+# 缓存**落盘** → 服务重启也有暖缓存、首屏即出;后台抓超时放宽到 30s,保证最终能刷成功。
+_THREADS_CACHE_FILE = os.path.expanduser("~/.codewhale-gui/threads_cache.json")
+_threads_cache = {"v": None, "t": 0.0, "refreshing": False}
+try:
+    _disk = json.load(open(_THREADS_CACHE_FILE))
+    if isinstance(_disk, list): _threads_cache["v"] = _disk   # 暖缓存(t 留 0 → 视为过期 → 首个请求触发后台刷新)
+except Exception:
+    pass
+_threads_refresh_lock = threading.Lock()
+def _fetch_threads_now():
+    """实际抓 :7878 summary(慢,可能 >8s);成功才更新内存 + 落盘。返回列表或 None。"""
     try:
-        arr = json.load(_LOCAL.open(f"http://127.0.0.1:7878/v1/threads/summary?limit=50", timeout=8))
+        arr = json.load(_LOCAL.open(f"http://127.0.0.1:7878/v1/threads/summary?limit=50", timeout=30))
     except Exception:
-        return _threads_cache["v"] or []      # 查不到/超时 → 回退上次缓存(总比空列表好)
+        return None
     if not isinstance(arr, list):
-        return _threads_cache["v"] or []
+        return None
     dflt = _cfg_get("provider") or "deepseek"
     for t in arr:
         t["provider"] = _model_to_provider(t.get("model")) or _tprov.get(t.get("id")) or dflt
-    _threads_cache["v"] = arr; _threads_cache["t"] = time.time()   # 记"查完"时刻
+    _threads_cache["v"] = arr; _threads_cache["t"] = time.time()
+    try: json.dump(arr, open(_THREADS_CACHE_FILE, "w"))   # 落盘:服务重启也有暖缓存
+    except Exception: pass
     return arr
+def _bg_refresh_threads():
+    try: _fetch_threads_now()
+    finally: _threads_cache["refreshing"] = False
+def aggregate_threads():     # SWR:有缓存立刻返回,过期只后台刷新,绝不阻塞请求(开程序不再干等 8s)
+    cached = _threads_cache["v"]
+    if cached is not None:
+        if time.time() - _threads_cache["t"] >= 30.0 and not _threads_cache["refreshing"]:   # 过期 → 后台刷新(单飞,不阻塞;30s 间隔降低对 :7878 的持续占用,summary 本身要 ~12s)
+            with _threads_refresh_lock:
+                if not _threads_cache["refreshing"]:
+                    _threads_cache["refreshing"] = True
+                    threading.Thread(target=_bg_refresh_threads, daemon=True).start()
+        return cached
+    return _fetch_threads_now() or []   # 从没成功 + 无落盘 → 只能同步取一次(尽量快;失败返回空)
 
 # ── fake-ip 环境自动探测 ──
 # 本机若挂 fake-ip 模式代理(Clash/Surge/MacPacket…),DNS 把公网域名解析成保留地址
@@ -1669,6 +1694,7 @@ if __name__ == "__main__":
     # 后台检查补丁二进制 + 原生 App:缺则下载,SHA 变了则刷新(OCR/二进制/原生壳 升级经此自动传播);不阻塞启动
     threading.Thread(target=lambda: _ensure_patched_binaries(block=False, refresh=True), daemon=True).start()
     threading.Thread(target=_refresh_native_app, daemon=True).start()
+    threading.Thread(target=_fetch_threads_now, daemon=True).start()   # 启动即后台预热线程列表缓存(落盘)→ 首个请求秒命中,不阻塞启动
     _seed_cmp_from_tprov()   # 一次性回溯:把历史对比对话登记进侧栏分组
     print(f"CodeWhale GUI server on {BIND}:{PORT}  (token {'ENABLED' if TOKEN else 'off'})")
     Server((BIND, PORT), Handler).serve_forever()
