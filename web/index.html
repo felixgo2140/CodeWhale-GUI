@@ -1441,10 +1441,13 @@ async function cmpDispatch(item){   // item={sent:发给模型(含附件路径),
     cmpSessionUpsert({id:CMP.sessionId, topic, ts:Date.now(), providers:provs.slice(), threads:{}});
   }
   provs.forEach(p=>{ cmpAddMsg(p,"u",esc(item.disp)); const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent="启动…"; });   // 立即显示用户气泡 + 启动中,不等后端
-  let ensured={}; try{ ensured=await api("/api/compare/ensure",{method:"POST",body:JSON.stringify({providers:provs})}); }catch(e){}
-  await Promise.all(provs.map(p=>cmpRun(p,item.sent,ensured[p])));
-  CMP.busy=false; cmpSyncSendUI();
-  cmpMaybeFlush();   // 本轮收尾→若队列里还有缓存的问题,自动发下一条(保持 问→答→问→答 顺序)
+  try{
+    let ensured={}; try{ ensured=await api("/api/compare/ensure",{method:"POST",body:JSON.stringify({providers:provs})}); }catch(e){}
+    await Promise.allSettled(provs.map(p=>cmpRun(p,item.sent,ensured[p])));   // allSettled:某栏 cmpRun 抛错也不连累整体,不会卡住「发送中」
+  } finally {
+    CMP.busy=false; cmpSyncSendUI();   // 兜底:无论本轮怎样都复位发送状态,杜绝按钮卡在「发送中…」(其实已发完)
+    cmpMaybeFlush();   // 本轮收尾→若队列里还有缓存的问题,自动发下一条(保持 问→答→问→答 顺序)
+  }
 }
 // ── 对比附件(主输入框:文件发给所有栏)── 上传到 /api/upload 拿文件系统路径,各 provider 后端都能 read_file 读
 async function cmpUploadFiles(files){
@@ -1483,6 +1486,7 @@ async function cmpRun(prov,text,ens){
   let steps=0;
   const addStep=(t)=>{ const d=document.createElement("div"); d.className="cmpstep"; d.textContent=t; procBody.appendChild(d); procCnt.textContent=(++steps); const x=$("#cmpb-"+CSS.escape(prov)); if(x) x.scrollTop=x.scrollHeight; };
   const A=cmpAddMsg(prov,"a",`<span class="ans"></span><span class="cur">▍</span>`);
+  if(!A){ if(st)st.textContent="✗ 此栏未就绪"; cmpSetRunning(prov,false); return; }   // 该 provider 没渲染出列(#cmpb 缺)→ 优雅跳过,绝不抛错连累 Promise.all
   const ans=A.querySelector(".ans"), cur=A.querySelector(".cur");
   if(st)st.textContent="思考…";
   try{
