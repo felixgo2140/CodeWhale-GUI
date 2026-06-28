@@ -261,7 +261,11 @@
   .btn.danger:hover{border-color:var(--err);color:var(--err)}
   .prow{display:flex;gap:7px;align-items:center;margin-bottom:9px;flex-wrap:wrap}
   .prow input{flex:1;min-width:90px;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:6px 9px;font-size:12px;color:var(--txt);outline:none}
+  /* 独立对比窗口(?compare=1):首帧前就盖上对比层、藏掉主 UI → 不再"先闪主页再刷成对比" */
+  html.cmpwin #cmpView{display:flex!important}
+  html.cmpwin #sidebar,html.cmpwin #backdrop,html.cmpwin #main{display:none!important}
 </style>
+<script>if(location.search.indexOf("compare=1")>=0)document.documentElement.className+=" cmpwin";</script>
 </head>
 <body>
   <div id="backdrop"></div>
@@ -1178,7 +1182,11 @@ window.addEventListener("keydown",e=>{
 },{capture:true});
 
 renderAuto(); renderShell();
-loadThreads(); loadBalance(); loadPins(); loadCmp(); loadCmpSessions(); loadModelLabel(); checkSetup();   // loadPins:服务端拉置顶;loadCmp:对比 thread 分组;loadCmpSessions:对比会话归集;loadModelLabel:侧栏显当前模型;checkSetup:免 key 安装后引导配置
+if(location.search.indexOf("compare=1")>=0){
+  loadCmpSessions();   // 独立对比窗口:主 UI 被对比层盖住,只需会话数据(?session 还原);跳过 loadThreads(慢~4.5s)/balance/pins/cmp/model/checkSetup,显著加快
+}else{
+  loadThreads(); loadBalance(); loadPins(); loadCmp(); loadCmpSessions(); loadModelLabel(); checkSetup();   // loadPins:服务端拉置顶;loadCmp:对比 thread 分组;loadCmpSessions:对比会话归集;loadModelLabel:侧栏显当前模型;checkSetup:免 key 安装后引导配置
+}
 // 原生 App 后台刷新(在线更新带来的新壳):下载替换需几秒,延迟轮询几次,更新了就提示退出重开
 setTimeout(async()=>{ for(let i=0;i<5;i++){ try{ const s=await api("/api/app-refresh-status"); if(s&&s.updated){ cwToast("✅ CodeWhale 原生 App 已更新 — 退出(⌘Q)再打开即生效"); break; } }catch(e){} await new Promise(r=>setTimeout(r,4000)); } }, 5000);
 async function checkSetup(){   // 当前 provider 还没配 key(且非 OAuth)→ 自动弹「🧠 模型」引导首次配置
@@ -1558,11 +1566,11 @@ window.addEventListener("DOMContentLoaded",()=>{
   const IS_CMP_WIN = new URLSearchParams(location.search).get("compare")==="1";   // 本页是不是一个独立对比窗口
   const cb=$("#cmpbtn"); if(cb) cb.onclick=()=>openCompareWindow();   // 「⚖️ 对比」→ 每点开一个全新独立窗口(原生壳新 NSWindow),可同时跑多个;不再页内覆盖
   const cc=$("#cmpClose"); if(cc) cc.onclick=()=> IS_CMP_WIN ? window.close() : closeCompare();   // 专用对比窗口:退出=关窗;万一在主窗口(理论上不会)则只收覆盖层
-  if(IS_CMP_WIN) setTimeout(async ()=>{   // ?compare=1 自动进对比;带 ?session 则还原那场对比
+  if(IS_CMP_WIN) (async ()=>{   // ?compare=1 即时进对比(覆盖层 CSS 已首帧前盖上,这里只填内容,不再等 200ms);带 ?session 则还原那场对比
     const sid=new URLSearchParams(location.search).get("session");
     if(sid){ try{ await loadCmpSessions(); }catch(e){} const s=state.cmpSessions.find(x=>x.id===sid); if(s){ restoreCompareSession(s); return; } }
     openCompare();
-  }, 200);
+  })();
   const cn=$("#cmpNewBtn"); if(cn) cn.onclick=cmpNewChat;
   const cr=$("#cmpResetBtn"); if(cr) cr.onclick=cmpResetBackends;
   const cs=$("#cmpSendBtn"); if(cs) cs.onclick=cmpSend;
