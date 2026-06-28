@@ -1,5 +1,13 @@
 # 更新日志
 
+## v2.5.17 — Kimi 切到最新编码模型 kimi-for-coding(各家模型核查)
+
+### 修改
+- **Kimi 从 `kimi-k2` 切到 `kimi-for-coding`**。查各家 `/v1/models` 权威清单确认:Kimi Code 平台(api.kimi.com/coding)只暴露 `kimi-for-coding` 这一个模型 —— 就是它家最新编码模型(当前 = K2.7-code),且会自动跟最新、不写死版本号。旧 `kimi-k2` 只是宽松别名;且 moonshot 之前没钉死、靠后端默认。现加进 `_CMP_FORCE_MODEL` 确定性钉死(实测建 thread 注入 `kimi-for-coding` 跑通),前端徽章/下拉显示「Kimi Code」。
+- **其它家核查结论**(已是最强,无需改):DeepSeek `deepseek-v4-pro`(可用仅 v4-flash/v4-pro)、GLM `GLM-5.2`(可用到 glm-5.2 最高)、Claude `Opus 4.8`(最新)。ChatGPT `gpt-5.5`(OAuth/Codex 无法同样查 /models,是已知最新)。
+
+### 备注
+- 纯网页(server.py + 前端)改动,在线更新即生效,二进制/原生 app 不变、不重下。
 ## v2.5.16 — 开程序秒开:线程列表 stale-while-revalidate
 
 ### 优化

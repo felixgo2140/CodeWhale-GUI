@@ -646,7 +646,7 @@ _CMP_PIN_MODEL = {"zai": "GLM-5.2"}
 # claude-code 必须钉 thread.model="sonnet" 做**确定性路由**:default_text_model="auto" 会让 CodeWhale 逐轮自动路由、
 # 时不时把 claude 栏答成 deepseek。"sonnet" 是 claude-code 已注册的合法 wire model(钉它不会 400;钉 "opus" 这种未注册名才会被 deepseek 校验拒)。
 # 它只是"路由键",真正传给 `claude -p` 的模型由 _CLAUDE_CODE_MODEL 经 env 覆盖(见下)——所以钉 sonnet 路由、实际跑 opus 不矛盾。
-_CMP_FORCE_MODEL = {"deepseek": "deepseek-v4-pro", "zai": "GLM-5.2", "openai-codex": "gpt-5.5", "claude-code": "sonnet"}
+_CMP_FORCE_MODEL = {"deepseek": "deepseek-v4-pro", "zai": "GLM-5.2", "openai-codex": "gpt-5.5", "claude-code": "sonnet", "moonshot": "kimi-for-coding"}   # kimi-for-coding = Kimi Code 平台(api.kimi.com/coding)唯一/最新编码模型(当前=K2.7-code,/models 权威列它);旧 kimi-k2 只是宽松别名
 _CLAUDE_CODE_MODEL = "opus"   # claude 订阅列实际调用的模型(显式钉 Opus 4.8;也可填 opus/sonnet/haiku 别名)。绕开注册表直传官方 CLI
 # claude -p 委派的模型常因训练截止误报旧版本(实测 claude-opus-4-8 自报 "Opus 4.6" 甚至否认 4.8 存在),
 # 注入一句权威身份纠正它。切模型时**同时**改这两行保持一致。
