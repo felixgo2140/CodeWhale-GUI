@@ -129,6 +129,22 @@
   .content table{border-collapse:collapse;margin:11px 0;font-size:.95em;display:block;max-width:100%;overflow-x:auto}
   .content th,.content td{border:1px solid var(--line);padding:5px 10px;text-align:left;white-space:nowrap}
   .content th{background:var(--panel2);font-weight:600}
+  /* 对比答案也走 markdown,样式镜像单窗口 .content(基准字号用 --cmp-fs);.md 渲染后切 normal(.cmpmsg.a .ans.md 比 .ans 的 pre-wrap 更具体,胜出)*/
+  .cmpmsg.a .ans.md{white-space:normal}
+  .cmpmsg .ans.md p{margin:0 0 8px} .cmpmsg .ans.md p:last-child{margin-bottom:0}
+  .cmpmsg .ans.md pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:10px 12px;overflow-x:auto;margin:8px 0;font-family:var(--mono);font-size:.9em;line-height:1.5}
+  .cmpmsg .ans.md code:not(pre code){background:var(--code);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-family:var(--mono);font-size:.9em}
+  .cmpmsg .ans.md strong{color:#1a1714} .cmpmsg .ans.md a{color:var(--accent);text-decoration:underline}
+  .cmpmsg .ans.md h1,.cmpmsg .ans.md h2,.cmpmsg .ans.md h3,.cmpmsg .ans.md h4{margin:12px 0 6px;line-height:1.3;font-weight:600;color:#1a1714}
+  .cmpmsg .ans.md h1:first-child,.cmpmsg .ans.md h2:first-child,.cmpmsg .ans.md h3:first-child{margin-top:2px}
+  .cmpmsg .ans.md h1{font-size:1.32em} .cmpmsg .ans.md h2{font-size:1.2em} .cmpmsg .ans.md h3{font-size:1.1em} .cmpmsg .ans.md h4{font-size:1em}
+  .cmpmsg .ans.md ul,.cmpmsg .ans.md ol{margin:6px 0;padding-left:21px} .cmpmsg .ans.md li{margin:2px 0}
+  .cmpmsg .ans.md blockquote{border-left:3px solid var(--accent);margin:8px 0;padding:2px 0 2px 12px;color:var(--dim)}
+  .cmpmsg .ans.md hr{border:none;border-top:1px solid var(--line);margin:12px 0}
+  .cmpmsg .ans.md em{font-style:italic} .cmpmsg .ans.md del{opacity:.55}
+  .cmpmsg .ans.md table{border-collapse:collapse;margin:9px 0;font-size:.95em;display:block;max-width:100%;overflow-x:auto}
+  .cmpmsg .ans.md th,.cmpmsg .ans.md td{border:1px solid var(--line);padding:4px 9px;text-align:left;white-space:nowrap}
+  .cmpmsg .ans.md th{background:var(--panel2);font-weight:600}
   .msg .acts{display:flex;gap:6px;margin-top:7px;opacity:0;transition:opacity .12s}
   .msg:hover .acts{opacity:.95}
   .mact{border:1px solid var(--line);background:transparent;color:var(--faint);border-radius:6px;min-width:26px;height:26px;cursor:pointer;font-size:12px;line-height:1;display:inline-flex;align-items:center;justify-content:center;padding:0 6px}
@@ -1245,7 +1261,7 @@ async function cmpLoadHistory(prov,tid){   // 拉某栏 thread 全部 item,渲�
     for(const it of (rec.items||[])){
       const k=it.kind||"", txt = it.text!=null?it.text : (it.detail!=null?it.detail : (it.summary||""));
       if(k==="user_message"||k==="user"){ cmpAddMsg(prov,"u",esc(txt.replace(/^【本机网络环境[\s\S]*?】\s*/,""))); n++; }   // 旧会话存进去的 prompt 可能带历史遗留的网络指引前缀,显示时去掉
-      else if(k==="agent_message"){ cmpAddMsg(prov,"a",'<span class="ans">'+md(txt)+'</span>'); n++; }
+      else if(k==="agent_message"){ cmpAddMsg(prov,"a",'<span class="ans md">'+md(txt)+'</span>'); n++; }
     }
     if(!n) cmpAddMsg(prov,"a sysnote","(无历史内容)");
   }catch(e){ if(b) b.innerHTML=""; cmpAddMsg(prov,"a err","✗ 载入历史失败:"+esc(e.message||"")); }
@@ -1483,7 +1499,8 @@ async function cmpRun(prov,text,ens){
       const es=new EventSource(url(`/cmp/${prov}/v1/threads/${tid}/events?since_seq=${since}`));
       let done=false, sawTool=false, grace=null, phase="思考中", tick=null, poll=null, idle=null; const t0=Date.now();
       const secs=()=>Math.round((Date.now()-t0)/1000);
-      const finish=(failed)=>{ if(done)return; done=true; clearTimeout(grace); clearTimeout(idle); clearInterval(tick); clearInterval(poll); try{es.close()}catch(e){} cmpSetRunning(prov,false); CMP.turn[prov]=null; if(cur)cur.remove(); if(steps===0&&!rsn.textContent.trim()&&proc.parentNode)proc.remove(); if(A&&!ans.textContent.trim()&&!failed)A.remove(); if(st&&!/^[✓✗⏸⏱]/.test(st.textContent))st.textContent="✓ "+secs()+"s"; resolve(); };
+      const finish=(failed)=>{ if(done)return; done=true; clearTimeout(grace); clearTimeout(idle); clearInterval(tick); clearInterval(poll); try{es.close()}catch(e){} cmpSetRunning(prov,false); CMP.turn[prov]=null; if(cur)cur.remove(); if(ans&&!failed&&ans.textContent.trim()&&!ans.classList.contains("md")){ try{ ans.innerHTML=md(ans.textContent); ans.classList.add("md"); }catch(e){} }   // 收尾把流式纯文本整体重渲染成 markdown(跟单窗口一致);失败/已渲染则不动
+        if(steps===0&&!rsn.textContent.trim()&&proc.parentNode)proc.remove(); if(A&&!ans.textContent.trim()&&!failed)A.remove(); if(st&&!/^[✓✗⏸⏱]/.test(st.textContent))st.textContent="✓ "+secs()+"s"; resolve(); };
       // 空闲超时:只要还在出 SSE 事件(模型在干活)就一直续命;真正静默 180s 才判卡住。深度研究任务工具步骤多、跑很久也不会被误杀(原来死板的 240s 绝对超时会把没跑完的长任务一刀切)。
       const onIdle=()=>{ if(st&&!/^[✓✗⏸⏱]/.test(st.textContent)) st.textContent="⏱ 似乎卡住("+secs()+"s)"; finish(true); };
       const bump=()=>{ clearTimeout(idle); idle=setTimeout(onIdle, 180000); };
