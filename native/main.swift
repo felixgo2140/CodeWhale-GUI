@@ -106,12 +106,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     // 不实现时 WKWebView 默认全部静默失效(confirm 返回 false),导致所有 confirm/alert/prompt 功能点了没反应。
     func webView(_ w: WKWebView, runJavaScriptAlertPanelWithMessage msg: String, initiatedByFrame f: WKFrameInfo, completionHandler done: @escaping () -> Void) {
         let a = NSAlert(); a.messageText = "CodeWhale"; a.informativeText = msg; a.addButton(withTitle: "好")
-        if let win = window { a.beginSheetModal(for: win) { _ in done() } } else { a.runModal(); done() }
+        if let win = (w.window ?? window) { a.beginSheetModal(for: win) { _ in done() } } else { a.runModal(); done() }
     }
     func webView(_ w: WKWebView, runJavaScriptConfirmPanelWithMessage msg: String, initiatedByFrame f: WKFrameInfo, completionHandler done: @escaping (Bool) -> Void) {
         let a = NSAlert(); a.messageText = "CodeWhale"; a.informativeText = msg
         a.addButton(withTitle: "确定"); a.addButton(withTitle: "取消")
-        if let win = window { a.beginSheetModal(for: win) { r in done(r == .alertFirstButtonReturn) } }
+        if let win = (w.window ?? window) { a.beginSheetModal(for: win) { r in done(r == .alertFirstButtonReturn) } }
         else { done(a.runModal() == .alertFirstButtonReturn) }
     }
     func webView(_ w: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame f: WKFrameInfo, completionHandler done: @escaping (String?) -> Void) {
@@ -120,7 +120,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         let tf = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24)); tf.stringValue = defaultText ?? ""
         a.accessoryView = tf
         let handle: (NSApplication.ModalResponse) -> Void = { r in done(r == .alertFirstButtonReturn ? tf.stringValue : nil) }
-        if let win = window { a.beginSheetModal(for: win, completionHandler: handle) } else { handle(a.runModal()) }
+        if let win = (w.window ?? window) { a.beginSheetModal(for: win, completionHandler: handle) } else { handle(a.runModal()) }
     }
     // ── 文件选择面板(WKUIDelegate)── 不实现时 `<input type=file>` 在 WKWebView 里点了静默无效 → 附件 📎 按钮没反应。
     func webView(_ w: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame f: WKFrameInfo, completionHandler done: @escaping ([URL]?) -> Void) {
@@ -128,7 +128,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         p.canChooseFiles = true
         p.canChooseDirectories = parameters.allowsDirectories
         p.allowsMultipleSelection = parameters.allowsMultipleSelection
-        if let win = window { p.beginSheetModal(for: win) { r in done(r == .OK ? p.urls : nil) } }
+        if let win = (w.window ?? window) { p.beginSheetModal(for: win) { r in done(r == .OK ? p.urls : nil) } }
         else { done(p.runModal() == .OK ? p.urls : nil) }
     }
 

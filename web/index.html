@@ -1219,19 +1219,20 @@ api("/api/netenv").then(d=>{ CMP.fakeip=!!(d&&d.fakeip); }).catch(()=>{});
 async function openCompare(){
   $("#cmpView").hidden=false;
   CMP.busy=false; CMP.sendQ=[]; CMP.dispatching={}; CMP.attachments=[];   // 重开对比视图清掉可能遗留的发送队列/派发锁/附件,避免误判 busy 卡住发送
-  if(Object.keys(CMP.threads).length===0){ try{ await api("/api/compare/reset",{method:"POST",body:"{}"}); }catch(e){} }   // 没有进行中的对比会话→清掉可能残留的旧后端,确保各栏用当前配置/key 重启,杜绝"GLM/GPT 栏都答 DeepSeek"(残留后端连不上各自端点→回退 DeepSeek);有会话则不清,保留延续
-  try{ const d=await api("/api/model"); CMP.keyed=d.keyed||{}; }catch(e){}
-  try{ const mp=await api("/api/model-pref"); CMP.modelPrefs=mp.prefs||{}; CMP.modelEffort=mp.effort||{}; }catch(e){}   // 各列当前所选模型变体 + claude effort(下拉选中用)
+  // ① 先把界面渲染出来(用已有/默认状态,不等后端)→ 立刻可见,不再"显示先不全 / 刷新才出"
   if(CMP.sel.size===0){
-    ["deepseek","openai-codex"].forEach(p=>{ if(CMP.keyed[p]) CMP.sel.add(p); });
-    if(CMP.sel.size===0) CMP.sel.add("deepseek");
+    ["deepseek","openai-codex"].forEach(p=>{ if(CMP.keyed[p]) CMP.sel.add(p); });   // 已知 keyed 就按配置选
+    if(CMP.sel.size===0){ CMP.sel.add("deepseek"); CMP.sel.add("openai-codex"); }   // keyed 还没到 → 先默认两栏,保证有列
   }
   renderCmpChips(); renderCmpCols(); renderCmpToggles(); cmpSyncSendUI(); cmpRenderAttach();
   setCmpLayout(_cmpLay);   // 应用上次的排列方式(横/竖/田)+ 点亮按钮
   document.querySelectorAll("#cmpLayout .laybtn").forEach(b=>b.onclick=()=>setCmpLayout(b.dataset.l));
-  // 预热:后台把选中栏的后端 + 全 MCP 先起好(/health 1.6s,MCP 后台起几秒)→ 用户读题/打字时就绪,发送时不必干等
-  api("/api/compare/ensure",{method:"POST",body:JSON.stringify({providers:[...CMP.sel]})}).catch(()=>{});
   setTimeout(()=>{ const i=$("#cmpInput"); if(i) i.focus(); },60);
+  // ② 后端准备放后台(不挡渲染):取配置/偏好(到了刷新 chips 的"已配置"标记/下拉默认)+ 没会话时重置陈旧后端 + 预热
+  try{ const d=await api("/api/model"); CMP.keyed=d.keyed||{}; renderCmpChips(); }catch(e){}
+  try{ const mp=await api("/api/model-pref"); CMP.modelPrefs=mp.prefs||{}; CMP.modelEffort=mp.effort||{}; renderCmpChips(); }catch(e){}   // 各列当前所选模型变体 + claude effort
+  if(Object.keys(CMP.threads).length===0){ try{ await api("/api/compare/reset",{method:"POST",body:"{}"}); }catch(e){} }   // 清残留旧后端,杜绝"GLM/GPT 栏都答 DeepSeek";慢,放渲染之后
+  api("/api/compare/ensure",{method:"POST",body:JSON.stringify({providers:[...CMP.sel]})}).catch(()=>{});   // 预热选中栏后端
 }
 function closeCompare(){ $("#cmpView").hidden=true; }
 function openCompareWindow(sessionId){   // 开一个全新独立对比窗口(原生壳 createWebViewWith → 新 NSWindow,可拖/缩放/最小化、能同时开多个);带 sessionId 则在新窗口里还原那场对比
