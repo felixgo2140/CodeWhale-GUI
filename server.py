@@ -1059,7 +1059,7 @@ _threads_refresh_lock = threading.Lock()
 def _fetch_threads_now():
     """实际抓 :7878 summary(慢,可能 >8s);成功才更新内存 + 落盘。返回列表或 None。"""
     try:
-        arr = json.load(_LOCAL.open(f"http://127.0.0.1:7878/v1/threads/summary?limit=50", timeout=30))
+        arr = json.load(_LOCAL.open(f"http://127.0.0.1:7878/v1/threads/summary?limit=50", timeout=90))   # summary 本身慢(~0.8s/条,50 条 ~43s);后台抓放宽到 90s 保证刷得成(反正不阻塞请求)
     except Exception:
         return None
     if not isinstance(arr, list):
@@ -1075,17 +1075,23 @@ def _bg_refresh_threads():
     try: _fetch_threads_now()
     finally: _threads_cache["refreshing"] = False
 def _tag_compare(arr):
-    """给每条 thread 打 compare 标记 —— 权威取服务端 cmp_threads 注册表(每次刷新,不缓存)。
-    前端直接信这个标记分组,不再依赖前端本地 state.cmpThreads 是否已同步全 → 杜绝"对比对话散落进单聊列表"。"""
+    """给每条 thread 打 compare 标记 —— 权威双信号,每次刷新(不缓存),前端直接信、不依赖前端本地是否同步:
+    ① 在 cmp_threads 注册表(对比 cmpRun 经 /api/pin-thread 登记);
+    ② 被 pin 过(_tprov)—— 对比建的都会 pin;单聊只有 newchat≠默认 provider 时才 pin,那种排除掉。
+    两个信号任一命中即对比 → 杜绝"对比对话散落进单聊列表"。"""
     try: cmp_set = set(read_cmp_threads())
     except Exception: cmp_set = set()
+    nc = _newchat_provider(); dflt = _cfg_get("provider") or "deepseek"
+    single_prov = nc if nc != dflt else None   # newchat≠默认 → 单聊会 pin 到 nc(不算对比);newchat=默认 → 单聊不 pin,_tprov 全是对比
     for t in arr:
-        if isinstance(t, dict): t["compare"] = (t.get("id") in cmp_set)
+        if isinstance(t, dict):
+            tid = t.get("id")
+            t["compare"] = (tid in cmp_set) or (tid in _tprov and _tprov.get(tid) != single_prov)
     return arr
 def aggregate_threads():     # SWR:有缓存立刻返回,过期只后台刷新,绝不阻塞请求(开程序不再干等 8s)
     cached = _threads_cache["v"]
     if cached is not None:
-        if time.time() - _threads_cache["t"] >= 30.0 and not _threads_cache["refreshing"]:   # 过期 → 后台刷新(单飞,不阻塞;30s 间隔降低对 :7878 的持续占用,summary 本身要 ~12s)
+        if time.time() - _threads_cache["t"] >= 120.0 and not _threads_cache["refreshing"]:   # 过期 → 后台刷新(单飞,不阻塞;120s 间隔降低对 :7878 占用,summary 本身要 ~43s,太频繁会把 :7878 压满)
             with _threads_refresh_lock:
                 if not _threads_cache["refreshing"]:
                     _threads_cache["refreshing"] = True
