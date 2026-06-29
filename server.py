@@ -150,7 +150,7 @@ def _provider_key(prov):   # 读 [providers.<prov>] api_key
         s = open(CFG, encoding="utf-8").read()
     except Exception:
         return None
-    m = re.search(r'\[providers\.' + re.escape(prov) + r'\][^\[]*?api_key\s*=\s*"([^"]+)"', s, re.S)
+    m = re.search(r'\[providers\.' + re.escape(prov) + r'\][^\[]*?\n[ \t]*api_key[ \t]*=[ \t]*"([^"]+)"', s, re.S)   # 只认行首未注释的 api_key,跳过 "# api_key = 占位符"
     return m.group(1) if m else None
 def _zai_usage(key):
     # z.ai GLM Coding Plan 用量(prompts/tokens 每 5 小时窗口,非美元余额)。仅 Coding Plan 用户可读。
@@ -483,8 +483,9 @@ def _seed_cmp_from_tprov():
     try:
         newchat = _newchat_provider()
         existing = set(read_cmp_threads())
+        singles = set(read_single_threads())
         add = [tid for tid, prov in _tprov.items()
-               if prov not in (newchat, "anthropic") and tid not in existing]
+               if tid not in singles and prov not in (newchat, "anthropic") and tid not in existing]
         if add:
             write_cmp_threads(list(read_cmp_threads()) + add)
             print(f"[cmp-group] 回溯登记 {len(add)} 条历史对比对话(排除 newchat={newchat}/anthropic)", flush=True)
@@ -593,6 +594,8 @@ def provider_key_status():   # 哪些 provider 已有凭证(含 OAuth)
         parts = line.split()
         if len(parts) >= 5 and "-" * 5 not in line and parts[0] not in ("provider", "active"):
             keyed[parts[0]] = ("set" in parts[1:4]) or ("oauth" in line.lower())
+    if _provider_key("custom"):                    # custom 不在 codewhale auth 列表里(auth status 不报它)→ 直接看 config.toml 有没有 key
+        keyed["custom"] = True
     return keyed
 def _restart_appserver():
     _run(["/bin/launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.codewhale.appserver"], timeout=30)
@@ -604,10 +607,53 @@ def _appserver_healthy(tries=18, delay=0.6):
         except Exception:
             time.sleep(delay)
     return False
+def _set_custom_api_key(key):
+    # custom(腾讯混元 TokenHub 等 OpenAI 兼容槽)不在 `codewhale auth set` 的合法 provider 列表里,只能写配置段。
+    key = (key or "").strip()
+    if not key:
+        raise ValueError("空 key")
+    if '"' in key or "\n" in key or "\\" in key:
+        raise ValueError("key 含非法字符")
+    lines = open(CFG, encoding="utf-8").read().split("\n")
+    start = next((i for i, l in enumerate(lines) if l.strip() == "[providers.custom]"), None)
+    newln = 'api_key = "%s"' % key
+    if start is None:
+        lines += ["", "[providers.custom]",
+                  'base_url = "https://tokenhub.tencentmaas.com/v1"', newln]
+    else:
+        end = len(lines)
+        for j in range(start + 1, len(lines)):
+            if re.match(r'^\s*\[', lines[j]):
+                end = j; break
+        ki = next((j for j in range(start + 1, end)
+                   if re.match(r'^\s*#?\s*api_key\s*=', lines[j])), None)
+        if ki is not None:
+            lines[ki] = newln
+        else:
+            lines.insert(start + 1, newln)
+    tmp = CFG + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    os.replace(tmp, CFG)
+
 def set_model(provider, model, api_key):
     provider = (provider or "").strip()
     if not provider:
         return {"error": "provider required"}
+    if provider == "custom":
+        if api_key:
+            try:
+                _set_custom_api_key(api_key)
+            except Exception as e:
+                return {"error": "写入混元 key 失败: " + str(e)[:150]}
+        elif not _provider_key("custom"):
+            return {"error": "腾讯混元需要填入 TokenHub 的 api_key(sk- 开头)"}
+        _cmp_reset("custom")
+        if model:
+            try: _set_model_pref("custom", model)
+            except Exception: pass
+        return {"ok": True, "provider": "custom", "model": model or "hy3-preview",
+                "newchatCapable": True, "restarted": False, "note": "混元 key 已保存"}
     prev_p = _cfg_get("provider") or "deepseek"          # 记下当前可用配置,失败回退用
     prev_m = _cfg_get("default_text_model") or "deepseek-v4-pro"
     if api_key:
@@ -640,13 +686,13 @@ def _cmp_model(prov):
     return "deepseek-v4-pro" if prov == "deepseek" else "auto"   # 顶层 default_text_model 只认 "auto" 或 DeepSeek 模型 id;非 deepseek 一律 auto
 # 非 deepseek 的 default_text_model="auto" 会让 CodeWhale 自动路由、在轮次间乱选模型(GLM 栏一会儿答 GLM 一会儿答 deepseek)。
 # 真正定模型的是 [providers.<prov>].model。这里固定到各 provider 的具体 model(只放已验证的 id,避免乱填崩溃;按需扩展)。
-_CMP_PIN_MODEL = {"zai": "GLM-5.2"}
+_CMP_PIN_MODEL = {"zai": "GLM-5.2", "custom": "hy3-preview"}
 # 真正生效的是「建线程时把 model 钉到 thread 级」——default_text_model="auto" 的自动路由会按 prompt 乱选模型、
 # 无视 provider 与 [providers].model;只有 thread.model 是具体 id 才压得住。建会话/对比建线程时注入这个。
 # claude-code 必须钉 thread.model="sonnet" 做**确定性路由**:default_text_model="auto" 会让 CodeWhale 逐轮自动路由、
 # 时不时把 claude 栏答成 deepseek。"sonnet" 是 claude-code 已注册的合法 wire model(钉它不会 400;钉 "opus" 这种未注册名才会被 deepseek 校验拒)。
 # 它只是"路由键",真正传给 `claude -p` 的模型由 _CLAUDE_CODE_MODEL 经 env 覆盖(见下)——所以钉 sonnet 路由、实际跑 opus 不矛盾。
-_CMP_FORCE_MODEL = {"deepseek": "deepseek-v4-pro", "zai": "GLM-5.2", "openai-codex": "gpt-5.5", "claude-code": "sonnet", "moonshot": "kimi-for-coding"}   # kimi-for-coding = Kimi Code 平台(api.kimi.com/coding)唯一/最新编码模型(当前=K2.7-code,/models 权威列它);旧 kimi-k2 只是宽松别名
+_CMP_FORCE_MODEL = {"deepseek": "deepseek-v4-pro", "zai": "GLM-5.2", "openai-codex": "gpt-5.5", "claude-code": "sonnet", "moonshot": "kimi-for-coding", "custom": "hy3-preview"}   # kimi-for-coding = Kimi Code 平台唯一/最新编码模型;custom 槽=腾讯混元(TokenHub OpenAI 兼容)
 _CLAUDE_CODE_MODEL = "opus"   # claude 订阅列实际调用的模型(显式钉 Opus 4.8;也可填 opus/sonnet/haiku 别名)。绕开注册表直传官方 CLI
 # claude -p 委派的模型常因训练截止误报旧版本(实测 claude-opus-4-8 自报 "Opus 4.6" 甚至否认 4.8 存在),
 # 注入一句权威身份纠正它。切模型时**同时**改这两行保持一致。
@@ -852,6 +898,26 @@ def _refresh_native_app():
         _app_refresh_lock.release()
 def _cmp_safe(prov):
     return re.sub(r'[^a-zA-Z0-9_-]', '_', prov)
+def _cmp_reset(prov):
+    # 改 provider key/model 后,杀旧 per-provider 后端并删派生配置,下次请求用新配置重起。
+    with _cmp_lock:
+        port = CMP_PORTS.pop(prov, None)
+    if port:
+        _PORT_UP.pop(port, None)
+        try:
+            out = subprocess.run(["lsof", "-nP", "-tiTCP:%d" % port, "-sTCP:LISTEN"],
+                                 capture_output=True, text=True, timeout=5).stdout
+            for pid in out.split():
+                try: os.kill(int(pid), 9)
+                except Exception: pass
+        except Exception: pass
+    try:
+        os.remove(os.path.join(CMP_DIR, _cmp_safe(prov) + ".toml"))
+    except Exception: pass
+def _provider_config_error(prov):
+    if prov == "custom" and not _provider_key("custom"):
+        return "腾讯混元 API key 未配置:点击左下「🧠 模型」→「腾讯混元」→ 粘贴 TokenHub api_key →「保存并设为新对话模型」"
+    return None
 _COMPARE_SKILL_MD = """---
 name: compare-research
 description: 多模型对比窗口里的高效取数与研究规范。任何需要联网/取数/研究的任务(行情、财报、SEC 内幕、新闻、个股分析)都按本规范执行——拿结构化小数据、别硬爬整页、别重复抓、控制上下文 token。
@@ -917,7 +983,7 @@ def _cmp_write_config(prov):
         s = re.sub(r'(?m)^default_text_model\s*=.*$', f'default_text_model = "{_cmp_model(prov)}"', s, count=1)
     else:
         s = f'default_text_model = "{_cmp_model(prov)}"\n' + s
-    pin = _CMP_PIN_MODEL.get(prov)                               # 固定 [providers.<prov>].model → 该栏稳定用对的模型,不再被 auto 路由带跑
+    pin = _model_pref(prov) if prov in _CMP_PIN_MODEL else None  # 固定 [providers.<prov>].model → 该栏稳定用用户选择的模型,不再被 auto 路由带跑
     if pin:
         hdr = f"[providers.{prov}]"
         if re.search(r'(?m)^' + re.escape(hdr) + r'\s*$', s):
@@ -951,6 +1017,9 @@ def _port_up(port):
 def ensure_provider_server(prov):
     if not re.match(r'^[a-zA-Z0-9_-]+$', prov or ""):
         raise ValueError("非法 provider")
+    err = _provider_config_error(prov)
+    if err:
+        raise RuntimeError(err)
     if not _CW_PATCHED:                                          # 缺补丁二进制 → 先自动下载(同步,首次约几十秒)。所有对比列都靠它吃 OCR 增强
         ok = _ensure_patched_binaries(block=True)
         if not ok and prov == "claude-code":                    # claude-code 没补丁就跑不了(致命);其它列回退官方二进制(只是没 OCR 增强)
@@ -1014,15 +1083,41 @@ def _pin_thread(tid, prov):
         _tprov[tid] = prov
         try: json.dump(_tprov, open(_TPROV_FILE, "w"))
         except Exception: pass
+SINGLE_THREADS_FILE = os.path.expanduser("~/.codewhale-gui/single_threads.json")
+def read_single_threads():   # 单窗口主动 pin 过的 thread:不应被 _tprov 兜底误归到对比分组
+    try:
+        d = json.load(open(SINGLE_THREADS_FILE))
+        return [str(x) for x in d] if isinstance(d, list) else []
+    except Exception:
+        return []
+def _mark_single_thread(tid):
+    if not tid:
+        return
+    ids = list(dict.fromkeys(read_single_threads() + [tid]))[-3000:]
+    os.makedirs(os.path.dirname(SINGLE_THREADS_FILE), exist_ok=True)
+    tmp = SINGLE_THREADS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(ids, f)
+    os.replace(tmp, SINGLE_THREADS_FILE)
 NEWCHAT_FILE = os.path.expanduser("~/.codewhale-gui/newchat.json")
+_NEWCHAT_REQUIRES_KEY = {"custom"}   # custom=腾讯混元 OpenAI 兼容槽,可做单窗口新对话,但必须先有 api_key
 def _newchat_provider():
+    default = _cfg_get("provider") or "deepseek"
+    if default in _NEWCHAT_REQUIRES_KEY and not _provider_key(default):
+        default = "deepseek"
     try:
         p = (json.load(open(NEWCHAT_FILE)).get("provider") or "").strip()
-        if p: return p
+        if p in _NEWCHAT_REQUIRES_KEY and not _provider_key(p):
+            _set_newchat_provider(default)
+            return default
+        if p:
+            return p
     except Exception:
         pass
-    return _cfg_get("provider") or "deepseek"
+    return default
 def _set_newchat_provider(prov):
+    if prov in _NEWCHAT_REQUIRES_KEY and not _provider_key(prov):
+        raise ValueError("腾讯混元 API key 未配置,请先在模型面板保存混元 key")
     os.makedirs(os.path.dirname(NEWCHAT_FILE), exist_ok=True)
     json.dump({"provider": prov}, open(NEWCHAT_FILE, "w"))
 def _route_base(path):       # /v1/threads/<tid>/* 路由到该对话锁定的 provider 后端;未锁定或锁定=当前默认→:7878
@@ -1033,6 +1128,21 @@ def _route_base(path):       # /v1/threads/<tid>/* 路由到该对话锁定的 p
             try: return f"http://127.0.0.1:{ensure_provider_server(prov)}"
             except Exception: pass
     return UPSTREAM
+def _switch_single_thread_provider(tid, prov, model=None):
+    if prov in _NEWCHAT_REQUIRES_KEY and not _provider_key(prov):
+        raise RuntimeError("腾讯混元 API key 未配置,请先在模型面板保存混元 key")
+    if model:
+        _set_model_pref(prov, model)
+    default_prov = _cfg_get("provider") or "deepseek"
+    base = UPSTREAM if prov == default_prov else f"http://127.0.0.1:{ensure_provider_server(prov)}"
+    fm = _thread_model(prov) if _CMP_FORCE_MODEL.get(prov) else (model or None)
+    if fm:
+        body = json.dumps({"model": fm}).encode()
+        req = urllib.request.Request(f"{base}/v1/threads/{tid}", data=body, method="PATCH", headers={"Content-Type": "application/json"})
+        _LOCAL.open(req, timeout=30).read()
+    _pin_thread(tid, prov)
+    _mark_single_thread(tid)
+    return {"ok": True, "thread_id": tid, "provider": prov, "model": fm or model or ""}
 def _model_to_provider(model):   # 从会话真实 model 反推 provider(thread.model 已被钉准,比 _tprov 锁定表可靠)→ 侧栏标签必和模型一致
     m = (model or "").lower()
     if not m or m == "auto":
@@ -1042,6 +1152,7 @@ def _model_to_provider(model):   # 从会话真实 model 反推 provider(thread.
     if "gpt" in m:      return "openai-codex"
     if "claude" in m:   return "anthropic"
     if "kimi" in m or "moonshot" in m: return "moonshot"
+    if "hunyuan" in m or "hy3" in m or m.startswith("hy-"): return "custom"
     if "gemini" in m:   return "openrouter"
     return None
 # ── 线程列表 stale-while-revalidate ──
@@ -1082,11 +1193,12 @@ def _tag_compare(arr):
     try: cmp_set = set(read_cmp_threads())
     except Exception: cmp_set = set()
     nc = _newchat_provider(); dflt = _cfg_get("provider") or "deepseek"
+    single_set = set(read_single_threads())
     single_prov = nc if nc != dflt else None   # newchat≠默认 → 单聊会 pin 到 nc(不算对比);newchat=默认 → 单聊不 pin,_tprov 全是对比
     for t in arr:
         if isinstance(t, dict):
             tid = t.get("id")
-            t["compare"] = (tid in cmp_set) or (tid in _tprov and _tprov.get(tid) != single_prov)
+            t["compare"] = (tid in cmp_set) or (tid in _tprov and tid not in single_set and _tprov.get(tid) != single_prov)
     return arr
 def aggregate_threads():     # SWR:有缓存立刻返回,过期只后台刷新,绝不阻塞请求(开程序不再干等 8s)
     cached = _threads_cache["v"]
@@ -1432,8 +1544,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             prov = (data.get("provider") or "").strip()
             if not re.match(r'^[a-zA-Z0-9_-]+$', prov):
                 return self._json({"error": "非法 provider"}, 400)
+            if prov in _NEWCHAT_REQUIRES_KEY and not _provider_key(prov):
+                return self._json({"error": "腾讯混元 API key 未配置,请先在模型面板保存混元 key"}, 400)
             _set_newchat_provider(prov)
             return self._json({"ok": True, "provider": prov})
+        if p == "/api/thread-provider":   # 单窗口:把当前已有对话切到指定 provider/model,下一条消息立即生效(不新建 thread/窗口)
+            if not self._authed():
+                return self._deny()
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            tid = (data.get("tid") or data.get("thread_id") or "").strip()
+            prov = (data.get("provider") or "").strip()
+            model = (data.get("model") or "").strip()
+            if not re.match(r'^thr_[a-zA-Z0-9_-]+$', tid) or not re.match(r'^[a-zA-Z0-9_-]+$', prov):
+                return self._json({"error": "非法 tid/provider"}, 400)
+            if model and not re.match(r'^[A-Za-z0-9._-]+$', model):
+                return self._json({"error": "非法 model"}, 400)
+            try:
+                return self._json(_switch_single_thread_provider(tid, prov, model or None))
+            except Exception as e:
+                return self._json({"error": str(e)[:200]}, 502)
         if p == "/api/model-pref":   # 设置某 provider 选用的模型变体(单窗口 + 对比共用)
             if not self._authed():
                 return self._deny()
@@ -1497,6 +1627,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 d = json.loads(_LOCAL.open(req, timeout=30).read())   # 必须用关键字 timeout!位置传 30 会被当成 data=30(int)→ http.client "message_body got int"→ 新建对话 502
                 if d.get("id") and prov != default_prov:
                     _pin_thread(d["id"], prov)                       # 默认 provider 不 pin(本就走 UPSTREAM,pin 反而触发跨后端不一致)
+                    _mark_single_thread(d["id"])
             except Exception as e:
                 return self._json({"error": str(e)[:200]}, 502)
             return self._json(d)

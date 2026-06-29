@@ -1,5 +1,20 @@
 # 更新日志
 
+## v2.5.24 — 混元接入完善 + 对比分列排队
+
+### 新增
+- **腾讯混元(TokenHub)正式进单窗口 + 对比窗口模型下拉**:补齐 `hy3-preview` / `hy-mt2-pro` / `hy-mt2-plus` / `hy-mt2-lite` / `hunyuan-role-latest` / `hy-role`,并保留可手填模型 ID 的逃生口。`custom` provider 的 key 不再走 `codewhale auth set`(CLI 不认 custom),改为安全写入 `[providers.custom].api_key`。
+- **侧栏可横向拖拽调整宽度**:宽度写入 `localStorage`,下次打开保持。
+
+### 修复 / 优化
+- **单窗口切模型立即作用到当前对话下一条**:不再只是影响“新建对话”。当前打开的 thread 会被锁到新 provider/model,下一条消息直接走新模型;其它旧对话保持原模型不变。
+- **多模型对比队列改为分列调度**:不再“有一个模型没完成,所有下一条都等着”。完成的列会先收到下一条,仍在跑的列只保留自己的队列,等当前轮结束后自动补发。
+- **所有输入框禁横向滚动条并自动换行**:主输入框、对比总输入框、单列追问框都强制 `wrap=soft` + `overflow-wrap:anywhere`,避免部分机器出现横向滚动条。
+- **单聊 / 对比分组更稳**:单窗口主动 pin 过的 thread 记录到 `single_threads.json`,避免被 `_tprov` 兜底误归到多模型对比分组。
+
+### 备注
+- 纯网页 + server.py 改动,在线更新即生效;二进制/原生 app 不变,不重下。
+
 ## v2.5.23 — 单窗口发首条消息也立刻生成可见 thread
 
 ### 修复
