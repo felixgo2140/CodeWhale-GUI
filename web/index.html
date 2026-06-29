@@ -558,8 +558,10 @@ async function loadCmpSessions(){ try{ const r=await api("/api/cmp-sessions"); i
     const byId=new Map(state.cmpSessions.map(s=>[s.id,s]));
     for(const s of r){ const cur=byId.get(s.id);   // 服务端 ∪ 本地:同 id 取 thread 更全的那份
       if(!cur || Object.keys(s.threads||{}).length>=Object.keys(cur.threads||{}).length) byId.set(s.id,s); }
+    const sigOf=a=>a.map(s=>s.id+":"+(s.ts||0)+":"+Object.keys(s.threads||{}).sort().map(p=>p+"="+s.threads[p]).join(",")).join("|");
+    const before=sigOf(state.cmpSessions);
     const merged=[...byId.values()].sort((a,b)=>(b.ts||0)-(a.ts||0));
-    const changed=merged.length!==state.cmpSessions.length;
+    const changed=sigOf(merged)!==before;
     state.cmpSessions=merged; try{ localStorage.setItem("cw_cmp_sessions",JSON.stringify(merged.slice(0,500))); }catch(e){}
     if(changed){ state._sig=null; renderThreads(); }
   }catch(e){ /* 离线:沿用 localStorage */ } }
@@ -1283,7 +1285,7 @@ async function checkSetup(){   // 当前 provider 还没配 key(且非 OAuth)→
     if(p && !keyed[p]){ setTimeout(()=>{ if(!$("#modal").classList.contains("show")) openModelSwitch(); }, 600); }
   }catch(e){}
 }
-setInterval(loadThreads, 4000);   // 轮询刷新侧栏状态点(多会话实时感)
+setInterval(()=>{ loadThreads(); loadCmpSessions(); }, 4000);   // 轮询刷新侧栏状态点 + 对比会话收编(独立对比窗口写入后主窗口自动合组)
 setInterval(loadBalance, 60000);  // 每分钟刷新 DeepSeek 余额
 loadVersion(); checkUpdate(); setInterval(checkUpdate, 3600000);   // CodeWhale 后端版本号 + 启动/每小时查新版
 checkGuiUpdate(); setInterval(checkGuiUpdate, 3600000);            // GUI 界面:启动 + 每小时查新版(签名验证)
