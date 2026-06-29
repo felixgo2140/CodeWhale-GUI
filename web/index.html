@@ -412,10 +412,15 @@ async function loadThreads(){
   state._loadingThreads=true;
   try{
     const t = await api("/api/threads/all");   // 聚合各 provider 后端的会话,带 provider 标签(每对话锁模型)
-    setConn(true); state.threads=t;
-    const at=t.find(x=>x.id===state.activeId);   // 兜底:SSE 漏收 turn.completed 时,靠轮询发现活动会话已结束 → 收尾 + 发队列
+    setConn(true);
+    if(state.pendingNew && state.pendingNew.length){   // 乐观新建、尚未进慢 SWR 缓存的新对话:保留在列表里,直到它真出现(否则后台刷新会把它冲掉 → 新对话闪一下就没了)
+      const ids=new Set(t.map(x=>x.id));
+      state.pendingNew=state.pendingNew.filter(p=>!ids.has(p.id));   // 已出现在真实列表 → 不再 pending
+      state.threads=[...state.pendingNew, ...t];
+    } else state.threads=t;
+    const at=state.threads.find(x=>x.id===state.activeId);   // 兜底:SSE 漏收 turn.completed 时,靠轮询发现活动会话已结束 → 收尾 + 发队列
     if(at && state.running && ["completed","failed","interrupted","canceled","cancelled"].includes(at.latest_turn_status)){ setRunning(false); processQueue(); }
-    const sig=JSON.stringify(t.map(x=>[x.id,x.title,x.latest_turn_status,x.updated_at,x.provider]))+"|"+[...state.pinned].sort().join(",")+"|"+[...state.cmpThreads].sort().join(",")+"|"+state.cmpSessions.map(s=>s.id+":"+Object.keys(s.threads||{}).length).join(",")+"|"+[...state.grpCollapsed].sort().join(",")+"|"+state.activeId;   // 含 provider/对比集/会话/折叠态:任一变都重渲染侧栏
+    const sig=JSON.stringify(state.threads.map(x=>[x.id,x.title,x.latest_turn_status,x.updated_at,x.provider]))+"|"+[...state.pinned].sort().join(",")+"|"+[...state.cmpThreads].sort().join(",")+"|"+state.cmpSessions.map(s=>s.id+":"+Object.keys(s.threads||{}).length).join(",")+"|"+[...state.grpCollapsed].sort().join(",")+"|"+state.activeId;   // 从合并后列表算(含 pending):含 provider/对比集/会话/折叠态,任一变都重渲染
     if(sig!==state._sig){ state._sig=sig; renderThreads(); }   // 仅当列表真变化才重建 DOM,避免轮询吞掉点击
   }catch(e){ setConn(false); console.warn(e); }
   finally{ state._loadingThreads=false; }
@@ -880,8 +885,19 @@ async function interrupt(){
   catch(e){ sysnote("停止失败: "+e.message); }
 }
 async function newThread(){
-  try{ const t=await createThread(); await loadThreads(); openThread(t.id); $("#input").focus(); }
-  catch(e){ alert("新建失败: "+e.message); }
+  try{
+    const t=await createThread();
+    if(t && t.id){
+      let prov="deepseek"; try{ prov=(await api("/api/newchat-provider")).provider||"deepseek"; }catch(e){}
+      const opt={id:t.id, title:t.title||"新对话", preview:"", provider:prov, compare:false, updated_at:new Date().toISOString(), latest_turn_status:""};
+      state.pendingNew=state.pendingNew||[];   // 乐观:立刻进侧栏(慢 SWR 缓存要很久才有这条),pending 保证后台刷新不冲掉
+      if(!state.pendingNew.find(x=>x.id===t.id)) state.pendingNew.unshift(opt);
+      if(!state.threads.find(x=>x.id===t.id)) state.threads.unshift(opt);
+      state._sig=null; renderThreads();   // 马上看到新对话
+      openThread(t.id); $("#input").focus();
+    }
+    loadThreads();   // 后台刷真实信息(标题/状态),不 await;pendingNew 会被保留直到真出现
+  }catch(e){ alert("新建失败: "+e.message); }
 }
 
 /* ---------- 附件上传 ---------- */
