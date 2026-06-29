@@ -831,7 +831,7 @@ async function send(queuedText){
   if(text===undefined){ text=inp.value.trim(); if(!text && !state.attachments.length) return; inp.value=""; inp.style.height="auto"; text=withAttachments(text); _stick=true; }   // 新发:折入附件路径 + 贴底
   if(!text) return;
   try{
-    if(!state.activeId){ const t=await createThread(); await openThread(t.id); loadThreads(); }   // loadThreads 只刷侧栏列表,不阻塞发送(它聚合多后端可能慢几秒);openThread 不依赖它
+    if(!state.activeId){ const t=await createThread(); _addOptimisticThread(t.id, text.replace(/\s+/g," ").trim().slice(0,40)); await openThread(t.id); loadThreads(); }   // 乐观立刻把新 thread 加进侧栏(否则慢 SWR 缓存下首条消息不生成可见 thread,要发第二条才出现);loadThreads 后台刷,不阻塞
     // 乐观渲染:会话就绪后立刻显示用户消息 + 进入"运行中"(思考指示),不等 SSE。否则首条要等后端起 turn(~1s+,推理模型更久),
     // 这段时间窗口空白,体感像"卡住/过好久才显示"。真 user_message 事件到达时由 startItem 认领这个气泡,不重复。
     const oel=row("user","你"); oel.querySelector(".content").innerHTML=md(text); $("#mwrap").appendChild(oel); state._optimUser=oel; setRunning(true); scrollDown(true);
@@ -884,19 +884,22 @@ async function interrupt(){
     sysnote("⏹ 已请求停止"); }
   catch(e){ sysnote("停止失败: "+e.message); }
 }
+// 乐观把新对话立刻加进侧栏(慢 SWR 缓存要很久才有它)。pendingNew 保证后台 loadThreads 刷新时不被冲掉,直到它真出现再去重。
+// 新建按钮 + 单窗口发首条消息(隐式建 thread)都走它。
+function _addOptimisticThread(tid, title){
+  if(!tid) return;
+  const prov=window._newchatProv||"deepseek";
+  const opt={id:tid, title:title||"新对话", preview:"", provider:prov, compare:false, updated_at:new Date().toISOString(), latest_turn_status:""};
+  state.pendingNew=state.pendingNew||[];
+  if(!state.pendingNew.find(x=>x.id===tid)) state.pendingNew.unshift(opt);
+  if(!state.threads.find(x=>x.id===tid)) state.threads.unshift(opt);
+  state._sig=null; renderThreads();
+}
 async function newThread(){
   try{
     const t=await createThread();
-    if(t && t.id){
-      let prov="deepseek"; try{ prov=(await api("/api/newchat-provider")).provider||"deepseek"; }catch(e){}
-      const opt={id:t.id, title:t.title||"新对话", preview:"", provider:prov, compare:false, updated_at:new Date().toISOString(), latest_turn_status:""};
-      state.pendingNew=state.pendingNew||[];   // 乐观:立刻进侧栏(慢 SWR 缓存要很久才有这条),pending 保证后台刷新不冲掉
-      if(!state.pendingNew.find(x=>x.id===t.id)) state.pendingNew.unshift(opt);
-      if(!state.threads.find(x=>x.id===t.id)) state.threads.unshift(opt);
-      state._sig=null; renderThreads();   // 马上看到新对话
-      openThread(t.id); $("#input").focus();
-    }
-    loadThreads();   // 后台刷真实信息(标题/状态),不 await;pendingNew 会被保留直到真出现
+    if(t && t.id){ _addOptimisticThread(t.id, "新对话"); openThread(t.id); $("#input").focus(); }
+    loadThreads();   // 后台刷真实信息,不 await;pendingNew 会被保留直到真出现
   }catch(e){ alert("新建失败: "+e.message); }
 }
 
@@ -1012,6 +1015,7 @@ const PROV_SHORT={deepseek:"DeepSeek",zai:"GLM",moonshot:"Kimi","openai-codex":"
 async function loadModelLabel(){ try{ const d=await api("/api/model"); const c=d.current||{};
   let nc=""; try{ nc=(await api("/api/newchat-provider")).provider||""; }catch(e){}   // "新对话 provider":单窗口新建对话实际走它(可能 != 主配置,如主后端 deepseek 但新对话 claude-code)
   const prov=nc||c.provider||"?";
+  window._newchatProv=prov;   // 缓存新对话 provider → 乐观新建时直接用,不在发送关键路径再请求
   const disp=(prov===c.provider && c.model && c.model!=="auto") ? c.model : (PROV_SHORT[prov]||prov);   // chip 代表"下一个新对话用什么";newchat 覆盖主配置时显 newchat 友好名
   const nm=$("#modelname"); if(nm) nm.textContent=disp;
   const chip=$("#modelchip"); if(chip) chip.title=`新对话用:${prov}${nc&&nc!==c.provider?`(主后端 ${c.provider})`:""} — 点击切换`;
