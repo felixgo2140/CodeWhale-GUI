@@ -1220,7 +1220,10 @@ const MODEL_VARIANTS={
 };
 // 支持推理 effort 的 provider:claude-code(claude -p --effort)、openai-codex(GPT,Responses reasoning.effort)。其它家 runtime 不传 effort。
 const EFFORT_PROVIDERS=["claude-code","openai-codex"];
-const EFFORT_OPTS=[{v:"",n:"effort:默认"},{v:"low",n:"低"},{v:"medium",n:"中"},{v:"high",n:"高"}];
+const EFFORT_OPTS=[{v:"",n:"effort:默认"},{v:"low",n:"低"},{v:"medium",n:"中"},{v:"high",n:"高"}];   // 默认(claude-code):claude -p --effort 只认 low/medium/high
+// GPT(openai-codex,Responses API)支持更高档:xhigh/max 实测真做更多推理(high=305 reasoning token,xhigh=830),runtime filter 已放行
+const EFFORT_OPTS_BY_PROV={ "openai-codex":[{v:"",n:"effort:默认"},{v:"low",n:"低"},{v:"medium",n:"中"},{v:"high",n:"高"},{v:"xhigh",n:"超高"},{v:"max",n:"最高"}] };
+function effortOptsFor(prov){ return EFFORT_OPTS_BY_PROV[prov] || EFFORT_OPTS; }
 // 本机是否 fake-ip 代理环境(普通机器=false→不发 curl/MCP 引导,fetch_url 照常用;被劫持机器=true→引导走 curl/MCP)
 api("/api/netenv").then(d=>{ CMP.fakeip=!!(d&&d.fakeip); }).catch(()=>{});
 async function openCompare(){
@@ -1300,12 +1303,10 @@ async function cmpSetModel(prov, model){   // 选了某栏的模型变体:存 pr
   const b=$("#cmpb-"+prov); if(b) b.innerHTML="";
   cwToast((PROV_SHORT[prov]||prov)+" 模型 → "+model+"(下一条起生效)");
 }
-async function cmpSetEffort(prov, effort){   // Claude 推理 effort:存 pref(走 env,后端重启)+ 清空该栏,下条生效
+async function cmpSetEffort(prov, effort){   // 推理 effort:存 pref(走 env,后端重启)→ 下一条起生效。effort 不是 thread-locked(只是每轮/env 参数),所以**不清 thread、不清内容**(旧对话留着,继续追问即用新 effort)
   CMP.modelEffort=CMP.modelEffort||{}; CMP.modelEffort[prov]=effort;
   try{ await api("/api/model-pref",{method:"POST",body:JSON.stringify({provider:prov,effort})}); }catch(e){}
-  delete CMP.threads[prov]; CMP.seq[prov]=0;
-  const b=$("#cmpb-"+prov); if(b) b.innerHTML="";
-  cwToast((PROV_SHORT[prov]||prov)+" 推理 → "+(effort||"默认")+"(下一条起生效)");
+  cwToast((PROV_SHORT[prov]||prov)+" 推理 → "+(effort||"默认")+"(下一条起生效,历史保留)");
 }
 function renderCmpToggles(){ const a=$("#cmpAutoTgl"), s=$("#cmpShellTgl"); if(a) a.classList.toggle("on",CMP.autoApprove); if(s) s.classList.toggle("on",CMP.allowShell); }
 async function cmpApplyFlags(){   // 把当前开关同步到所有已建对比会话
@@ -1340,7 +1341,7 @@ function renderCmpCols(){   // diff:保留已有栏内容,只增删变化的
       : `<span class="cmpmodel" title="此栏实际调用的模型">${esc(cur)}</span>`;
     if(EFFORT_PROVIDERS.includes(p.id)){   // Claude / GPT:推理 effort 下拉(下条起生效)
       const ce=(CMP.modelEffort&&CMP.modelEffort[p.id])||"";
-      modelEl += `<select class="cmpmodel cmpeffortsel" data-p="${p.id}" title="推理 effort(下条起生效)">${EFFORT_OPTS.map(o=>`<option value="${o.v}" ${o.v===ce?"selected":""}>${o.n}</option>`).join("")}</select>`;
+      modelEl += `<select class="cmpmodel cmpeffortsel" data-p="${p.id}" title="推理 effort(下条起生效,历史保留)">${effortOptsFor(p.id).map(o=>`<option value="${o.v}" ${o.v===ce?"selected":""}>${o.n}</option>`).join("")}</select>`;
     }
     d.innerHTML=`<div class="cmpcol-h" data-p="${p.id}"><span class="cnm">${nm}</span>`+
       modelEl+

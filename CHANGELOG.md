@@ -1,5 +1,13 @@
 # 更新日志
 
+## v2.5.21 — 修对比 effort 两 bug
+
+### 修复
+- **切 effort 不再清空该栏内容**:`cmpSetEffort` 之前会 `delete CMP.threads` + 清空气泡(误把 effort 当 model 那样 thread-locked)。其实 effort 只是 env/每轮参数(后端重启即生效,thread 在共享存储里还在),所以改为**只存 pref、不清 thread/内容**——切 effort 后历史保留,下一条起用新 effort。
+- **GPT effort 不止三种**:GPT-5.5(Responses API)实测支持更高推理档(`high`=305 reasoning token,`xhigh`=830,约 3 倍,耗时更长,是真·更高 effort,非假值)。给 GPT 列 effort 下拉加 **超高(xhigh)/ 最高(max)**,共 6 档(默认/低/中/高/超高/最高)。Claude 仍 4 档(claude -p --effort 只认 low/medium/high)。effort 选项改为 **provider-specific**。
+
+### 备注
+- 纯网页改动,在线更新 ⌘R 即见,二进制/原生 app 不变、不重下。
 ## v2.5.20 — 分组 compare 标记加 _tprov 兜底 + 慢 summary 超时放宽
 
 ### 修复 / 优化
