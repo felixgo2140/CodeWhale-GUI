@@ -1081,7 +1081,7 @@ async function openModelSwitch(preselect){
     if(EFFORT_PROVIDERS.includes(sel.value)){ $("#meffortrow").style.display="flex"; $("#meffort").value=(window._effortPrefs&&window._effortPrefs[sel.value])||""; }   // Claude / GPT 有推理 effort
     else $("#meffortrow").style.display="none";
     $("#mkeyrow").style.display=p.oauth?"none":"flex";
-    $("#mkey").placeholder=p.oauth?"OAuth 登录,无需 key":(keyed[p.id]?"已配置,留空=不改":(p.cmpKeyOnly?"必填:TokenHub api_key(sk- 开头)":"必填:该 provider 的 API key"));
+    $("#mkey").placeholder=p.oauth?"OAuth 登录,无需 key":(keyed[p.id]?"已配置,留空=不改":(p.cmpKeyOnly?"必填:TokenHub 模型调用 api_key(sk- 开头)":"必填:该 provider 的 API key"));
     const sw=$("#mswitch"); if(sw) sw.textContent=p.cmpKeyOnly?"保存并应用到当前对话":(p.newchatOnly?"应用到当前对话":"切换并应用到当前对话"); };   // custom/claude-code 不切主后端,但可 pin 当前 thread
   sel.onchange=sync; sync();
   $("#mswitch").onclick=async()=>{
@@ -1090,13 +1090,14 @@ async function openModelSwitch(preselect){
     const vars=MODEL_VARIANTS[provider]||[];
     const variant = vars.length ? (p.freeModel ? ($("#mmodel").value.trim() || $("#mvariant").value) : $("#mvariant").value) : $("#mmodel").value.trim();   // 所选模型变体/手填模型 ID
     if(!p.oauth && !keyed[provider] && !api_key){ alert("该 provider 还没配置 key —— 请先填 API key"); return; }
-    const b=$("#mswitch"); b.textContent=p.cmpKeyOnly?"保存中…":(p.newchatOnly?"切换中…":"切换中,重启后端…"); b.disabled=true;
+    const b=$("#mswitch"); b.textContent=p.cmpKeyOnly?"校验中…":(p.newchatOnly?"切换中…":"切换中,重启后端…"); b.disabled=true;
     try{
       if(p.cmpKeyOnly){
         // 腾讯混元:auth CLI 不认 custom,所以 /api/model 只负责写 [providers.custom].api_key;
         // 单窗口新对话再通过 /api/newchat-provider 路由到独立 custom 后端,主 :7878 保持 deepseek 不动。
         const d=await api("/api/model",{method:"POST",body:JSON.stringify({provider,model:variant||p.model||"hy3-preview",api_key})});
-        if(d.error){ alert("保存失败: "+d.error); b.textContent="保存并设为新对话模型"; b.disabled=false; return; }
+        if(d.error){ alert("保存失败: "+d.error); b.textContent="保存并应用到当前对话"; b.disabled=false; return; }
+        if(d.warning){ b.title=d.warning; cwToast("⚠ "+d.warning); }
         if(variant){ try{ await api("/api/model-pref",{method:"POST",body:JSON.stringify({provider,model:variant})}); }catch(e){} }
         await api("/api/newchat-provider",{method:"POST",body:JSON.stringify({provider})});
         if(state.activeId) await switchActiveThreadProvider(provider, variant||p.model||"hy3-preview");

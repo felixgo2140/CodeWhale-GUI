@@ -1,5 +1,13 @@
 # 更新日志
 
+## v2.5.26 — 混元 key 保存前校验
+
+### 优化
+- **腾讯混元(TokenHub)key 保存前先校验**:模型面板现在会先检查是否为 TokenHub 模型调用 `sk-` key,并用极小请求探测鉴权。`invalid api key` 会直接阻止保存并提示不要填腾讯云 SecretId/SecretKey/API Key ID;`402/FREE_QUOTA_EXHAUSTED` 会明确提示是套餐/额度问题,不再误判为 GUI 更新不完整。
+
+### 备注
+- 纯网页 + server.py 改动,在线更新即生效;二进制/原生 app 不变,不重下。
+
 ## v2.5.25 — 修对比会话首轮自动合组
 
 ### 修复

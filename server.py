@@ -152,6 +152,38 @@ def _provider_key(prov):   # 读 [providers.<prov>] api_key
         return None
     m = re.search(r'\[providers\.' + re.escape(prov) + r'\][^\[]*?\n[ \t]*api_key[ \t]*=[ \t]*"([^"]+)"', s, re.S)   # 只认行首未注释的 api_key,跳过 "# api_key = 占位符"
     return m.group(1) if m else None
+def _tokenhub_key_probe(key, model):
+    # 保存混元前做一次轻量校验:只把 "invalid api key" 当硬失败;402 说明 key 有效但套餐/额度不可用。
+    key = (key or "").strip()
+    if not re.match(r'^sk-[A-Za-z0-9_-]{20,}$', key):
+        return {"fatal": True, "error": "混元请填 TokenHub 模型调用 api_key(sk- 开头),不是腾讯云 SecretId/SecretKey、API Key ID 或 Token Plan ID"}
+    payload = json.dumps({
+        "model": model or "hy3-preview",
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 1,
+        "stream": False,
+    }).encode()
+    req = urllib.request.Request("https://tokenhub.tencentmaas.com/v1/chat/completions",
+                                 data=payload, method="POST",
+                                 headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
+    try:
+        with _open_url(req, 18) as r:
+            r.read(4096)
+        return {"ok": True}
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read(4096).decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        low = body.lower()
+        msg = re.sub(r'\s+', ' ', body).strip()[:180] or f"HTTP {e.code}"
+        if e.code in (401, 403) or "invalid api key" in low or "invalid_api_key" in low or "unauthorized" in low:
+            return {"fatal": True, "error": "TokenHub 返回 invalid api key:请确认粘贴的是 TokenHub 模型调用 api_key(sk- 开头),且属于当前账号/团队"}
+        if e.code == 402 or "free_quota_exhausted" in low or "quota" in low:
+            return {"ok": True, "warning": "TokenHub 已识别 key,但套餐/额度不可用:" + msg}
+        return {"ok": True, "warning": "混元 key 已保存;在线探测返回 " + msg}
+    except Exception as e:
+        return {"ok": True, "warning": "未能在线校验混元 key:" + str(e)[:120]}
 def _zai_usage(key):
     # z.ai GLM Coding Plan 用量(prompts/tokens 每 5 小时窗口,非美元余额)。仅 Coding Plan 用户可读。
     url = "https://api.z.ai/api/monitor/usage/quota/limit"
@@ -641,6 +673,13 @@ def set_model(provider, model, api_key):
     if not provider:
         return {"error": "provider required"}
     if provider == "custom":
+        warn = None
+        probe_key = api_key or _provider_key("custom")
+        if probe_key:
+            probe = _tokenhub_key_probe(probe_key, model or "hy3-preview")
+            if probe.get("fatal"):
+                return {"error": probe.get("error") or "混元 key 无效"}
+            warn = probe.get("warning")
         if api_key:
             try:
                 _set_custom_api_key(api_key)
@@ -652,8 +691,11 @@ def set_model(provider, model, api_key):
         if model:
             try: _set_model_pref("custom", model)
             except Exception: pass
-        return {"ok": True, "provider": "custom", "model": model or "hy3-preview",
-                "newchatCapable": True, "restarted": False, "note": "混元 key 已保存"}
+        out = {"ok": True, "provider": "custom", "model": model or "hy3-preview",
+               "newchatCapable": True, "restarted": False, "note": "混元 key 已保存"}
+        if warn:
+            out["warning"] = warn
+        return out
     prev_p = _cfg_get("provider") or "deepseek"          # 记下当前可用配置,失败回退用
     prev_m = _cfg_get("default_text_model") or "deepseek-v4-pro"
     if api_key:
