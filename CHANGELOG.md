@@ -1,5 +1,17 @@
 # 更新日志
 
+## v2.5.27 — Claude CLI 会话复用
+
+### 修复 / 优化
+- **Claude 订阅列不再每轮把整段历史拍扁重发**:Claude Code provider 现在用 CodeWhale thread UUID 作为 Claude CLI 会话 id,首轮走 `--session-id`,后续走 `--resume`,让 Claude 自己接住连续上下文,避免之前因为每次新开 `claude -p` + 全历史 stdin 导致慢、压缩、丢对话。
+- **Claude 每次只发送当前用户输入**:不再把所有历史消息拼成 `user: ... / assistant: ...` 交给 CLI,减少 token/启动负担,也避免模型把旧上下文当成新的转述任务。
+- **Claude 流式输出只渲染正文 delta**:改用 `stream-json` 解析,过滤 init/thinking/tool 等内部事件,最终无正文 delta 时再回退 result 文本。
+- **增加 CLI 诊断逃生口**:`CODEWHALE_CLAUDE_BIN` 可指定本地 Claude CLI,`CODEWHALE_CLAUDE_DEBUG_LOG` 可记录调用模式/会话 id/长度,方便排查不同电脑的 Claude CLI 行为。
+
+### 备注
+- 本版包含补丁二进制更新;在线更新会下载新的 `codewhale-claude` / `codewhale-tui`。
+- 这能明显减少重复历史带来的慢和上下文丢失,但 Claude CLI 仍有进程启动成本;若后面还要进一步提速,需要做常驻 Claude bridge。
+
 ## v2.5.26 — 混元 key 保存前校验
 
 ### 优化
