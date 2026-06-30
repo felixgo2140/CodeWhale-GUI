@@ -772,9 +772,18 @@ function deltaItem(id, delta, kind){
   else if(it.kind==="agent_message"||!["tool_call","command_execution","file_change","user_message","status","context_compaction","error"].includes(it.kind)){ it.content.innerHTML=md(it.raw); }
   else { it.content.textContent=it.raw; }
 }
+function preferLongerText(streamed, finalText){
+  const s=streamed||"", f=finalText||"";
+  if(!s) return f;
+  if(!f) return s;
+  return s.length>f.length ? s : f;   // 有些 provider 的 completed 快照会短于已收到的 delta,不要把 UI 回滚成残缺文本
+}
 function completeItem(id, item, failed){
   const it=state.items.get(id); if(!it) { if(item) startItem(id,item); return; }
-  const final = item?.detail!=null && item.detail!=="" ? item.detail : it.raw;
+  const snap = item?.detail!=null && item.detail!=="" ? item.detail : "";
+  const shouldPreserveStream = it.kind==="agent_message" || it.kind==="agent_reasoning" || !["tool_call","command_execution","file_change","user_message","status","context_compaction","error"].includes(it.kind);
+  const final = shouldPreserveStream ? preferLongerText(it.raw, snap) : (snap || it.raw);
+  it.raw = final || it.raw || "";
   if(it.kind==="command_execution"){            // 终端输出写进 term-out,失败标红
     it.content.textContent = (final && final.trim()) ? final : (failed ? "" : "(无输出)");
     if(failed) it.el.classList.add("failed");
@@ -1698,7 +1707,7 @@ async function cmpRun(prov,text,ens){
           else if(pl.kind==="agent_reasoning"){ rsn.textContent+=pl.delta||""; setPhase("思考中"); }   // 思考收进折叠的过程块,不挤占答案
         } else if(k==="item.started"){ if(isTool((pl.item||{}).kind)){ setPhase("执行工具"); } }
         else if(k==="item.completed"){ const it=pl.item||{};
-          if(it.kind==="agent_message"&&it.detail) ans.textContent=it.detail;
+          if(it.kind==="agent_message"&&it.detail) ans.textContent=preferLongerText(ans.textContent, it.detail);
           else if(isTool(it.kind)){ sawTool=true; addStep("🔧 "+String(it.summary||it.kind).slice(0,140)); }   // 工具/命令活动→折叠的过程块
         }
         else if(k==="approval.required"){ const aid=pl.approval_id||pl.id||ev.approval_id; const tool=String(pl.tool_name||pl.command||pl.summary||"工具调用").slice(0,90);
