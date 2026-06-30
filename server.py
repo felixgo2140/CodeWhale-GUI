@@ -1328,7 +1328,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if ct:
             req.add_header("Content-Type", ct)
         try:
-            resp = _LOCAL.open(req, timeout=600)
+            resp = _LOCAL.open(req, timeout=1800)
         except urllib.error.HTTPError as e:
             resp = e
         except Exception as e:
@@ -1385,7 +1385,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if ct:
             req.add_header("Content-Type", ct)
         try:
-            resp = _LOCAL.open(req, timeout=600)
+            resp = _LOCAL.open(req, timeout=1800)
         except urllib.error.HTTPError as e:
             resp = e
         except Exception as e:
