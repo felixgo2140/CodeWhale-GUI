@@ -10,7 +10,7 @@
 Security: when bound to a non-loopback host (LAN), a token is REQUIRED. Without
 one it fails closed to 127.0.0.1, so the agent API is never exposed unprotected.
 """
-import http.server, socketserver, json, re, os, time, subprocess, shutil, urllib.request, urllib.error, urllib.parse
+import http.server, socketserver, json, re, os, time, subprocess, shutil, urllib.request, urllib.error, urllib.parse, mimetypes
 import base64, hashlib, tarfile, tempfile, io, threading, ssl, socket, ipaddress
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -24,6 +24,9 @@ UPSTREAM = "http://127.0.0.1:7878"
 _LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))   # 本机 app-server 请求绝不走代理(代理会劫持 127.0.0.1 导致超时)
 BIND = os.environ.get("CW_BIND", "0.0.0.0")
 PORT = int(os.environ.get("CW_PORT", "3000"))
+PREVIEW_ROOTS = {}
+PREVIEW_LOCK = threading.Lock()
+PREVIEW_DIR_NAMES = ("dist", "build", "out", "public", "_site")
 
 # ── 安全在线更新(签名验证)──
 # 内嵌发布公钥(Ed25519,验签锚点)。私钥仅发布者持有,绝不随包分发。
@@ -78,6 +81,116 @@ def _local_proxy():
                 pass
     _proxy_cache.update(t=now, v=(p or ""))
     return p or None
+
+def _preview_id(root):
+    seed = (TOKEN or "") + "\0" + os.path.realpath(root)
+    return hashlib.sha256(seed.encode()).hexdigest()[:18]
+
+def _preview_register_dir(path):
+    root = os.path.realpath(os.path.expanduser(path or ""))
+    if os.path.isfile(root) and os.path.basename(root).lower() == "index.html":
+        root = os.path.dirname(root)
+    idx = os.path.join(root, "index.html")
+    if not os.path.isdir(root) or not os.path.isfile(idx):
+        raise ValueError("未找到 index.html")
+    pid = _preview_id(root)
+    with PREVIEW_LOCK:
+        PREVIEW_ROOTS[pid] = root
+    return {"kind": "static", "dir": root, "url": f"/preview/static/{pid}/"}
+
+def _preview_local_urls(text):
+    out = []
+    for m in re.finditer(r'https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?(?:/[^\s<>"\']*)?', text or "", re.I):
+        u = m.group(0).rstrip(").,;]")
+        u = re.sub(r'://0\.0\.0\.0', '://127.0.0.1', u)
+        u = re.sub(r'://\[::1\]', '://127.0.0.1', u)
+        if u not in out:
+            out.append(u)
+    return out
+
+def _preview_candidate_dirs(text, cwd=None, explicit=None):
+    bases = []
+    if cwd:
+        bases.append(cwd)
+    bases.extend([os.getcwd(), os.path.expanduser("~/Documents")])
+    seen, cands = set(), []
+    def add(p):
+        if not p:
+            return
+        p = os.path.expanduser(str(p).strip().strip("'\"`"))
+        if not os.path.isabs(p):
+            for b in bases:
+                if b:
+                    add(os.path.join(os.path.expanduser(b), p))
+            return
+        p = os.path.realpath(p)
+        if p.endswith(os.sep + "index.html") or os.path.basename(p).lower() == "index.html":
+            p = os.path.dirname(p)
+        if p not in seen:
+            seen.add(p); cands.append(p)
+    for p in (explicit or []):
+        add(p)
+    if cwd:
+        for name in PREVIEW_DIR_NAMES:
+            add(os.path.join(cwd, name))
+    txt = text or ""
+    for m in re.finditer(r'((?:/[^ \n\r\t\'"`:]+/)?(?:dist|build|out|public|_site)(?:/index\.html)?)', txt):
+        add(m.group(1))
+    for m in re.finditer(r'((?:\.{1,2}/)?(?:[A-Za-z0-9_.-]+/){0,4}(?:dist|build|out|public|_site)(?:/index\.html)?)', txt):
+        add(m.group(1))
+    return cands
+
+def _preview_recent_static_roots(bases):
+    now = time.time()
+    found, scanned = [], 0
+    skip = {"node_modules", ".git", ".next", ".turbo", ".cache", "Library", "Applications"}
+    for base in bases:
+        base = os.path.realpath(os.path.expanduser(base or ""))
+        if not os.path.isdir(base):
+            continue
+        base_depth = base.rstrip(os.sep).count(os.sep)
+        for root, dirs, files in os.walk(base):
+            scanned += 1
+            if scanned > 5000:
+                return [p for _, p in sorted(found, reverse=True)[:12]]
+            dirs[:] = [d for d in dirs if d not in skip and not d.startswith(".")]
+            if root.rstrip(os.sep).count(os.sep) - base_depth > 5:
+                dirs[:] = []
+                continue
+            if os.path.basename(root) in PREVIEW_DIR_NAMES and "index.html" in files:
+                idx = os.path.join(root, "index.html")
+                try:
+                    mt = os.path.getmtime(idx)
+                except Exception:
+                    mt = 0
+                if now - mt < 6 * 3600:
+                    found.append((mt, root))
+    return [p for _, p in sorted(found, reverse=True)[:12]]
+
+def preview_detect(data):
+    text = str(data.get("text") or "")[-40000:]
+    cwd = data.get("cwd") or data.get("workdir") or None
+    if cwd:
+        cwd = os.path.realpath(os.path.expanduser(str(cwd)))
+    urls = _preview_local_urls(text)
+    if urls:
+        return {"kind": "url", "url": urls[-1], "source": "terminal"}
+    for p in _preview_candidate_dirs(text, cwd, data.get("dirs") or []):
+        try:
+            out = _preview_register_dir(p); out["source"] = "static"; return out
+        except Exception:
+            pass
+    buildish = re.search(r'\b(build|built|compile|compiled|dist|vite|webpack|parcel|next|export|generated|success|done)\b', text, re.I)
+    if buildish and not data.get("failed"):
+        bases = [b for b in [cwd, os.path.expanduser("~/Documents")] if b]
+        for p in _preview_recent_static_roots(bases):
+            try:
+                out = _preview_register_dir(p); out["source"] = "recent"; return out
+            except Exception:
+                pass
+    if data.get("failed"):
+        return {"kind": "error", "error": (text.strip()[-6000:] or "构建失败,没有可预览输出")}
+    return {"kind": "none"}
 # ── CA 信任(修:python.org 版 Python 默认 CA 包为空 + 本机代理做 TLS 解密用自签根 → 校验失败)──
 # 合并 macOS 钥匙串(系统根 + 用户/系统钥匙串里的代理 MITM 根)与 certifi 标准根成一个 CA 包,
 # 加载进 SSL 上下文。仍开启证书校验,只是把"本机已信任的根"也纳入信任锚 —— 每台机器按各自钥匙串生成。
@@ -1319,6 +1432,38 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(b)))
         self.end_headers()
         self.wfile.write(b)
+    def _serve_preview_static(self, path):
+        m = re.match(r'^/preview/static/([a-f0-9]{18})(?:/(.*))?$', path)
+        if not m:
+            return self.send_error(404)
+        pid, rel = m.group(1), urllib.parse.unquote(m.group(2) or "")
+        with PREVIEW_LOCK:
+            root = PREVIEW_ROOTS.get(pid)
+        if not root:
+            return self.send_error(404, "preview expired")
+        root = os.path.realpath(root)
+        rel = rel.lstrip("/")
+        target = os.path.realpath(os.path.join(root, rel))
+        if os.path.isdir(target):
+            target = os.path.join(target, "index.html")
+        if not (target == root or target.startswith(root + os.sep)):
+            return self.send_error(403)
+        if not os.path.exists(target) and "." not in os.path.basename(rel):
+            target = os.path.join(root, "index.html")   # SPA fallback
+        if not os.path.isfile(target):
+            return self.send_error(404)
+        ctype = mimetypes.guess_type(target)[0] or "application/octet-stream"
+        try:
+            st = os.stat(target)
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(st.st_size))
+            self.end_headers()
+            with open(target, "rb") as f:
+                shutil.copyfileobj(f, self.wfile)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
     def _proxy_to(self, method, port, upstream_path, body=False):   # 代理到指定 provider 的独立 app-server(SSE 流式);body 显式给则用它,否则从请求体读
         if body is False:
             length = int(self.headers.get("Content-Length", 0) or 0)
@@ -1410,6 +1555,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         p = urllib.parse.urlparse(self.path).path
+        if p.startswith("/preview/static/"):
+            return self._serve_preview_static(p)
         if p == "/api/threads/all":   # 聚合各 provider 后端的会话(带 provider 标签)+ 建路由表
             if not self._authed():
                 return self._deny()
@@ -1578,6 +1725,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
     def do_POST(self):
         p = urllib.parse.urlparse(self.path).path
+        if p == "/api/preview/detect":
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                return self._json(preview_detect(data))
+            except Exception as e:
+                return self._json({"kind": "error", "error": str(e)[:1000]}, 200)
         if p == "/api/newchat-provider":   # 设置"新对话默认模型"(不重启 :7878)
             if not self._authed():
                 return self._deny()

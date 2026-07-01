@@ -103,6 +103,8 @@
   .fsbtn:first-child{border-radius:6px 0 0 6px}
   .fsbtn:last-child{border-radius:0 6px 6px 0;border-left:none}
   .fsbtn:hover{color:var(--accent);border-color:var(--accent);position:relative;z-index:1}
+  #previewbtn{padding:5px 10px;border:1px solid var(--line);background:var(--panel2);color:var(--dim);border-radius:8px;cursor:pointer;font-size:12px;white-space:nowrap}
+  #previewbtn:hover,#previewbtn.on{color:#fff;background:var(--accent);border-color:var(--accent)}
 
   #messages{flex:1;overflow-y:auto;padding:24px 0}
   #mwrap{max-width:760px;margin:0 auto;padding:0 24px}
@@ -216,6 +218,31 @@
   .term-cmd .dollar{color:var(--ok);margin-right:5px;user-select:none}
   .term-out{padding:8px 12px;color:var(--dim);white-space:pre-wrap;max-height:260px;overflow:auto;word-break:break-all}
   .term.failed{border-color:var(--err)} .term.failed .term-out{color:var(--err)}
+  /* app preview */
+  #previewResize{width:5px;flex:0 0 5px;cursor:col-resize;background:transparent;position:relative;z-index:8}
+  #previewResize::after{content:"";position:absolute;top:0;bottom:0;left:2px;width:1px;background:var(--line)}
+  #previewResize:hover::after,body.previewresizing #previewResize::after{background:var(--accent)}
+  body.previewresizing{cursor:col-resize;user-select:none}
+  #previewPane{width:var(--preview-w,42vw);min-width:320px;max-width:min(860px,70vw);flex:0 0 var(--preview-w,42vw);border-left:1px solid var(--line);background:var(--bg);display:flex;flex-direction:column}
+  #previewPane[hidden],#previewResize[hidden]{display:none}
+  #pvHead{height:41px;border-bottom:1px solid var(--line);background:var(--panel);display:flex;align-items:center;gap:6px;padding:6px 8px}
+  .pvbtn{border:1px solid var(--line);background:var(--bg);color:var(--dim);border-radius:7px;height:27px;min-width:28px;padding:0 8px;font-size:12px;cursor:pointer;white-space:nowrap}
+  .pvbtn:hover,.pvbtn.on{border-color:var(--accent);color:var(--accent)}
+  #pvUrl{flex:1;min-width:80px;height:27px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--txt);padding:0 8px;font:12px var(--mono);outline:none}
+  #pvUrl:focus{border-color:var(--accent)}
+  #pvToggles{height:31px;border-bottom:1px solid var(--line);background:var(--panel);display:flex;align-items:center;gap:12px;padding:0 10px;font-size:11px;color:var(--dim)}
+  #pvToggles label{display:flex;align-items:center;gap:5px;white-space:nowrap}
+  #pvError{border-bottom:1px solid #efc8c3;background:#fff1ef;color:var(--err);font:11px/1.45 var(--mono);padding:6px 10px;white-space:pre-wrap;max-height:110px;overflow:auto}
+  #pvError[hidden]{display:none}
+  #pvBody{flex:1;min-height:0;background:#d8d5cf;display:flex;align-items:center;justify-content:center;overflow:auto;padding:0}
+  #pvViewport{width:100%;height:100%;background:#fff;box-shadow:none;transition:.15s}
+  #previewPane.pv-phone #pvViewport{width:390px;max-width:100%;height:844px;max-height:100%;box-shadow:0 0 0 1px rgba(0,0,0,.12),0 8px 28px rgba(0,0,0,.18)}
+  #previewPane.pv-tablet #pvViewport{width:820px;max-width:100%;height:1080px;max-height:100%;box-shadow:0 0 0 1px rgba(0,0,0,.12),0 8px 28px rgba(0,0,0,.18)}
+  #previewFrame{width:100%;height:100%;border:0;background:#fff;display:block}
+  @media (max-width:900px){
+    #previewPane{position:fixed;inset:0;width:100vw;max-width:none;z-index:70}
+    #previewResize{display:none!important}
+  }
   /* ---------- mobile / PWA ---------- */
   #hamburger{display:none;background:transparent;border:none;font-size:20px;color:var(--txt);cursor:pointer;padding:2px 8px;margin-right:2px}
   #backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:40}
@@ -270,7 +297,7 @@
   .prow input{flex:1;min-width:90px;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:6px 9px;font-size:12px;color:var(--txt);outline:none}
   /* 独立对比窗口(?compare=1):首帧前就盖上对比层、藏掉主 UI → 不再"先闪主页再刷成对比" */
   html.cmpwin #cmpView{display:flex!important}
-  html.cmpwin #sidebar,html.cmpwin #sideresize,html.cmpwin #backdrop,html.cmpwin #main{display:none!important}
+  html.cmpwin #sidebar,html.cmpwin #sideresize,html.cmpwin #previewResize,html.cmpwin #previewPane,html.cmpwin #backdrop,html.cmpwin #main{display:none!important}
 </style>
 <script>if(location.search.indexOf("compare=1")>=0)document.documentElement.className+=" cmpwin";</script>
 </head>
@@ -304,6 +331,7 @@
         <button class="fsbtn" onclick="bumpFs(-1)" title="字小一点">A−</button>
         <button class="fsbtn" onclick="bumpFs(1)" title="字大一点">A+</button>
       </div>
+      <button id="previewbtn" title="打开/关闭应用内预览">预览</button>
       <button id="interruptbtn">■ 停止</button>
     </div>
     <div id="messages">
@@ -324,8 +352,30 @@
       </div>
       <div id="hint"></div>
     </div>
-    <button id="scrollbtn" title="回到底部">↓</button>
-  </div>
+	    <button id="scrollbtn" title="回到底部">↓</button>
+	  </div>
+  <div id="previewResize" hidden title="拖拽调整预览宽度"></div>
+  <aside id="previewPane" hidden>
+    <div id="pvHead">
+      <button class="pvbtn" id="pvBack" title="后退">‹</button>
+      <button class="pvbtn" id="pvForward" title="前进">›</button>
+      <button class="pvbtn" id="pvRefresh" title="刷新">↻</button>
+      <input id="pvUrl" placeholder="http://localhost:5173 或静态预览地址">
+      <button class="pvbtn" id="pvGo" title="打开地址">打开</button>
+      <button class="pvbtn" id="pvExternal" title="在外部浏览器打开">↗</button>
+      <button class="pvbtn" id="pvCopy" title="复制预览地址">复制</button>
+      <button class="pvbtn" id="pvClose" title="关闭预览">×</button>
+    </div>
+    <div id="pvToggles">
+      <button class="pvbtn" data-pv-size="desktop">桌面</button>
+      <button class="pvbtn" data-pv-size="tablet">平板</button>
+      <button class="pvbtn" data-pv-size="phone">手机</button>
+      <label><input type="checkbox" id="pvAutoOpen">构建后自动打开</label>
+      <label><input type="checkbox" id="pvAutoRefresh">重新构建后刷新</label>
+    </div>
+    <div id="pvError" hidden></div>
+    <div id="pvBody"><div id="pvViewport"><iframe id="previewFrame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"></iframe></div></div>
+  </aside>
 
   <div class="modal" id="modal">
     <div class="panel">
@@ -349,11 +399,93 @@ const state = { threads:[], activeId:null, es:null, items:new Map(), seen:new Se
   cmpSessions:JSON.parse(localStorage.getItem("cw_cmp_sessions")||"[]"),                // 对比会话:[{id,topic,ts,threads:{prov:tid}}] → 侧栏每会话一行,点击回到当时对比
   grpCollapsed:new Set(JSON.parse(localStorage.getItem("cw_grpcollapsed")||"[]")),      // 折叠的分组(置顶/对比/对话)
   autoApprove:false, allowShell:false, queue:[], attachments:[] };  // 按会话,不再全局持久
+const preview={url:localStorage.getItem("cw_preview_url")||"", scanT:null, lastKey:"", autoOpen:localStorage.getItem("cw_pv_auto_open")!=="0", autoRefresh:localStorage.getItem("cw_pv_auto_refresh")!=="0", size:localStorage.getItem("cw_pv_size")||"desktop"};
 
 async function api(path, opts={}){
   const r = await fetch(url(path), {...opts, headers:{...(opts.body?{"Content-Type":"application/json"}:{}),...auth,...(opts.headers||{})}});
   if(!r.ok) throw new Error(path+" → HTTP "+r.status+" "+(await r.text()).slice(0,200));
   const ct = r.headers.get("content-type")||""; return ct.includes("json") ? r.json() : r.text();
+}
+
+/* ---------- app preview ---------- */
+function previewAbs(u){ if(!u)return ""; return u.startsWith("/") ? location.origin+u : u; }
+function previewIsOpen(){ const p=$("#previewPane"); return !!p && !p.hidden; }
+function previewShow(){
+  const p=$("#previewPane"), r=$("#previewResize"), b=$("#previewbtn");
+  if(!p) return;
+  p.hidden=false; if(r)r.hidden=false; document.body.classList.add("preview-open"); if(b)b.classList.add("on");
+}
+function previewHide(){
+  const p=$("#previewPane"), r=$("#previewResize"), b=$("#previewbtn");
+  if(p)p.hidden=true; if(r)r.hidden=true; document.body.classList.remove("preview-open"); if(b)b.classList.remove("on");
+}
+function previewToggle(){ previewIsOpen()?previewHide():previewShow(); }
+function previewSetError(msg){
+  const e=$("#pvError"); if(!e) return;
+  const txt=String(msg||"").trim(); e.hidden=!txt; e.textContent=txt.slice(-6000);
+}
+function previewLoad(raw, source="manual"){
+  const u=previewAbs((raw||"").trim()); if(!u) return;
+  const f=$("#previewFrame"), inp=$("#pvUrl");
+  preview.url=u; try{localStorage.setItem("cw_preview_url",u);}catch(e){}
+  if(inp) inp.value=u;
+  if(source!=="silent" && (preview.autoOpen || previewIsOpen())) previewShow();
+  previewSetError("");
+  if(f){
+    if(f.src===u && preview.autoRefresh) f.src = u + (u.includes("?")?"&":"?") + "cw_reload=" + Date.now();
+    else f.src=u;
+  }
+}
+function previewReload(){
+  const f=$("#previewFrame");
+  if(f && f.src){ try{ f.contentWindow.location.reload(); }catch(e){ f.src=f.src; } }
+  else if(preview.url) previewLoad(preview.url);
+}
+function previewSetSize(size){
+  preview.size=["desktop","tablet","phone"].includes(size)?size:"desktop";
+  try{localStorage.setItem("cw_pv_size",preview.size);}catch(e){}
+  const p=$("#previewPane"); if(p){ p.classList.remove("pv-desktop","pv-tablet","pv-phone"); p.classList.add("pv-"+preview.size); }
+  document.querySelectorAll("[data-pv-size]").forEach(b=>b.classList.toggle("on",b.dataset.pvSize===preview.size));
+}
+function previewBindFrameDiagnostics(){
+  const f=$("#previewFrame");
+  if(!f) return;
+  f.onload=()=>{
+    previewSetError("");
+    try{
+      const w=f.contentWindow;
+      if(!w || w.__cwPreviewDiag) return;
+      w.__cwPreviewDiag=true;
+      w.addEventListener("error",e=>previewSetError("JS: "+(e.message||"脚本错误")+(e.filename?("\n"+e.filename+":"+e.lineno):"")));
+      w.addEventListener("unhandledrejection",e=>previewSetError("Promise: "+((e.reason&&e.reason.message)||e.reason||"未处理异常")));
+      if(w.fetch){
+        const orig=w.fetch.bind(w);
+        w.fetch=(...args)=>orig(...args).then(r=>{ if(!r.ok) previewSetError("请求失败: "+r.status+" "+r.url); return r; }).catch(err=>{ previewSetError("请求失败: "+(err&&err.message||err)); throw err; });
+      }
+    }catch(e){}
+  };
+}
+function previewMetaCwd(meta){ return meta && (meta.cwd||meta.workdir||meta.working_dir||meta.current_dir||meta.pwd); }
+function previewFeedTerminal(text, failed=false, meta=null, live=false){
+  text=String(text||""); if(!text.trim()) return;
+  const hasUrl=/https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i.test(text);
+  if(live && !hasUrl) return;
+  const key=(failed?"f:":"o:")+hasUrl+":"+text.slice(-1200);
+  if(key===preview.lastKey) return;
+  preview.lastKey=key; clearTimeout(preview.scanT);
+  preview.scanT=setTimeout(async()=>{
+    try{
+      const d=await api("/api/preview/detect",{method:"POST",body:JSON.stringify({text,failed,cwd:previewMetaCwd(meta)})});
+      if(d.kind==="url"||d.kind==="static"){
+        const u=previewAbs(d.url);
+        if(previewIsOpen() || preview.autoOpen || (preview.autoRefresh && preview.url===u)) previewLoad(u,d.kind);
+        else { preview.url=u; try{localStorage.setItem("cw_preview_url",u);}catch(e){} const inp=$("#pvUrl"); if(inp)inp.value=u; }
+      }else if(d.kind==="error" || failed){
+        if(preview.autoOpen || previewIsOpen()) previewShow();
+        previewSetError(d.error||text);
+      }
+    }catch(e){ if(failed) previewSetError(String(e&&e.message||e)); }
+  }, live?350:80);
 }
 
 /* ---------- helpers ---------- */
@@ -762,7 +894,7 @@ function onEvent(ev, e){
 function startItem(id, item){
   if(!id||state.items.has(id)) return;
   const kind=item?.kind||"agent_message";
-  const wrap=$("#mwrap"); let el, content;
+  const wrap=$("#mwrap"); let el, content, meta=null;
   if(kind==="user_message"){
     if(state._optimUser){ el=state._optimUser; state._optimUser=null; content=el.querySelector(".content"); content.innerHTML=md(item.detail||item.summary||content.textContent||""); }   // 认领 send() 即时加的乐观气泡 → 不再重复渲染一条
     else { el=row("user","你"); content=el.querySelector(".content"); content.innerHTML=md(item.detail||item.summary||""); }
@@ -773,7 +905,7 @@ function startItem(id, item){
     content=el.querySelector(".rbody"); content.textContent=item.detail||"";
   }else if(kind==="command_execution"){          // 终端块:$ 命令 + 输出
     el=document.createElement("div"); el.className="term";
-    let cmd=""; try{ cmd=JSON.parse(item.detail||"{}").command||""; }catch{ cmd=item.detail||""; }
+    let cmd=""; try{ meta=JSON.parse(item.detail||"{}"); cmd=meta.command||meta.cmd||""; }catch{ cmd=item.detail||""; }
     el.innerHTML=`<div class="term-cmd"><span class="dollar">$</span>${esc(cmd)}</div><div class="term-out">运行中…</div>`;
     content=el.querySelector(".term-out");
   }else if(kind==="tool_call"||kind==="file_change"){
@@ -790,7 +922,7 @@ function startItem(id, item){
     el=row("assistant","CodeWhale"); content=el.querySelector(".content"); content.innerHTML='<span class="typing"></span>';
   }
   wrap.appendChild(el); if(el) el.dataset.id=id;
-  state.items.set(id,{el,content,kind,raw:(kind==="user_message"?"":(item?.detail||""))});
+  state.items.set(id,{el,content,kind,raw:(kind==="user_message"?"":(item?.detail||"")),meta});
 }
 function deltaItem(id, delta, kind){
   if(delta==null) return;
@@ -800,6 +932,7 @@ function deltaItem(id, delta, kind){
   if(it.kind==="agent_reasoning"){ it.content.textContent=it.raw; }
   else if(it.kind==="agent_message"||!["tool_call","command_execution","file_change","user_message","status","context_compaction","error"].includes(it.kind)){ it.content.innerHTML=md(it.raw); }
   else { it.content.textContent=it.raw; }
+  if(it.kind==="command_execution") previewFeedTerminal(it.raw,false,it.meta,true);
 }
 function preferLongerText(streamed, finalText){
   const s=streamed||"", f=finalText||"";
@@ -816,12 +949,14 @@ function completeItem(id, item, failed){
   if(it.kind==="command_execution"){            // 终端输出写进 term-out,失败标红
     it.content.textContent = (final && final.trim()) ? final : (failed ? "" : "(无输出)");
     if(failed) it.el.classList.add("failed");
+    previewFeedTerminal(final,!!failed,it.meta,false);
     return;
   }
   if(it.kind==="agent_reasoning") it.content.textContent=final;
   else if(it.kind==="user_message") it.content.innerHTML=md(final);
   else if(["tool_call","file_change","status","context_compaction"].includes(it.kind)) it.content.textContent=final;
   else it.content.innerHTML=md(final);
+  if(it.kind==="file_change" && preview.url && preview.autoRefresh) setTimeout(previewReload,250);
   if(failed) it.el.style.opacity=.6;
 }
 
@@ -1239,6 +1374,22 @@ $("#sendbtn").onclick=enterSend;   // 运行时=排队,空闲时=发送(停止�
 $("#interruptbtn").onclick=interrupt;
 $("#autowrap").onclick=toggleAuto;
 $("#shellwrap").onclick=toggleShell;
+$("#previewbtn").onclick=previewToggle;
+$("#pvClose").onclick=previewHide;
+$("#pvRefresh").onclick=previewReload;
+$("#pvGo").onclick=()=>previewLoad($("#pvUrl").value||preview.url);
+$("#pvUrl").addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); previewLoad(e.target.value); } });
+$("#pvExternal").onclick=()=>{ if(preview.url) window.open(preview.url,"_blank"); };
+$("#pvCopy").onclick=()=>{ if(preview.url) clipCopy(preview.url).then(()=>cwToast("已复制预览地址")).catch(()=>{}); };
+$("#pvBack").onclick=()=>{ try{$("#previewFrame").contentWindow.history.back();}catch(e){} };
+$("#pvForward").onclick=()=>{ try{$("#previewFrame").contentWindow.history.forward();}catch(e){} };
+$("#pvAutoOpen").checked=preview.autoOpen;
+$("#pvAutoRefresh").checked=preview.autoRefresh;
+$("#pvAutoOpen").onchange=e=>{ preview.autoOpen=!!e.target.checked; try{localStorage.setItem("cw_pv_auto_open",preview.autoOpen?"1":"0");}catch(x){} };
+$("#pvAutoRefresh").onchange=e=>{ preview.autoRefresh=!!e.target.checked; try{localStorage.setItem("cw_pv_auto_refresh",preview.autoRefresh?"1":"0");}catch(x){} };
+document.querySelectorAll("[data-pv-size]").forEach(b=>b.onclick=()=>previewSetSize(b.dataset.pvSize));
+previewSetSize(preview.size); previewBindFrameDiagnostics();
+if(preview.url){ const inp=$("#pvUrl"); if(inp) inp.value=preview.url; }
 $("#updbtn").onclick=doUpdate;
 $("#guiupdbtn").onclick=openUpdate;   // 顶栏「↑ 界面」直接打开更新中心(带下载/应用进度条),不再走旧的同步弹窗
 function closeDrawer(){ $("#sidebar")?.classList.remove("open"); $("#backdrop")?.classList.remove("show"); }
@@ -1251,7 +1402,7 @@ function applySidebarWidth(w){
   try{ localStorage.setItem("cw_sidebar_w",String(v)); }catch(e){}
 }
 applySidebarWidth(localStorage.getItem("cw_sidebar_w")||268);
-{ const sr=$("#sideresize");
+	{ const sr=$("#sideresize");
   if(sr){
     sr.addEventListener("pointerdown",e=>{
       if(window.innerWidth<=640) return;
@@ -1263,6 +1414,27 @@ applySidebarWidth(localStorage.getItem("cw_sidebar_w")||268);
       move(e);
     });
     window.addEventListener("resize",()=>applySidebarWidth(localStorage.getItem("cw_sidebar_w")||268));
+  }
+	}
+function applyPreviewWidth(w){
+  const max=Math.max(360, Math.min(860, Math.floor(window.innerWidth*0.72)));
+  const v=Math.max(320, Math.min(max, Math.round(+w||Math.floor(window.innerWidth*0.42))));
+  document.documentElement.style.setProperty("--preview-w",v+"px");
+  try{localStorage.setItem("cw_preview_w",String(v));}catch(e){}
+}
+applyPreviewWidth(localStorage.getItem("cw_preview_w")||Math.floor(window.innerWidth*0.42));
+{ const pr=$("#previewResize");
+  if(pr){
+    pr.addEventListener("pointerdown",e=>{
+      if(window.innerWidth<=900) return;
+      e.preventDefault(); document.body.classList.add("previewresizing");
+      const move=ev=>applyPreviewWidth(window.innerWidth-ev.clientX);
+      const up=()=>{ document.body.classList.remove("previewresizing"); window.removeEventListener("pointermove",move); };
+      window.addEventListener("pointermove",move);
+      window.addEventListener("pointerup",up,{once:true});
+      move(e);
+    });
+    window.addEventListener("resize",()=>applyPreviewWidth(localStorage.getItem("cw_preview_w")||Math.floor(window.innerWidth*0.42)));
   }
 }
 let _lastTop=0;
