@@ -327,6 +327,10 @@
   .df-body{padding:12px 15px;font-size:13px;line-height:1.6;white-space:pre-wrap;max-height:500px;overflow-y:auto}
   .df-body p{margin:0 0 8px}
   .df-body .src{font-size:11px;color:var(--faint)}
+  .df-file{margin-top:10px;padding-top:9px;border-top:1px dashed var(--line);font-size:12px}
+  .df-file a{color:var(--accent);text-decoration:underline;cursor:pointer}
+  .df-path{margin-top:5px;font-size:11px;color:var(--dim);cursor:pointer}
+  .df-path code{background:var(--code);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-family:var(--mono);font-size:.95em}
   .df-stats{font-size:11px;color:var(--dim);padding:6px 13px;border-top:1px solid var(--line);display:flex;gap:16px}
   @keyframes dfspin{to{transform:rotate(360deg)}}
   /* Modal: DeerFlow input */
@@ -432,9 +436,8 @@ if(location.search.indexOf("compare=1")>=0)document.documentElement.className+="
             <span class="emo">⚡</span><span class="lb">快速 DeerFlow</span><span class="short">输入框模式</span>
           </div>
           <div style="border-top:1px solid var(--line);margin:4px 0"></div>
-          <div style="padding:4px 16px;font-size:10px;color:var(--faint)">模型选择（默认 Kimi）</div>
-          <div class="plugini" onclick="_dfModel='kimi';openDeerFlow()">
-            <span class="emo">🟠</span><span class="lb">Kimi</span><span class="short">moonshot-128k</span>
+          <div class="df-models">
+            <!-- 动态填充：展开时由 updateDeerFlowDropdown() 根据当前对话模型自动生成 -->
           </div>
         </div>
         <button id="attachbtn" title="上传文件(文本/代码,agent 会读取;图片会显示预览)"></button>
@@ -1310,41 +1313,50 @@ function detectOptions(text){
   const lines=String(text).replace(/\r/g,"").split("\n");
   const nonEmpty=lines.map(l=>l.trim()).filter(Boolean);
   if(nonEmpty.length<2) return null;
-  // 触发闸:末尾几行必须有"选择问句"(否则普通编号步骤列表不该变按钮)
-  const cueRe=/(哪一?步|哪个|哪些|选哪|要不要|需要我[^。\n]{0,20}(执行|做|帮|试|跑|开始)|你想[^。\n]{0,20}(做|选|执行|先)|想先(做|选|跑)|要我[^。\n]{0,10}(做|执行|跑|试)哪|which\b|choose|pick one|which (one|step)|shall i|execute which)/i;
-  const tail=nonEmpty.slice(-4).join("\n");
+  // 触发闸:末尾几行必须有"选择问句"(否则普通清单不该变按钮)
+  const cueRe=/(哪一?步|哪个|哪些|选哪|要不要|你希望我|你想要?我|请?告诉我你的选择|你的选择|如何选择|怎么选|选一个|需要我[^。\n]{0,20}(执行|做|帮|试|跑|开始)|你想[^。\n]{0,20}(做|选|执行|先)|想先(做|选|跑)|要我[^。\n]{0,10}(做|执行|跑|试)哪|which\b|choose|pick one|which (one|step)|shall i|execute which|let me know)/i;
+  const tail=nonEmpty.slice(-5).join("\n");
   const last=nonEmpty[nonEmpty.length-1];
   if(!(cueRe.test(tail) || /[?？]\s*$/.test(last))) return null;
-  // 取"最后一段连续编号行"(空行不打断,普通文字行打断)
-  const itemRe=/^\s*(\d{1,2})[.、)]\s+(.+?)\s*$/;
+  // 选项行:① 带 数字/字母 标签(可有 •-* bullet 前缀,如「• A) 文本」「1. 文本」「B) 文本」)② 纯 bullet(「• 文本」)
+  const labeled=/^\s*(?:[•·▪◦*+\-]\s+)?(?:([0-9]{1,2}|[A-Za-z])\s*[.、)]\s+)(.+?)\s*$/;
+  const bullet =/^\s*[•·▪◦*+\-]\s+(.+?)\s*$/;
   let run=[], best=[];
   for(const l of lines){
-    const m=l.match(itemRe);
-    if(m) run.push({n:m[1], label:m[2]});
-    else if(l.trim()==="") {/* 空行不打断 */}
-    else { if(run.length) best=run; run=[]; }
+    let m=l.match(labeled);
+    if(m){ run.push({n:m[1], label:m[2]}); continue; }
+    m=l.match(bullet);
+    if(m){ run.push({n:"", label:m[1]}); continue; }   // 纯 bullet:序号后补
+    if(l.trim()==="") continue;                        // 空行不打断
+    if(run.length) best=run; run=[];                   // 普通文字行 → 断开当前段
   }
   if(run.length) best=run;
   if(best.length<2) return null;
-  best.forEach(it=>{ it.label=it.label.replace(/`([^`]+)`/g,"$1").replace(/\*\*([^*]+)\*\*/g,"$1").replace(/^[\*_ ]+|[\*_ ]+$/g,"").trim(); });
+  best.forEach((it,i)=>{ if(!it.n) it.n=String(i+1); it.label=it.label.replace(/`([^`]+)`/g,"$1").replace(/\*\*([^*]+)\*\*/g,"$1").replace(/^[\*_ ]+|[\*_ ]+$/g,"").trim(); });
   return best;
 }
-function buildOptPicker(items, inputSel){
+function buildOptPicker(items, inputSel){   // 竖排选项卡(仿 Claude Code):整行卡片 + 序号标记(选中→✓)+ 多选 + 其他 + 填入
   const sel=new Set();
   const wrap=document.createElement("div"); wrap.className="optpicker";
   const chips=document.createElement("div"); chips.className="optchips";
-  items.forEach(it=>{
-    const c=document.createElement("span"); c.className="optchip";
-    const short=it.label.length>52?it.label.slice(0,50)+"…":it.label;
-    c.textContent=(it.n?it.n+". ":"")+short; c.title=it.label;
-    c.onclick=()=>{ if(sel.has(it)){sel.delete(it);c.classList.remove("on");} else {sel.add(it);c.classList.add("on");} };
-    chips.appendChild(c);
-  });
-  const other=document.createElement("span"); other.className="optchip other"; other.textContent="其他…";
+  const mkRow=(cls, mark, labelHtml)=>{
+    const r=document.createElement("div"); r.className="optrow"+(cls?" "+cls:"");
+    r.innerHTML=`<span class="optmark"><span class="optnum">${esc(mark)}</span></span><span class="optlabel">${labelHtml}</span>`;
+    return r;
+  };
   const otherInp=document.createElement("input"); otherInp.type="text"; otherInp.className="optother"; otherInp.placeholder="自定义补充…"; otherInp.style.display="none";
-  other.onclick=()=>{ const show=otherInp.style.display==="none"; otherInp.style.display=show?"":"none"; other.classList.toggle("on",show); if(show) otherInp.focus(); };
+  const fill=document.createElement("button"); fill.className="optfill"; fill.textContent="填入输入框"; fill.disabled=true;
+  const updateFill=()=>{ fill.disabled=!(sel.size>0 || otherInp.value.trim()); };
+  items.forEach((it,idx)=>{
+    const r=mkRow("", String(it.n||idx+1), esc(it.label)); r.title=it.label;
+    r.onclick=()=>{ if(sel.has(it)){sel.delete(it);r.classList.remove("on");} else {sel.add(it);r.classList.add("on");} updateFill(); };
+    chips.appendChild(r);
+  });
+  const other=mkRow("other","＋","其他…");
+  other.onclick=()=>{ const show=otherInp.style.display==="none"; otherInp.style.display=show?"":"none"; other.classList.toggle("open",show); if(show) otherInp.focus(); updateFill(); };
+  otherInp.addEventListener("input",updateFill);
   chips.appendChild(other); wrap.appendChild(chips); wrap.appendChild(otherInp);
-  const fill=document.createElement("button"); fill.className="optfill"; fill.textContent="填入输入框 ↵";
+  const foot=document.createElement("div"); foot.className="optfoot";
   fill.onclick=()=>{
     const parts=[...sel].map(it=>it.label); const ot=otherInp.value.trim(); if(ot) parts.push(ot);
     if(!parts.length) return;
@@ -1354,7 +1366,8 @@ function buildOptPicker(items, inputSel){
     inp.dispatchEvent(new Event("input")); inp.focus();
     try{ inp.setSelectionRange(inp.value.length,inp.value.length); }catch(e){}
   };
-  wrap.appendChild(fill);
+  const hint=document.createElement("span"); hint.className="opthint"; hint.textContent="可多选,选好点填入(再编辑/发送)";
+  foot.appendChild(fill); foot.appendChild(hint); wrap.appendChild(foot);
   return wrap;
 }
 function augmentOptions(container, text, inputSel){   // container=消息 body 节点;幂等(先清旧 picker)
@@ -1460,15 +1473,31 @@ function setRunning(r){
 function refreshActiveMeta(){ loadThreads(); }
 
 /* ---------- DeerFlow plugin ---------- */
-function openDeerFlow(){ $("#plugindrop").classList.remove("show"); $("#dfmodal").classList.add("show"); setTimeout(()=>$("#dfprompt").focus(),100); }
+function openDeerFlow(){ 
+  _dfModel=getDeerFlowModel(); // 自动跟随当前对话模型
+  $("#plugindrop").classList.remove("show"); $("#dfmodal").classList.add("show"); setTimeout(()=>$("#dfprompt").focus(),100); 
+}
 function closeDeerFlow(){ $("#dfmodal").classList.remove("show"); }
 function quickDeerFlow(){
+  _dfModel=getDeerFlowModel(); // 自动跟随当前对话模型
   $("#plugindrop").classList.remove("show");
   const inp=$("#input"); inp.value="/df "; inp.focus();
   try{inp.setSelectionRange(4,4);}catch{}
-  $("#hint").innerHTML='<span style="color:var(--accent)">🔬 DeerFlow 模式：输入研究问题后按 Enter 发送</span>';
+  const dm=_dfModel, dn=DF_MODEL_NAME[dm]||dm;
+  $("#hint").innerHTML=`<span style="color:var(--accent)">🔬 DeerFlow [${dn}]：输入研究问题后按 Enter 发送</span>`;
 }
 let _dfModel=""; // DeerFlow 选择的模型
+// CodeWhale provider → DeerFlow 模型映射（从当前对话自动检测）
+const DF_MODEL_PROV={deepseek:"deepseek",zai:"glm",moonshot:"kimi","openai-codex":"openai",custom:"hunyuan","claude-code":"claude"};
+const DF_MODEL_NAME={deepseek:"DeepSeek",glm:"GLM",kimi:"Kimi",openai:"ChatGPT",hunyuan:"混元",claude:"Claude"};
+const DF_AVAILABLE=new Set(["kimi","deepseek","glm","hunyuan"]); // DeerFlow config.yaml 已配置的模型(跟随窗口当前 provider);ChatGPT/Claude 是 OAuth 订阅、DeerFlow 用不了 key → 回退 kimi
+function getDeerFlowModel(){
+  const t=state.threads.find(x=>x.id===state.activeId);
+  const prov=t?.provider||"";
+  const dm=DF_MODEL_PROV[prov]||"";
+  if(dm&&DF_AVAILABLE.has(dm)) return dm;
+  return "kimi"; // 回退默认
+}
 async function submitDeerFlow(model){
   const prompt=$("#dfprompt").value.trim();
   if(!prompt) return;
@@ -1483,9 +1512,10 @@ async function submitDeerFlow(model){
   $("#mwrap").appendChild(dfel); scrollDown(true);
   const hdr=dfel.querySelector(".df-hdr"); const body=dfel.querySelector(".df-body"); const stats=dfel.querySelector(".df-stats");
   try{
-    // 提交研究任务
-    const body={prompt}; if(m) body.model=m;
-    const r=await fetch("/api/deerflow/research",{method:"POST",headers:{...auth,"Content-Type":"application/json"},body:JSON.stringify(body)});
+    // 提交研究任务(注意:不要用 body 当变量名,会盖掉上面的 .df-body DOM 元素)
+    const reqBody={prompt}; if(m) reqBody.model=m;
+    const r=await fetch("/api/deerflow/research",{method:"POST",headers:{...auth,"Content-Type":"application/json"},body:JSON.stringify(reqBody)});
+    if(!r.ok){ throw new Error("提交请求失败 HTTP "+r.status+"(后端可能未起或未更新,试试退出重开 CodeWhale)"); }
     const d=await r.json();
     if(!d.ok){ body.textContent="提交失败: "+(d.error||"未知错误"); hdr.classList.remove("running"); hdr.textContent="❌ DeerFlow 提交失败"; return; }
     body.textContent="任务已提交 (Thread: "+d.thread_id.slice(0,8)+"…)\n等待结果中…";
@@ -1494,19 +1524,34 @@ async function submitDeerFlow(model){
     const maxPolls=60, interval=8000;
     for(let i=0;i<maxPolls;i++){
       await new Promise(res=>setTimeout(res,interval));
-      const pr=await fetch("/api/deerflow/poll?thread_id="+encodeURIComponent(d.thread_id),{headers:{...auth}});
+      const pr=await fetch("/api/deerflow/poll?thread_id="+encodeURIComponent(d.thread_id),{method:"POST",headers:{...auth}});   // poll 端点在 do_POST,必须用 POST(GET 会 404)
+      if(!pr.ok){ throw new Error("轮询请求失败 HTTP "+pr.status); }
       const pd=await pr.json();
       if(pd.error){ body.textContent="轮询失败: "+pd.error; hdr.classList.remove("running"); hdr.textContent="❌ DeerFlow 错误"; return; }
       const out=pd.output||"";
       if(out.includes("success")||out.includes("研究完成")||out.includes("Status: success")){
         hdr.classList.remove("running"); hdr.textContent="✅ DeerFlow 深度研究完成";
         // 获取完整结果
-        const rr=await fetch("/api/deerflow/poll?thread_id="+encodeURIComponent(d.thread_id)+"&full=1");
+        const rr=await fetch("/api/deerflow/poll?thread_id="+encodeURIComponent(d.thread_id)+"&full=1",{method:"POST",headers:{...auth}});   // 同上:POST + 带鉴权(原来漏了)
         const rd=await rr.json();
         const final=rd.output||out;
-        // 清理输出:去掉轮询状态行
-        const clean=final.replace(/^\[.*?\] tokens:.*$/gm,"").replace(/^  \[.*$/gm,"").trim();
-        body.innerHTML=md(clean||out);
+        // 清理输出:去掉状态行(状态: / [running] tokens / 缩进状态行)只留报告正文
+        const clean=final.replace(/^状态:.*$/gm,"").replace(/^\[.*?\]\s*tokens:.*$/gm,"").replace(/^\s*\[.*$/gm,"").trim();
+        body.innerHTML=md(clean||"(报告正文为空,请用下方链接打开完整报告文件)");
+        // 报告文件:下载 / 在预览打开 / 本地路径(解决"没地方下载或打开")
+        if(rd.file){
+          const tk=encodeURIComponent(TOKEN||""), nm=encodeURIComponent(rd.file);
+          const durl=`/api/deerflow/file?name=${nm}&token=${tk}`;          // 下载
+          const hurl=`/api/deerflow/file?name=${nm}&html=1&token=${tk}`;   // 渲染成 HTML,供预览面板打开
+          const fb=document.createElement("div"); fb.className="df-file";
+          fb.innerHTML=`📄 <a class="df-prev">在预览面板打开</a> · `+
+                       `<a href="${durl}" download="${esc(rd.file)}">下载报告</a> · `+
+                       `<a href="${durl}&inline=1" target="_blank" rel="noopener">看原文</a>`+
+                       (rd.path?`<div class="df-path" title="点击复制路径">本地文件:<code>${esc(rd.path)}</code></div>`:"");
+          body.appendChild(fb);
+          fb.querySelector(".df-prev").onclick=()=>{ previewLoad(hurl); previewShow(); };   // 加载渲染后的报告到内置预览面板
+          const pc=fb.querySelector(".df-path"); if(pc) pc.onclick=()=>{ clipCopy(rd.path); sysnote("已复制报告路径"); };
+        }
         // 尝试获取统计信息
         const statMatch=final.match(/([\d,]+)\s*in\s*\/\s*([\d,]+)\s*out.*?(\d+)\s*LLM\s*calls?/i);
         if(statMatch) stats.textContent="Tokens: "+statMatch[1]+" in / "+statMatch[2]+" out | "+statMatch[3]+" LLM calls";
@@ -1522,15 +1567,34 @@ async function submitDeerFlow(model){
   }catch(e){ hdr.classList.remove("running"); hdr.textContent="❌ DeerFlow 异常"; body.textContent=e.message; }
 }
 async function submitDeerFlowFromInput(prompt){
+  if(!_dfModel) _dfModel=getDeerFlowModel(); // /df 命令时自动检测
   $("#dfprompt").value=prompt; await submitDeerFlow();
 }
-// toggle plugin dropdown
+// toggle plugin dropdown — 展开时刷新 DeerFlow 模型信息
 document.addEventListener("click",function(e){
   const btn=$("#pluginbtn"); const drop=$("#plugindrop");
   if(!btn||!drop) return;
-  if(btn.contains(e.target)){ drop.classList.toggle("show"); e.stopPropagation(); return; }
+  if(btn.contains(e.target)){ 
+    updateDeerFlowDropdown(); // 展开前刷新
+    drop.classList.toggle("show"); e.stopPropagation(); return; 
+  }
   if(!drop.contains(e.target)) drop.classList.remove("show");
 });
+function updateDeerFlowDropdown(){
+  const dm=getDeerFlowModel(), dn=DF_MODEL_NAME[dm]||dm;
+  const prov=t=>state.threads.find(x=>x.id===state.activeId)?.provider;
+  const curProv=prov();
+  const curName=curProv?(PROV_SHORT[curProv]||curProv):"默认";
+  // 更新主条目副标题
+  const main=$("#plugindrop .plugini.df .short");
+  if(main) main.textContent=DF_AVAILABLE.has(dm)?dn:dn+" ⚠";
+  // 更新模型选择区
+  const sel=$("#plugindrop .df-models");
+  if(!sel) return;
+  const avail=[...DF_AVAILABLE];
+  sel.innerHTML=(avail.length?`<div style="padding:4px 16px;font-size:10px;color:var(--faint)">当前对话: ${curName} → ${dn}${DF_AVAILABLE.has(dm)?' ✅':dm==='kimi'?' (回退 Kimi)':' ⚠ 未配置'}</div>`:'')+
+    avail.map(m=>`<div class="plugini ${m===dm?' active':''}" onclick="_dfModel='${m}';openDeerFlow()"><span class="emo">${m===dm?'✅':'🟠'}</span><span class="lb">${DF_MODEL_NAME[m]||m}</span><span class="short">${m===dm?'当前':''}</span></div>`).join('');
+}
 // Close dfmodal on backdrop click
 document.addEventListener("click",function(e){
   const modal=$("#dfmodal");
@@ -2188,10 +2252,11 @@ async function cmpLoadHistory(prov,tid){   // 拉某栏 thread 全部 item,渲�
   }catch(e){ if(b) b.innerHTML=""; cmpAddMsg(prov,"a err","✗ 载入历史失败:"+esc(e.message||"")); }
 }
 let _cmpLay = localStorage.getItem("cw_cmplay") || "row";   // 对比栏排列:row 横列 / col 竖列 / grid 田字格(持久化)
-function setCmpLayout(l){
+function setCmpLayout(l){   // 横/竖/田 = 并排显示全部的排列方式。选布局即退出"放大单栏",按该布局显示全部。
   _cmpLay = (["row","col","grid"].includes(l)?l:"row"); try{localStorage.setItem("cw_cmplay",_cmpLay);}catch(e){}
   const box=$("#cmpCols"); if(box){ box.classList.remove("lay-col","lay-grid"); if(_cmpLay==="col")box.classList.add("lay-col"); else if(_cmpLay==="grid")box.classList.add("lay-grid"); }
   document.querySelectorAll("#cmpLayout .laybtn").forEach(b=>b.classList.toggle("on", b.dataset.l===_cmpLay));
+  if(CMP.maxed){ CMP.maxed=null; if(box) box.querySelectorAll(".cmpcol").forEach(c=>c.classList.remove("max","hide")); renderCmpTabs(); }   // 退出放大→隐藏标签条、并排全部
 }
 async function cmpSetModel(prov, model){   // 选了某栏的模型变体:存 pref(单窗口也共用)+ 该栏开新 thread(模型 thread-locked)
   CMP.modelPrefs=CMP.modelPrefs||{}; CMP.modelPrefs[prov]=model;
@@ -2213,26 +2278,17 @@ function cmpToggleAuto(){ CMP.autoApprove=!CMP.autoApprove; renderCmpToggles(); 
 function cmpToggleShell(){ CMP.allowShell=!CMP.allowShell; if(CMP.allowShell) CMP.autoApprove=true; renderCmpToggles(); cmpApplyFlags(); }   // 对比无逐栏审批 UI:开 Shell 自动连带开自动批准
 function renderCmpChips(){
   const box=$("#cmpChips");
-  const maxed=CMP.maxed;   // 放大态:顶部 chips 变书签页/tab,在已选模型间点击切换
-  box.classList.toggle("tabmode", !!maxed);
+  // 顶部 chips 恒为"加入/移出对比"(= 加/去一个参与模型)。放大后的"切换看哪个模型"交给内容上方的标签条。
+  box.classList.remove("tabmode");
   box.innerHTML=PROVIDERS.map(p=>{
     const on=CMP.sel.has(p.id), nokey=!p.oauth && !CMP.keyed[p.id];
-    const isTab=maxed===p.id;                 // 当前正在看的那栏 = 高亮 tab
-    const dim=maxed && !on;                   // 放大态下,未参与对比的模型置灰(不可切换)
-    const tip=maxed ? (on?'点击切到这个模型':'未参与本次对比') : (nokey?'未配置 key':'');
-    return `<span class="cmpchip ${on?'on':''} ${nokey?'nokey':''} ${isTab?'tab':''} ${dim?'dim':''}" data-p="${p.id}" title="${tip}">${PROV_SHORT[p.id]||p.name}${nokey?' ⚠':''}</span>`;
+    const tip=nokey?'未配置 key':(on?'点击移出对比':'点击加入对比');
+    return `<span class="cmpchip ${on?'on':''} ${nokey?'nokey':''}" data-p="${p.id}" title="${tip}">${PROV_SHORT[p.id]||p.name}${nokey?' ⚠':''}</span>`;
   }).join("");
   box.querySelectorAll(".cmpchip").forEach(el=>el.onclick=()=>{
     const id=el.dataset.p;
     const p=PROVIDERS.find(x=>x.id===id)||{};
     const nokey=!p.oauth && !CMP.keyed[id];
-    // 放大(tab)态:只在已选模型间切换视图,不改勾选;点当前 tab 则退回并排
-    if(CMP.maxed){
-      if(!CMP.sel.has(id)) return;            // 未参与对比的 chip 不响应
-      if(CMP.maxed===id){ toggleMax(id); renderCmpChips(); return; }   // 点当前 tab → 退出放大回并排
-      cmpSwitchTab(id); return;
-    }
-    // 并排态:chip = 勾选/取消该模型列(原行为)
     if(nokey && !CMP.sel.has(id)){
       if(p.cmpKeyOnly) openModelSwitch(id);
       else alert((PROV_SHORT[id]||id)+" 还没配置 key");
@@ -2242,13 +2298,26 @@ function renderCmpChips(){
     renderCmpChips(); renderCmpCols();
   });
 }
-function cmpSwitchTab(id){   // 放大态下把可见栏切到 id(书签页切换),其余隐藏
+function cmpSwitchTab(id){   // 标签页/放大态下把可见栏切到 id,其余隐藏
   CMP.maxed=id;
   $("#cmpCols").querySelectorAll(".cmpcol").forEach(c=>{
     const me=c.dataset.p===id; c.classList.toggle("max",me); c.classList.toggle("hide",!me);
   });
-  renderCmpChips();
+  renderCmpChips(); renderCmpTabs();
   const b=$("#cmpb-"+CSS.escape(id)); if(b) b.scrollTop=b.scrollHeight;   // 切过去滚到最新
+}
+function renderCmpTabs(){   // 有一栏被放大(CMP.maxed)时,内容上方显示一排浏览器式标签=全部参与模型,点标签切换看哪个
+  const bar=$("#cmpTabs"); if(!bar) return;
+  if(!CMP.maxed){ bar.hidden=true; bar.innerHTML=""; return; }   // 未放大(并排看全部)→ 不显示标签条
+  bar.hidden=false; bar.innerHTML="";
+  PROVIDERS.filter(p=>CMP.sel.has(p.id)).forEach(p=>{
+    const t=document.createElement("div");
+    t.className="cmptab"+(CMP.maxed===p.id?" active":"")+(CMP.running[p.id]?" running":"");
+    t.title=CMP.maxed===p.id?"当前:"+(PROV_SHORT[p.id]||p.name)+"(点这里退回并排)":"切到 "+(PROV_SHORT[p.id]||p.name);
+    t.innerHTML=`<span class="cmptab-dot"></span>${esc(PROV_SHORT[p.id]||p.name)}`;
+    t.onclick=()=>{ if(CMP.maxed===p.id) toggleMax(p.id); else cmpSwitchTab(p.id); };   // 点当前标签=退回并排
+    bar.appendChild(t);
+  });
 }
 function renderCmpCols(){   // diff:保留已有栏内容,只增删变化的
   const box=$("#cmpCols");
@@ -2273,7 +2342,8 @@ function renderCmpCols(){   // diff:保留已有栏内容,只增删变化的
     d.innerHTML=`<div class="cmpcol-h" data-p="${p.id}"><span class="cnm">${nm}</span>`+
       modelEl+
       `<span class="st" id="cmpst-${p.id}"></span>`+
-      `<button class="cmpstop" id="cmpstop-${p.id}" title="暂停这个模型当前的回答" hidden>■ 停止</button></div>`+
+      `<button class="cmpstop" id="cmpstop-${p.id}" title="暂停这个模型当前的回答" hidden>■ 停止</button>`+
+      `<button class="cmpmax" id="cmpmax-${p.id}" title="放大这一栏 —— 放大后顶部模型名变书签页,点名字即可切看别的模型;再点一下退回并排">⤢</button></div>`+
       `<div class="cmprunbar" id="cmprun-${p.id}" hidden><span class="pulse"></span><span class="txt">启动中</span><button class="cmpstopbar" title="停止这一栏当前回答">停止</button></div>`+
       `<div class="cmpcol-b" id="cmpb-${p.id}"></div>`+
       `<div class="cmpcatt" id="cmpcatt-${p.id}" hidden></div>`+
@@ -2282,7 +2352,8 @@ function renderCmpCols(){   // diff:保留已有栏内容,只增删变化的
     const sel=d.querySelector(".cmpmodelsel"); if(sel){ sel.addEventListener("click",e=>e.stopPropagation()); sel.addEventListener("change",e=>{ e.stopPropagation(); cmpSetModel(p.id, e.target.value); }); }
     const mi=d.querySelector(".cmpmodelinput"); if(mi){ const apply=()=>{ const v=mi.value.trim(); if(v) cmpSetModel(p.id,v); else mi.value=(CMP.modelPrefs&&CMP.modelPrefs[p.id])||CMP_FORCE_MODEL[p.id]||""; }; mi.addEventListener("click",e=>e.stopPropagation()); mi.addEventListener("blur",apply); mi.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); mi.blur(); } }); }
     const esl=d.querySelector(".cmpeffortsel"); if(esl){ esl.addEventListener("click",e=>e.stopPropagation()); esl.addEventListener("change",e=>{ e.stopPropagation(); cmpSetEffort(p.id, e.target.value); }); }
-    d.querySelector(".cmpcol-h").onclick=(e)=>{ if(e.target.closest(".cmpstop")||e.target.closest(".cmpmodelsel")||e.target.closest(".cmpmodelinput")||e.target.closest(".cmpeffortsel")) return; toggleMax(p.id); };   // 点头部=最大化;点「停止」/模型控件 不触发
+    d.querySelector(".cmpcol-h").onclick=(e)=>{ if(e.target.closest(".cmpstop")||e.target.closest(".cmpmax")||e.target.closest(".cmpmodelsel")||e.target.closest(".cmpmodelinput")||e.target.closest(".cmpeffortsel")) return; toggleMax(p.id); };   // 点头部=最大化;点「停止」/「放大」/模型控件 不触发
+    d.querySelector(".cmpmax").onclick=(e)=>{ e.stopPropagation(); toggleMax(p.id); };   // 显式「放大」按钮:放大后顶部模型名变书签页 tab
     d.querySelector(".cmpstop").onclick=(e)=>{ e.stopPropagation(); cmpStop(p.id); };
     d.querySelector(".cmpstopbar").onclick=(e)=>{ e.stopPropagation(); cmpStop(p.id); };
     const ci=d.querySelector(".cmpcolin"), cs=d.querySelector(".cmpcolsend");
@@ -2294,6 +2365,11 @@ function renderCmpCols(){   // diff:保留已有栏内容,只增删变化的
     ci.addEventListener("paste",e=>{ const fs=[...((e.clipboardData&&e.clipboardData.files)||[])]; if(fs.length){ e.preventDefault(); cmpColUpload(p.id,fs); } });
     cmpColRenderAttach(p.id);   // 该栏被重建(如移除后再加回)时,恢复已存在的附件
   });
+  if(CMP.maxed){   // 放大态下增删模型 → 保证放大的那栏仍有效(被删则切到第一个)+ 刷新标签条
+    if(!CMP.sel.has(CMP.maxed)){ const a=[...CMP.sel][0]; if(a){ cmpSwitchTab(a); } else { CMP.maxed=null; $("#cmpCols").querySelectorAll(".cmpcol").forEach(c=>c.classList.remove("max","hide")); } }
+    else { $("#cmpCols").querySelectorAll(".cmpcol").forEach(c=>{ const me=c.dataset.p===CMP.maxed; c.classList.toggle("max",me); c.classList.toggle("hide",!me); }); }   // 新加的栏也隐藏(只留放大那栏)
+    renderCmpTabs();
+  }
 }
 function cmpSetProgress(prov, text){   // 长任务可见进度:阶段 / 步数 / 秒表 / 最近工具或等待状态
   const bar=$("#cmprun-"+CSS.escape(prov));
@@ -2312,6 +2388,7 @@ function cmpSetRunning(prov,on){
   const cs=$("#cmpcsend-"+CSS.escape(prov)); if(cs) cs.disabled=on;
   if(on) cmpSetProgress(prov,"启动中"); else cmpClearProgress(prov);
   cmpSyncSendUI();   // 刷新「引导」按钮显隐(列停了就收起)
+  if(CMP.maxed) renderCmpTabs();   // 放大态:标签上的运行小圆点跟随
 }
 async function cmpStop(prov){   // 暂停单个对话:中断该栏当前 turn(中断后 SSE 会发 completed/interrupted → finish 收尾)
   const tid=CMP.threads[prov]; let turn=CMP.turn[prov];
@@ -2366,7 +2443,7 @@ function toggleMax(p){
   const cols=$("#cmpCols").querySelectorAll(".cmpcol");
   if(CMP.maxed===p){ CMP.maxed=null; cols.forEach(c=>c.classList.remove("max","hide")); }
   else { CMP.maxed=p; cols.forEach(c=>{ const me=c.dataset.p===p; c.classList.toggle("max",me); c.classList.toggle("hide",!me); }); }
-  renderCmpChips();   // 进/出放大 → 顶部 chips 同步进入/退出 tab 模式并高亮当前
+  renderCmpTabs();   // 放大 → 显示标签条(全部模型);退出 → 隐藏标签条、恢复并排
 }
 function cmpAddMsg(p,cls,html){ const b=$("#cmpb-"+CSS.escape(p)); if(!b) return null; const d=document.createElement("div"); d.className="cmpmsg "+cls; d.innerHTML=html; b.appendChild(d); b.scrollTop=b.scrollHeight; return d; }
 function cmpProvBusy(p){ return !!(CMP.running[p]||CMP.dispatching[p]); }
@@ -2645,17 +2722,27 @@ window.addEventListener("DOMContentLoaded",()=>{
 #cmpHead{display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap}
 #cmpHead b{font-size:14px}
 #cmpChips{display:flex;gap:6px;flex-wrap:wrap;flex:1}
-/* 选项拾取器(模型末尾"选项清单+选择问句"→ 可点多选) */
-.optpicker{margin:10px 0 2px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--panel2)}
-.optchips{display:flex;flex-wrap:wrap;gap:6px}
-.optchip{border:1px solid var(--line);border-radius:13px;padding:3px 11px;font-size:12.5px;cursor:pointer;background:var(--bg);color:var(--txt);user-select:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.optchip:hover{border-color:var(--accent)}
-.optchip.on{background:var(--accent);color:#fff;border-color:var(--accent)}
-.optchip.other{border-style:dashed}
-.optother{margin-top:7px;width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-family:var(--font);font-size:13px;background:var(--bg);color:var(--txt);outline:none}
+/* 选项拾取器 —— 竖排选项卡(仿 Claude Code):整行卡片 + 序号标记(选中→✓)+ 多选 */
+.optpicker{margin:12px 0 2px}
+.optchips{display:flex;flex-direction:column;gap:6px}
+.optrow{display:flex;align-items:flex-start;gap:10px;width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:9px;padding:9px 12px;font-size:13px;line-height:1.45;cursor:pointer;background:var(--bg);color:var(--txt);text-align:left;user-select:none;transition:border-color .12s,background .12s}
+.optrow:hover{border-color:var(--accent);background:var(--panel2)}
+.optrow.on{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,var(--bg))}
+.optmark{flex:0 0 auto;width:20px;height:20px;border:1px solid var(--line);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:var(--dim);margin-top:1px}
+.optrow.on .optmark{background:var(--accent);border-color:var(--accent);color:#fff}
+.optrow.on .optnum{display:none}
+.optrow.on .optmark::after{content:"✓";font-size:12px}
+.optlabel{flex:1;min-width:0;word-break:break-word}
+.optrow.other{border-style:dashed;color:var(--dim)}
+.optrow.other .optmark{border-style:dashed}
+.optrow.other.open{border-color:var(--accent);color:var(--txt)}
+.optother{margin-top:7px;width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-family:var(--font);font-size:13px;background:var(--bg);color:var(--txt);outline:none}
 .optother:focus{border-color:var(--accent)}
-.optfill{margin-top:8px;border:none;border-radius:8px;padding:5px 13px;font-size:12.5px;cursor:pointer;background:var(--accent);color:#fff}
-.optfill:hover{opacity:.9}
+.optfoot{display:flex;align-items:center;gap:11px;margin-top:9px}
+.optfill{border:none;border-radius:8px;padding:6px 15px;font-size:12.5px;cursor:pointer;background:var(--accent);color:#fff}
+.optfill:disabled{opacity:.42;cursor:default}
+.optfill:not(:disabled):hover{opacity:.9}
+.opthint{font-size:11.5px;color:var(--faint)}
 .cmpchip{border:1px solid var(--line);border-radius:13px;padding:3px 10px;font-size:12px;cursor:pointer;background:var(--bg);color:var(--dim);user-select:none}
 .cmpchip.on{background:var(--accent);color:#fff;border-color:var(--accent)}
 .cmpchip.nokey{opacity:.55}
@@ -2680,8 +2767,20 @@ window.addEventListener("DOMContentLoaded",()=>{
 #cmpCols.lay-col{flex-direction:column}
 #cmpCols.lay-grid{display:grid;grid-template-columns:repeat(2,1fr);grid-auto-rows:1fr}
 #cmpCols.lay-grid .cmpcol{min-height:0}
+/* 标签页布局:一次只显示当前标签那一栏(靠 .max 决定),其余全隐 —— 即使新增栏没 max 类也稳 */
+#cmpCols.lay-tab .cmpcol{display:none}
+#cmpCols.lay-tab .cmpcol.max{display:flex;flex:1 1 100%}
+/* 紧贴内容上方的浏览器式标签条(只在标签布局显示) */
+.cmptabs{display:flex;gap:2px;padding:5px 8px 0;background:var(--panel);border-bottom:1px solid var(--line);overflow-x:auto;flex:0 0 auto}
+.cmptab{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;font-size:12.5px;color:var(--dim);background:var(--panel2);border:1px solid var(--line);border-bottom:none;border-radius:8px 8px 0 0;cursor:pointer;white-space:nowrap;position:relative;top:1px;max-width:200px;overflow:hidden;text-overflow:ellipsis}
+.cmptab:hover{color:var(--accent)}
+.cmptab.active{background:var(--bg);color:var(--txt);font-weight:600;border-color:var(--line)}   /* 当前标签:连到下方内容(白底、盖住 border-bottom) */
+.cmptab-dot{width:6px;height:6px;border-radius:50%;background:transparent;flex:0 0 auto}
+.cmptab.running .cmptab-dot{background:var(--accent);animation:cmptabPulse 1s infinite}
+@keyframes cmptabPulse{0%,100%{opacity:1}50%{opacity:.3}}
 #cmpLayout{display:flex;gap:2px;margin-left:auto}
 .laybtn{border:1px solid var(--line);background:var(--panel2);color:var(--dim);border-radius:6px;width:26px;height:24px;cursor:pointer;font-size:12px;line-height:1;padding:0} .laybtn:hover{color:var(--accent);border-color:var(--accent)} .laybtn.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.laybtn[data-l="tab"]{width:auto;padding:0 7px}
 .cmpcol.hide{display:none}
 .cmpcol-h{padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel);font-size:12px;font-weight:600;color:var(--txt);display:flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap}
 .cmpcol-h .st{font-size:11px;font-weight:400;color:var(--faint);margin-left:auto}
@@ -2719,6 +2818,9 @@ input.cmpmodelinput:focus{border-color:var(--accent);background:var(--bg)}
 .cmpcol-h .cnm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cmpstop{margin-left:8px;border:1px solid var(--err);color:var(--err);background:transparent;border-radius:6px;padding:1px 7px;font-size:10px;cursor:pointer;flex:0 0 auto}
 .cmpstop:hover{background:var(--err);color:#fff}
+.cmpmax{margin-left:6px;border:1px solid var(--line);color:var(--dim);background:transparent;border-radius:6px;padding:1px 7px;font-size:13px;line-height:1;cursor:pointer;flex:0 0 auto}
+.cmpmax:hover{border-color:var(--accent);color:var(--accent)}
+.cmpcol.max .cmpmax{background:var(--accent);color:#fff;border-color:var(--accent)}   /* 已放大的那栏:按钮高亮,提示再点可退回 */
 .cmpcol-f{display:flex;gap:5px;padding:6px;border-top:1px solid var(--line);background:var(--panel)}
 .cmpcolin{flex:1;min-width:0;resize:none;border:1px solid var(--line);border-radius:7px;padding:5px 8px;font:inherit;font-size:12px;background:var(--bg);color:var(--txt);max-height:90px;line-height:1.4}
 .cmpcolsend{flex:0 0 auto;border:none;background:var(--accent);color:#fff;border-radius:7px;padding:0 11px;font-size:15px;font-weight:600;cursor:pointer}
@@ -2753,12 +2855,13 @@ input.cmpmodelinput:focus{border-color:var(--accent);background:var(--bg)}
 </style>
 <div id="cmpView" hidden>
   <div id="cmpTop">
-    <div id="cmpHead"><b>⚖️ 多模型对比</b><div id="cmpChips"></div><div id="cmpShellTgl" class="tgl" title="开 = 允许 exec_shell 跑命令(跳出沙箱)。注:MCP / web_search / 读取等工具跟单窗口一样一直可用,此开关只额外控制 shell 命令"><span class="sw"></span>💻 Shell</div><div id="cmpAutoTgl" class="tgl" title="工具调用自动批准(对比无逐栏审批 UI,开 Shell 时建议开)"><span class="sw"></span>⚡ 自动批准</div><div id="cmpLayout" title="排列方式:横列 / 竖列 / 田字格"><button class="laybtn" data-l="row">横</button><button class="laybtn" data-l="col">竖</button><button class="laybtn" data-l="grid">田</button></div><div id="cmpFswrap" title="对比文字大小(独立于主窗口)"><button class="fsbtn" onclick="bumpCmpFs(-1)" title="字小一点">A−</button><button class="fsbtn" onclick="bumpCmpFs(1)" title="字大一点">A+</button></div><button id="cmpNewBtn" title="在当前窗口开新一轮对比(上一轮已自动存进侧栏「多模型对比」会话,随时点回,不会丢)">＋ 新对话</button><button id="cmpResetBtn" title="某栏回答的不是它本人(回退成了 DeepSeek)?点这里用最新配置/key 重启所有对比后端">↻ 重启后端</button><button id="cmpClose" title="关闭这个对比窗口">✕ 退出</button></div>
+    <div id="cmpHead"><b>⚖️ 多模型对比</b><div id="cmpChips"></div><div id="cmpShellTgl" class="tgl" title="开 = 允许 exec_shell 跑命令(跳出沙箱)。注:MCP / web_search / 读取等工具跟单窗口一样一直可用,此开关只额外控制 shell 命令"><span class="sw"></span>💻 Shell</div><div id="cmpAutoTgl" class="tgl" title="工具调用自动批准(对比无逐栏审批 UI,开 Shell 时建议开)"><span class="sw"></span>⚡ 自动批准</div><div id="cmpLayout" title="排列方式:横列 / 竖列 / 田字格(点某一栏的 ⤢ 或标题即可放大它、其余收进上方标签条)"><button class="laybtn" data-l="row">横</button><button class="laybtn" data-l="col">竖</button><button class="laybtn" data-l="grid">田</button></div><div id="cmpFswrap" title="对比文字大小(独立于主窗口)"><button class="fsbtn" onclick="bumpCmpFs(-1)" title="字小一点">A−</button><button class="fsbtn" onclick="bumpCmpFs(1)" title="字大一点">A+</button></div><button id="cmpNewBtn" title="在当前窗口开新一轮对比(上一轮已自动存进侧栏「多模型对比」会话,随时点回,不会丢)">＋ 新对话</button><button id="cmpResetBtn" title="某栏回答的不是它本人(回退成了 DeepSeek)?点这里用最新配置/key 重启所有对比后端">↻ 重启后端</button><button id="cmpClose" title="关闭这个对比窗口">✕ 退出</button></div>
     <div id="cmpAttachBar" hidden></div>
     <div id="cmpInputRow"><button id="cmpAttachBtn" title="上传文件(文本/代码,各模型会 read_file 读取;也可直接粘贴/拖拽。图片会显示预览)">📎</button><textarea id="cmpInput" wrap="soft" placeholder="输入一个问题,同时发给所有选中的模型…（Enter 发送 · Shift+Enter 换行 · 可粘贴/拖拽文件）"></textarea><button id="cmpSteerBtn" hidden title="把这句插进正在运行的对话,实时引导它们(全模型支持);「发送」则是排队、等当前轮完再发">⤵ 引导</button><button id="cmpStopAllBtn" hidden title="停止所有正在运行的模型,并清空还没发出去的排队消息">停止全部</button><button id="cmpSendBtn">发送</button></div>
     <input type="file" id="cmpFileInput" multiple style="display:none">
     <div id="cmpQueue" hidden></div>
   </div>
+  <div id="cmpTabs" class="cmptabs" hidden></div>
   <div id="cmpCols"></div>
 </div>
 </body>

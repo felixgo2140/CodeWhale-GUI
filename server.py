@@ -40,6 +40,37 @@ def _atomic_write(path, text, secret=False):
 
 def _atomic_write_json(path, obj, secret=False, ensure_ascii=True):
     _atomic_write(path, json.dumps(obj, ensure_ascii=ensure_ascii), secret=secret)
+
+# DeerFlow 研究前置指令:把 CodeWhale 两个专属 skill 的方法论浓缩进 DeerFlow 的研究行为
+# (DeerFlow 自身 prompt 改不动/脆 → 服务端给每个查询前置)。A=价值投资大师 v7(个股),
+# B=供应链瓶颈猎手 chokepoint-atlas(板块/AI 基础设施)。自动路由 + 压掉 DeerFlow 过程性废话。
+_DF_FRAMEWORK = """【研究框架】先判断本次研究属哪类,套对应框架;两类都遵守末尾"精炼"要求。
+
+═══ A. 个股 / 公司分析 → 价值投资大师 v7(每条给具体数字 + 证据来源,不泛泛)═══
+1 商业模式/护城河(巴菲特·芒格,20%):生意本质、收入结构、护城河类型与宽度
+2 财务健康(格雷厄姆·巴菲特,20%):利润含金量、经营现金流、资产负债与偿债、财报质量红旗
+3 估值(格雷厄姆·涅夫,20%):≥2 种方法(DCF/相对估值/PEG/净净值),给区间 + 安全边际
+4 催化剂与风险(索罗斯·格林布拉特,15%):什么驱动股价、关键下行风险
+5 周期与市场结构(马克斯·达里奥,15%):现处周期哪阶段、谁在定价
+6 技术面(欧奈尔·威科夫,10%):多周期量价、均线、形态是否共振
+7-8 板块趋势 + 五浪(各 5%);9-11 心理/内部人信号/价值突破点(附加)
+硬约束:①一票否决(财务造假嫌疑/治理崩坏/护城河消失,任一命中直接否决)②硬风控(现金流断裂/债务爆雷/核心业务瓦解则不给买入)
+输出先行:总分 / 评级(强烈买入…强烈卖出)/ 建议仓位 / 持有期 / 一句话核心逻辑,再展开。
+
+═══ B. 供应链 / 板块 / AI 基础设施 / 瓶颈研究(半导体·光子·算力·散热·先进封装·供电·国防·CDMO·能源中游等)→ 瓶颈猎手 ═══
+核心链路:supertrend → stack → bottleneck。
+1 确认超级趋势 supertrend:在赌哪条(光互连/先进封装/供电/散热/机器人/存储…)
+2 画产业栈 stack(6-9 层):材料base→foundry→测试→网络→终端;每家公司标角色(龙头/瓶颈供应商/颠覆者/foundry/测试/网络/邻近硅/材料base)
+3 猎瓶颈:类型=产能/认证/热/良率/工具/材料;按「卡点程度 × 被忽视度 × 可持续性」排序;价值常在二三阶瓶颈而非明显龙头
+4 外部证据交叉验证(财报/电话会/行业报告),附证伪测试
+5 **方向先行**:先给子环节多空方向 + 理由,再给候选标的(低市值候选只在论点建立后给);6 仓位:纯瓶颈供应商 vs 龙头 配比
+
+两者都涉及(如"某半导体供应链龙头")→ 先用 B 定供应链方向与瓶颈,再用 A 对具体标的做 11 模块 + 估值。
+
+═══ 通用 ═══ 每条结论挂证据(数字/科目/时间/来源),不敷衍;结论先行再展开;长报告结构化 markdown。
+精炼(重要):**不要过程性独白**("我将…""接下来我要…")、不要重复自我说明、不要客套废话;信息密度高、可执行。
+─────────────
+"""
 PINS_FILE = os.path.expanduser("~/.codewhale-gui/pins.json")
 CMP_THREADS_FILE = os.path.expanduser("~/.codewhale-gui/cmp_threads.json")   # 多模型对比建的 thread id 集合 → 侧栏按组归类(对比/普通分开),跨窗口共享
 CMP_SESSIONS_FILE = os.path.expanduser("~/.codewhale-gui/cmp_sessions.json")  # 对比会话 [{id,topic,ts,threads:{prov:tid}}] → 侧栏每会话一行、点回当时对比,跨窗口共享
@@ -1453,8 +1484,25 @@ def _fetch_threads_now():
     if not isinstance(arr, list):
         return None
     dflt = _cfg_get("provider") or "deepseek"
+    # 合并 newchat provider 后端:单窗口新对话在 newchat≠默认时建在该 provider 独立后端(:79xx),
+    # :7878 看不到 → 不合并侧栏会"丢"新建对话(felix 撞到的:newchat=custom 时 2 个新对话找不到)。
+    try:
+        nc = _newchat_provider()
+        if nc and nc != dflt:
+            port = ensure_provider_server(nc)
+            extra = json.load(_LOCAL.open(f"http://127.0.0.1:{port}/v1/threads/summary?limit=50", timeout=90))
+            if isinstance(extra, list):
+                seen = {t.get("id") for t in arr if isinstance(t, dict)}
+                for t in extra:
+                    if isinstance(t, dict) and t.get("id") and t.get("id") not in seen:
+                        arr.append(t); seen.add(t.get("id"))
+    except Exception:
+        pass
     for t in arr:
-        t["provider"] = _model_to_provider(t.get("model")) or _tprov.get(t.get("id")) or dflt
+        if isinstance(t, dict):
+            t["provider"] = _model_to_provider(t.get("model")) or _tprov.get(t.get("id")) or dflt
+    try: arr.sort(key=lambda t: (t.get("updated_at") or "") if isinstance(t, dict) else "", reverse=True)   # 合并后按更新时间排,新对话回到顶部
+    except Exception: pass
     _threads_cache["v"] = arr; _threads_cache["t"] = time.time()
     try: _atomic_write_json(_THREADS_CACHE_FILE, arr)   # 落盘:服务重启也有暖缓存
     except Exception: pass
@@ -1870,6 +1918,67 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p == "/api/deerflow/status":
+            if not self._authed():
+                return self._deny()
+            try:
+                import subprocess
+                r = subprocess.run(["python3", os.path.expanduser("~/scripts/deerflow_client.py"), "status"],
+                                   capture_output=True, text=True, timeout=10)
+                alive = "运行中" in (r.stdout or "")
+                out = {"alive": alive, "detail": (r.stdout or r.stderr or "").strip()}
+            except Exception as e:
+                out = {"alive": False, "error": str(e)[:200]}
+            b = json.dumps(out, ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+            return
+        if p == "/api/deerflow/file":   # 下载 DeerFlow 报告(仅 ~/deerflow-output 下的 .md,basename 防穿越)
+            if not self._authed():
+                return self._deny()
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            name = os.path.basename((q.get("name", [""])[0] or ""))
+            odir = os.path.expanduser("~/deerflow-output")
+            fp = os.path.join(odir, name)
+            if not name.endswith(".md") or not os.path.isfile(fp):
+                return self.send_error(404)
+            try:
+                data = open(fp, "rb").read()
+            except Exception:
+                return self.send_error(404)
+            as_html = (q.get("html", [""])[0] == "1")     # html=1 → 渲染成 HTML(供预览面板打开)
+            inline = (q.get("inline", [""])[0] == "1")     # inline=1 → 原始 md 内联;否则附件下载
+            if as_html:
+                raw = data.decode("utf-8", "replace")
+                # 复用前端 markdown.js 的 md() 渲染;md 文本安全内嵌(转义 < > & 防 </script> 破出,运行时还原)
+                payload = json.dumps(raw).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+                html = ('<!DOCTYPE html><html><head><meta charset="utf-8">'
+                        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+                        '<style>body{font:15px/1.65 -apple-system,system-ui,"PingFang SC",sans-serif;color:#1a1714;background:#fff;margin:0;padding:26px 30px;max-width:860px}'
+                        'h1,h2,h3,h4{line-height:1.3}pre{background:#f5f3ef;border:1px solid #e5e0d8;border-radius:8px;padding:11px 13px;overflow-x:auto}'
+                        'code{background:#f5f3ef;border:1px solid #e5e0d8;border-radius:4px;padding:1px 5px;font-family:ui-monospace,SFMono-Regular,monospace;font-size:.9em}'
+                        'pre code{border:none;padding:0;background:none}a{color:#c2410c}table{border-collapse:collapse;margin:11px 0}th,td{border:1px solid #e5e0d8;padding:5px 10px}'
+                        'blockquote{border-left:3px solid #c2410c;margin:9px 0;padding:2px 0 2px 13px;color:#666}img{max-width:100%}hr{border:none;border-top:1px solid #e5e0d8}</style></head>'
+                        '<body><div id="cw-doc"></div><script src="/markdown.js"></script>'
+                        '<script>try{document.getElementById("cw-doc").innerHTML=md(' + payload + ')}catch(e){document.getElementById("cw-doc").textContent=' + payload + '}</script>'
+                        '</body></html>')
+                body_bytes = html.encode("utf-8")
+                ctype = "text/html; charset=utf-8"; disp = None
+            else:
+                body_bytes = data
+                ctype = "text/markdown; charset=utf-8" if inline else "application/octet-stream"
+                disp = ("inline" if inline else "attachment") + '; filename="%s"' % name.replace('"', '')
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            if disp:
+                self.send_header("Content-Disposition", disp)
+            self.send_header("Content-Length", str(len(body_bytes)))
+            self.end_headers()
+            self.wfile.write(body_bytes)
+            return
         if p == "/manifest.webmanifest":
             try:
                 m = json.load(open(os.path.join(WEB, "manifest.webmanifest")))
@@ -2125,6 +2234,78 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         out = self._skill_create(data)
             except Exception as e:
                 out = {"error": str(e)[:200]}
+            b = json.dumps(out, ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+            return
+        if p == "/api/deerflow/research":
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                prompt = (data.get("prompt") or "").strip()
+                model = (data.get("model") or "").strip()
+                use_fw = data.get("framework", True)   # 默认套价值投资框架;前端可传 framework:false 关掉
+                if not prompt or len(prompt) > 5000:
+                    out = {"error": "prompt 不能为空且不超过5000字符"}
+                else:
+                    import subprocess
+                    submit_prompt = (_DF_FRAMEWORK + "【本次研究对象】\n" + prompt) if use_fw else prompt
+                    cmd = ["python3", os.path.expanduser("~/scripts/deerflow_client.py"),
+                           "submit", submit_prompt, "--name", prompt[:40]]   # --name 用原始 prompt,标题干净
+                    if model:
+                        cmd += ["--model", model]
+                    r = subprocess.run(cmd,
+                        capture_output=True, text=True, timeout=30)
+                    lines = (r.stdout or "").strip().split("\n")
+                    tid = ""; rid = ""
+                    for ln in lines:
+                        ls = ln.strip()   # deerflow_client 输出是「   Thread: <id>」带前导空格,必须先 strip 再匹配
+                        if ls.startswith("Thread:"): tid = ls.split(":",1)[1].strip()
+                        if ls.startswith("Run:"): rid = ls.split(":",1)[1].strip()
+                    if not tid:   # 没解析到 thread_id → 把 stderr/stdout 带回前端便于排查,而不是回 ok 却空 id
+                        out = {"ok": False, "error": ((r.stderr or r.stdout or "提交无输出")[:300])}
+                    else:
+                        out = {"ok": True, "thread_id": tid, "run_id": rid}
+            except Exception as e:
+                out = {"ok": False, "error": str(e)[:200]}
+            b = json.dumps(out, ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+            return
+        if p == "/api/deerflow/poll":
+            if not self._authed():
+                return self._deny()
+            try:
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                tid = (q.get("thread_id", [""])[0] or "").strip()
+                full = (q.get("full", [""])[0] == "1")   # full=1 → 取完整报告(跑 result,才有正文+存 .md),否则只 poll 状态
+                if not tid:
+                    out = {"error": "thread_id required"}
+                else:
+                    import subprocess
+                    cmd = ["python3", os.path.expanduser("~/scripts/deerflow_client.py")]
+                    cmd += (["result", tid] if full else ["poll", tid, "--timeout", "30"])
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=(60 if full else 45))
+                    out = {"ok": True, "output": (r.stdout or r.stderr or "").strip()[:8000]}
+                    if full:   # 附上刚保存的报告文件(供前端下载/打开)
+                        odir = os.path.expanduser("~/deerflow-output")
+                        try:
+                            mds = [f for f in os.listdir(odir) if f.endswith(".md")]
+                            if mds:
+                                mds.sort(key=lambda f: os.path.getmtime(os.path.join(odir, f)), reverse=True)
+                                out["file"] = mds[0]; out["path"] = os.path.join(odir, mds[0])
+                        except Exception:
+                            pass
+            except Exception as e:
+                out = {"ok": False, "error": str(e)[:200]}
             b = json.dumps(out, ensure_ascii=False).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

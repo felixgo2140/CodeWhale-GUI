@@ -5,7 +5,7 @@
 
   function sanitizeHtml(html){
     const allowed = new Set(["A","BLOCKQUOTE","BR","CODE","DEL","EM","H1","H2","H3","H4","HR","LI","OL","P","PRE","STRONG","TABLE","TBODY","TD","TH","THEAD","TR","UL"]);
-    const drop = new Set(["EMBED","IFRAME","LINK","META","OBJECT","SCRIPT","STYLE"]);
+    const drop = new Set(["EMBED","IFRAME","LINK","META","OBJECT","SCRIPT","STYLE","SVG","FORM","INPUT","BUTTON","TEXTAREA","SELECT","DETAILS","SUMMARY"]);
     const template = document.createElement("template");
     template.innerHTML = html || "";
     const visit = root => {
