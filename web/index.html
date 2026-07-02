@@ -307,6 +307,40 @@
   .chip.imgchip .x:hover{background:var(--err);color:#fff}
   #attachbtn{width:42px;height:42px;border-radius:11px;border:1px solid var(--line);background:var(--panel);color:var(--dim);cursor:pointer;font-size:17px;flex:0 0 auto;display:flex;align-items:center;justify-content:center}
   #attachbtn:hover{color:var(--accent);border-color:var(--accent)}
+  /* Plugin button (+ ) */
+  #pluginbtn{width:42px;height:42px;border-radius:11px;border:1px solid var(--line);background:var(--panel);color:var(--dim);cursor:pointer;font-size:19px;font-weight:600;flex:0 0 auto;display:flex;align-items:center;justify-content:center;position:relative}
+  #pluginbtn:hover{color:var(--accent);border-color:var(--accent)}
+  /* Plugin dropdown */
+  #plugindrop{display:none;position:absolute;bottom:54px;left:0;background:var(--bg);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.18);z-index:60;min-width:200px;padding:5px 0}
+  #plugindrop.show{display:block}
+  .plugini{padding:9px 16px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:9px;white-space:nowrap;color:var(--txt)}
+  .plugini:hover{background:var(--panel)}
+  .plugini .emo{font-size:16px;width:20px;text-align:center}
+  .plugini .lb{flex:1}
+  .plugini .short{font-size:10px;color:var(--faint);margin-left:auto}
+  .plugini.df{color:var(--accent)}
+  /* DeerFlow result block */
+  .df-result{margin:8px 0;border:1px solid var(--accent);border-radius:10px;overflow:hidden;background:var(--panel)}
+  .df-hdr{background:var(--accent);color:#fff;padding:8px 13px;font-size:12px;font-weight:600;display:flex;align-items:center;gap:8px}
+  .df-hdr .spinner{width:14px;height:14px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:dfspin .7s linear infinite;display:none}
+  .df-hdr.running .spinner{display:inline-block}
+  .df-body{padding:12px 15px;font-size:13px;line-height:1.6;white-space:pre-wrap;max-height:500px;overflow-y:auto}
+  .df-body p{margin:0 0 8px}
+  .df-body .src{font-size:11px;color:var(--faint)}
+  .df-stats{font-size:11px;color:var(--dim);padding:6px 13px;border-top:1px solid var(--line);display:flex;gap:16px}
+  @keyframes dfspin{to{transform:rotate(360deg)}}
+  /* Modal: DeerFlow input */
+  #dfmodal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:90;align-items:flex-start;justify-content:center}
+  #dfmodal.show{display:flex}
+  #dfmodal .dfpanel{background:var(--bg);border:1px solid var(--line);border-radius:14px;width:min(560px,90vw);margin-top:12vh;padding:20px 22px;box-shadow:0 12px 40px rgba(0,0,0,.25)}
+  #dfmodal .dfpanel h3{margin:0 0 10px;font-size:16px;display:flex;align-items:center;gap:8px}
+  #dfmodal .dfpanel textarea{width:100%;min-height:90px;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 12px;font-family:var(--font);font-size:14px;color:var(--txt);outline:none;resize:vertical;line-height:1.5}
+  #dfmodal .dfpanel textarea:focus{border-color:var(--accent)}
+  #dfmodal .dfbtns{margin-top:12px;display:flex;gap:8px;justify-content:flex-end}
+  #dfmodal .dfbtns button{border:1px solid var(--line);background:var(--panel);color:var(--txt);border-radius:8px;padding:7px 16px;font-size:13px;cursor:pointer}
+  #dfmodal .dfbtns button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  #dfmodal .dfbtns button.primary:hover{background:var(--accent2)}
+  #dfmodal .dfbtns button:hover{border-color:var(--accent)}
   #cwrap.drag{outline:2px dashed var(--accent);outline-offset:4px;border-radius:12px}
   /* 侧栏工具按钮 */
   #sidetools{display:flex;gap:6px;margin-top:8px}
@@ -389,6 +423,20 @@ if(location.search.indexOf("compare=1")>=0)document.documentElement.className+="
     <div id="composer">
       <div id="attachbar"></div>
       <div id="cwrap">
+        <button id="pluginbtn" title="插件/工具">+</button>
+        <div id="plugindrop">
+          <div class="plugini df" onclick="openDeerFlow()">
+            <span class="emo">🔬</span><span class="lb">DeerFlow 深度研究</span><span class="short">Kimi</span>
+          </div>
+          <div class="plugini" onclick="quickDeerFlow()">
+            <span class="emo">⚡</span><span class="lb">快速 DeerFlow</span><span class="short">输入框模式</span>
+          </div>
+          <div style="border-top:1px solid var(--line);margin:4px 0"></div>
+          <div style="padding:4px 16px;font-size:10px;color:var(--faint)">模型选择（默认 Kimi）</div>
+          <div class="plugini" onclick="_dfModel='kimi';openDeerFlow()">
+            <span class="emo">🟠</span><span class="lb">Kimi</span><span class="short">moonshot-128k</span>
+          </div>
+        </div>
         <button id="attachbtn" title="上传文件(文本/代码,agent 会读取;图片会显示预览)"></button>
         <input type="file" id="fileinput" multiple style="display:none">
         <textarea id="input" rows="1" wrap="soft" placeholder="给 CodeWhale 发消息…  (Enter 发送 · Shift+Enter 换行)"></textarea>
@@ -398,6 +446,18 @@ if(location.search.indexOf("compare=1")>=0)document.documentElement.className+="
     </div>
 	    <button id="scrollbtn" title="回到底部"></button>
 	  </div>
+  <!-- DeerFlow deep research modal -->
+  <div id="dfmodal">
+    <div class="dfpanel">
+      <h3>🔬 DeerFlow 深度研究</h3>
+      <p style="font-size:12px;color:var(--dim);margin:0 0 8px">自动多轮搜索 + 全文爬取 + 结构化报告。可能需要 2-5 分钟。</p>
+      <textarea id="dfprompt" rows="4" wrap="soft" placeholder="输入研究问题，例如：深度分析 NVIDIA 在 AI 芯片市场面临的主要竞争风险"></textarea>
+      <div class="dfbtns">
+        <button onclick="closeDeerFlow()">取消</button>
+        <button class="primary" onclick="submitDeerFlow()">开始深度研究</button>
+      </div>
+    </div>
+  </div>
   <div id="previewResize" hidden title="拖拽调整预览宽度"></div>
   <aside id="previewPane" hidden>
     <div id="pvHead">
@@ -1240,9 +1300,70 @@ function completeItem(id, item, failed){
   if(it.kind==="agent_reasoning") it.content.textContent=final;
   else if(it.kind==="user_message") it.content.innerHTML=md(final);
   else if(["tool_call","file_change","status","context_compaction"].includes(it.kind)) it.content.textContent=final;
-  else it.content.innerHTML=md(final);
+  else { it.content.innerHTML=md(final); augmentOptions(it.content.parentElement, final, "#input"); }   // 助手消息末尾若是「选项清单+选择问句」→ 追加可点选项
   if(it.kind==="file_change" && preview.url && preview.autoRefresh) setTimeout(previewReload,250);
   if(failed) it.el.style.opacity=.6;
+}
+// ── 选项拾取器:模型末尾是「编号清单 + 选择问句」时,把清单渲染成可点选项(多选 + 其他),点「填入输入框」拼进 compose 供编辑再发 ──
+function detectOptions(text){
+  if(!text) return null;
+  const lines=String(text).replace(/\r/g,"").split("\n");
+  const nonEmpty=lines.map(l=>l.trim()).filter(Boolean);
+  if(nonEmpty.length<2) return null;
+  // 触发闸:末尾几行必须有"选择问句"(否则普通编号步骤列表不该变按钮)
+  const cueRe=/(哪一?步|哪个|哪些|选哪|要不要|需要我[^。\n]{0,20}(执行|做|帮|试|跑|开始)|你想[^。\n]{0,20}(做|选|执行|先)|想先(做|选|跑)|要我[^。\n]{0,10}(做|执行|跑|试)哪|which\b|choose|pick one|which (one|step)|shall i|execute which)/i;
+  const tail=nonEmpty.slice(-4).join("\n");
+  const last=nonEmpty[nonEmpty.length-1];
+  if(!(cueRe.test(tail) || /[?？]\s*$/.test(last))) return null;
+  // 取"最后一段连续编号行"(空行不打断,普通文字行打断)
+  const itemRe=/^\s*(\d{1,2})[.、)]\s+(.+?)\s*$/;
+  let run=[], best=[];
+  for(const l of lines){
+    const m=l.match(itemRe);
+    if(m) run.push({n:m[1], label:m[2]});
+    else if(l.trim()==="") {/* 空行不打断 */}
+    else { if(run.length) best=run; run=[]; }
+  }
+  if(run.length) best=run;
+  if(best.length<2) return null;
+  best.forEach(it=>{ it.label=it.label.replace(/`([^`]+)`/g,"$1").replace(/\*\*([^*]+)\*\*/g,"$1").replace(/^[\*_ ]+|[\*_ ]+$/g,"").trim(); });
+  return best;
+}
+function buildOptPicker(items, inputSel){
+  const sel=new Set();
+  const wrap=document.createElement("div"); wrap.className="optpicker";
+  const chips=document.createElement("div"); chips.className="optchips";
+  items.forEach(it=>{
+    const c=document.createElement("span"); c.className="optchip";
+    const short=it.label.length>52?it.label.slice(0,50)+"…":it.label;
+    c.textContent=(it.n?it.n+". ":"")+short; c.title=it.label;
+    c.onclick=()=>{ if(sel.has(it)){sel.delete(it);c.classList.remove("on");} else {sel.add(it);c.classList.add("on");} };
+    chips.appendChild(c);
+  });
+  const other=document.createElement("span"); other.className="optchip other"; other.textContent="其他…";
+  const otherInp=document.createElement("input"); otherInp.type="text"; otherInp.className="optother"; otherInp.placeholder="自定义补充…"; otherInp.style.display="none";
+  other.onclick=()=>{ const show=otherInp.style.display==="none"; otherInp.style.display=show?"":"none"; other.classList.toggle("on",show); if(show) otherInp.focus(); };
+  chips.appendChild(other); wrap.appendChild(chips); wrap.appendChild(otherInp);
+  const fill=document.createElement("button"); fill.className="optfill"; fill.textContent="填入输入框 ↵";
+  fill.onclick=()=>{
+    const parts=[...sel].map(it=>it.label); const ot=otherInp.value.trim(); if(ot) parts.push(ot);
+    if(!parts.length) return;
+    const txt = parts.length>1 ? ("请帮我执行:\n"+parts.map(p=>"- "+p).join("\n")) : ("请帮我:"+parts[0]);
+    const inp=$(inputSel); if(!inp) return;
+    inp.value = inp.value.trim() ? (inp.value.replace(/\s+$/,"")+"\n"+txt) : txt;
+    inp.dispatchEvent(new Event("input")); inp.focus();
+    try{ inp.setSelectionRange(inp.value.length,inp.value.length); }catch(e){}
+  };
+  wrap.appendChild(fill);
+  return wrap;
+}
+function augmentOptions(container, text, inputSel){   // container=消息 body 节点;幂等(先清旧 picker)
+  try{
+    if(!container) return;
+    [...container.querySelectorAll(":scope > .optpicker")].forEach(n=>n.remove());
+    const items=detectOptions(text); if(!items) return;
+    container.appendChild(buildOptPicker(items, inputSel||"#input"));
+  }catch(e){}
 }
 
 /* ---------- approvals ---------- */
@@ -1338,6 +1459,83 @@ function setRunning(r){
 }
 function refreshActiveMeta(){ loadThreads(); }
 
+/* ---------- DeerFlow plugin ---------- */
+function openDeerFlow(){ $("#plugindrop").classList.remove("show"); $("#dfmodal").classList.add("show"); setTimeout(()=>$("#dfprompt").focus(),100); }
+function closeDeerFlow(){ $("#dfmodal").classList.remove("show"); }
+function quickDeerFlow(){
+  $("#plugindrop").classList.remove("show");
+  const inp=$("#input"); inp.value="/df "; inp.focus();
+  try{inp.setSelectionRange(4,4);}catch{}
+  $("#hint").innerHTML='<span style="color:var(--accent)">🔬 DeerFlow 模式：输入研究问题后按 Enter 发送</span>';
+}
+let _dfModel=""; // DeerFlow 选择的模型
+async function submitDeerFlow(model){
+  const prompt=$("#dfprompt").value.trim();
+  if(!prompt) return;
+  const m=model||_dfModel||"";
+  closeDeerFlow();
+  // 在聊天区添加用户消息
+  const label=m?`🔬 DeerFlow [${m}]: `:"🔬 DeerFlow 深度研究: ";
+  const oel=row("user","你"); oel.querySelector(".content").innerHTML=md(label+prompt); $("#mwrap").appendChild(oel); scrollDown(true);
+  // 添加 DeerFlow 结果容器
+  const dfel=document.createElement("div"); dfel.className="df-result"; dfel.id="df-"+Date.now();
+  dfel.innerHTML='<div class="df-hdr running"><div class="spinner"></div> DeerFlow 深度研究中…</div><div class="df-body">正在提交研究任务…</div><div class="df-stats"></div>';
+  $("#mwrap").appendChild(dfel); scrollDown(true);
+  const hdr=dfel.querySelector(".df-hdr"); const body=dfel.querySelector(".df-body"); const stats=dfel.querySelector(".df-stats");
+  try{
+    // 提交研究任务
+    const body={prompt}; if(m) body.model=m;
+    const r=await fetch("/api/deerflow/research",{method:"POST",headers:{...auth,"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(!d.ok){ body.textContent="提交失败: "+(d.error||"未知错误"); hdr.classList.remove("running"); hdr.textContent="❌ DeerFlow 提交失败"; return; }
+    body.textContent="任务已提交 (Thread: "+d.thread_id.slice(0,8)+"…)\n等待结果中…";
+    stats.textContent="Thread: "+d.thread_id.slice(0,12)+"…";
+    // 轮询结果
+    const maxPolls=60, interval=8000;
+    for(let i=0;i<maxPolls;i++){
+      await new Promise(res=>setTimeout(res,interval));
+      const pr=await fetch("/api/deerflow/poll?thread_id="+encodeURIComponent(d.thread_id),{headers:{...auth}});
+      const pd=await pr.json();
+      if(pd.error){ body.textContent="轮询失败: "+pd.error; hdr.classList.remove("running"); hdr.textContent="❌ DeerFlow 错误"; return; }
+      const out=pd.output||"";
+      if(out.includes("success")||out.includes("研究完成")||out.includes("Status: success")){
+        hdr.classList.remove("running"); hdr.textContent="✅ DeerFlow 深度研究完成";
+        // 获取完整结果
+        const rr=await fetch("/api/deerflow/poll?thread_id="+encodeURIComponent(d.thread_id)+"&full=1");
+        const rd=await rr.json();
+        const final=rd.output||out;
+        // 清理输出:去掉轮询状态行
+        const clean=final.replace(/^\[.*?\] tokens:.*$/gm,"").replace(/^  \[.*$/gm,"").trim();
+        body.innerHTML=md(clean||out);
+        // 尝试获取统计信息
+        const statMatch=final.match(/([\d,]+)\s*in\s*\/\s*([\d,]+)\s*out.*?(\d+)\s*LLM\s*calls?/i);
+        if(statMatch) stats.textContent="Tokens: "+statMatch[1]+" in / "+statMatch[2]+" out | "+statMatch[3]+" LLM calls";
+        else stats.textContent="完成";
+        return;
+      }
+      if(out.includes("error")||out.includes("失败")){ hdr.classList.remove("running"); hdr.textContent="❌ DeerFlow 研究失败"; body.textContent=out.slice(0,3000); return; }
+      if(out.includes("running")){ body.textContent="研究中… ("+Math.round((i+1)*interval/1000)+"s)"; }
+      else { body.textContent=out.slice(0,1000); }
+    }
+    hdr.classList.remove("running"); hdr.textContent="⏳ DeerFlow 超时";
+    body.textContent="研究超过 8 分钟仍在进行。可稍后在终端运行:\npython3 ~/scripts/deerflow_client.py result "+d.thread_id;
+  }catch(e){ hdr.classList.remove("running"); hdr.textContent="❌ DeerFlow 异常"; body.textContent=e.message; }
+}
+async function submitDeerFlowFromInput(prompt){
+  $("#dfprompt").value=prompt; await submitDeerFlow();
+}
+// toggle plugin dropdown
+document.addEventListener("click",function(e){
+  const btn=$("#pluginbtn"); const drop=$("#plugindrop");
+  if(!btn||!drop) return;
+  if(btn.contains(e.target)){ drop.classList.toggle("show"); e.stopPropagation(); return; }
+  if(!drop.contains(e.target)) drop.classList.remove("show");
+});
+// Close dfmodal on backdrop click
+document.addEventListener("click",function(e){
+  const modal=$("#dfmodal");
+  if(modal&&modal.classList.contains("show")&&e.target===modal) closeDeerFlow();
+});
 /* ---------- send ---------- */
 async function send(queuedText){
   const inp=$("#input");
@@ -1373,7 +1571,17 @@ async function send(queuedText){
     sysnote("发送失败: "+e.message);
   }
 }
-function enterSend(){ if(state.running) queueFromInput(); else send(); }   // 运行中=排队,空闲=直接发
+function enterSend(){
+  const inp=$("#input"); const raw=inp.value.trim();
+  // DeerFlow 深度研究: /df 前缀
+  if(raw.startsWith("/df ")){
+    const prompt=raw.slice(4).trim();
+    if(!prompt) return;
+    inp.value=""; inp.style.height="auto"; $("#sendbtn").disabled=true;
+    submitDeerFlowFromInput(prompt); return;
+  }
+  if(state.running) queueFromInput(); else send();
+}   // 运行中=排队,空闲=直接发
 function queueFromInput(){
   const inp=$("#input"); const raw=inp.value.trim(); if(!raw && !state.attachments.length) return;
   const text=withAttachments(raw);   // 排队时就折入附件(否则等发送时附件可能已被后一条消息清掉)
@@ -1426,17 +1634,41 @@ async function newThread(){
 }
 
 /* ---------- 附件上传 ---------- */
+async function uploadOne(f, scope){   // 上传单个文件到 workspace,返回附件记录或 null(通用,单窗口/对比各栏共用)
+  if(f.size>50*1024*1024){ sysnote("⚠ "+f.name+" 超过 50MB,跳过"); return null; }
+  try{
+    const buf=await f.arrayBuffer();
+    const r=await fetch(url("/api/upload"),{method:"POST",headers:{...auth,"X-Filename":encodeURIComponent(f.name),"X-Upload-Scope":scope||"inbox"},body:buf});
+    const d=await r.json();
+    if(d.path) return uploadAttachmentRecord(f,d);
+    sysnote("⚠ 上传失败: "+(d.error||f.name));
+  }catch(e){ sysnote("⚠ 上传失败: "+e.message); }
+  return null;
+}
 async function uploadFiles(files){
-  for(const f of files){
-    if(f.size>50*1024*1024){ sysnote("⚠ "+f.name+" 超过 50MB,跳过"); continue; }
-    try{
-      const buf=await f.arrayBuffer();
-      const r=await fetch(url("/api/upload"),{method:"POST",headers:{...auth,"X-Filename":encodeURIComponent(f.name),"X-Upload-Scope":state.activeId||"inbox"},body:buf});
-      const d=await r.json();
-      if(d.path) state.attachments.push(uploadAttachmentRecord(f,d)); else sysnote("⚠ 上传失败: "+(d.error||f.name));
-    }catch(e){ sysnote("⚠ 上传失败: "+e.message); }
-  }
+  for(const f of files){ const rec=await uploadOne(f, state.activeId||"inbox"); if(rec) state.attachments.push(rec); }
   renderAttach();
+}
+// ── 对比:每栏「只追问」输入框各自的附件 ──
+async function cmpColUpload(prov, files){
+  CMP.colAttach=CMP.colAttach||{}; (CMP.colAttach[prov]=CMP.colAttach[prov]||[]);
+  const scope="cmp_"+prov;   // 服务端 _safe_upload_scope 只认 thr_*/cmp_*(下划线),否则落 inbox
+  for(const f of files){ const rec=await uploadOne(f, scope); if(rec) CMP.colAttach[prov].push(rec); }
+  cmpColRenderAttach(prov);
+}
+function cmpColRenderAttach(prov){
+  const bar=$("#cmpcatt-"+CSS.escape(prov)); if(!bar) return;
+  const list=(CMP.colAttach&&CMP.colAttach[prov])||[];
+  bar.innerHTML=""; bar.hidden=!list.length;
+  list.forEach((a,i)=>bar.appendChild(attachmentChip(a,()=>{ revokeAttachmentPreview(a); list.splice(i,1); cmpColRenderAttach(prov); })));
+}
+function cmpColWithAttach(prov, text){   // 把该栏附件路径折进 prompt 后清空(与单窗口 withAttachments 一致)
+  const list=(CMP.colAttach&&CMP.colAttach[prov])||[];
+  if(!list.length) return text;
+  const refs=list.map(a=>"- "+a.path).join("\n");
+  const out=`我上传了以下文件,请先用 read_file 读取再回答:\n${refs}\n\n${text}`.trim();
+  clearAttachmentList(list); cmpColRenderAttach(prov);
+  return out;
 }
 function renderAttach(){
   const bar=$("#attachbar"); bar.innerHTML="";
@@ -1981,14 +2213,26 @@ function cmpToggleAuto(){ CMP.autoApprove=!CMP.autoApprove; renderCmpToggles(); 
 function cmpToggleShell(){ CMP.allowShell=!CMP.allowShell; if(CMP.allowShell) CMP.autoApprove=true; renderCmpToggles(); cmpApplyFlags(); }   // 对比无逐栏审批 UI:开 Shell 自动连带开自动批准
 function renderCmpChips(){
   const box=$("#cmpChips");
+  const maxed=CMP.maxed;   // 放大态:顶部 chips 变书签页/tab,在已选模型间点击切换
+  box.classList.toggle("tabmode", !!maxed);
   box.innerHTML=PROVIDERS.map(p=>{
     const on=CMP.sel.has(p.id), nokey=!p.oauth && !CMP.keyed[p.id];
-    return `<span class="cmpchip ${on?'on':''} ${nokey?'nokey':''}" data-p="${p.id}" title="${nokey?'未配置 key':''}">${PROV_SHORT[p.id]||p.name}${nokey?' ⚠':''}</span>`;
+    const isTab=maxed===p.id;                 // 当前正在看的那栏 = 高亮 tab
+    const dim=maxed && !on;                   // 放大态下,未参与对比的模型置灰(不可切换)
+    const tip=maxed ? (on?'点击切到这个模型':'未参与本次对比') : (nokey?'未配置 key':'');
+    return `<span class="cmpchip ${on?'on':''} ${nokey?'nokey':''} ${isTab?'tab':''} ${dim?'dim':''}" data-p="${p.id}" title="${tip}">${PROV_SHORT[p.id]||p.name}${nokey?' ⚠':''}</span>`;
   }).join("");
   box.querySelectorAll(".cmpchip").forEach(el=>el.onclick=()=>{
     const id=el.dataset.p;
     const p=PROVIDERS.find(x=>x.id===id)||{};
     const nokey=!p.oauth && !CMP.keyed[id];
+    // 放大(tab)态:只在已选模型间切换视图,不改勾选;点当前 tab 则退回并排
+    if(CMP.maxed){
+      if(!CMP.sel.has(id)) return;            // 未参与对比的 chip 不响应
+      if(CMP.maxed===id){ toggleMax(id); renderCmpChips(); return; }   // 点当前 tab → 退出放大回并排
+      cmpSwitchTab(id); return;
+    }
+    // 并排态:chip = 勾选/取消该模型列(原行为)
     if(nokey && !CMP.sel.has(id)){
       if(p.cmpKeyOnly) openModelSwitch(id);
       else alert((PROV_SHORT[id]||id)+" 还没配置 key");
@@ -1997,6 +2241,14 @@ function renderCmpChips(){
     if(CMP.sel.has(id)){ if(CMP.sel.size>1) CMP.sel.delete(id); } else CMP.sel.add(id);
     renderCmpChips(); renderCmpCols();
   });
+}
+function cmpSwitchTab(id){   // 放大态下把可见栏切到 id(书签页切换),其余隐藏
+  CMP.maxed=id;
+  $("#cmpCols").querySelectorAll(".cmpcol").forEach(c=>{
+    const me=c.dataset.p===id; c.classList.toggle("max",me); c.classList.toggle("hide",!me);
+  });
+  renderCmpChips();
+  const b=$("#cmpb-"+CSS.escape(id)); if(b) b.scrollTop=b.scrollHeight;   // 切过去滚到最新
 }
 function renderCmpCols(){   // diff:保留已有栏内容,只增删变化的
   const box=$("#cmpCols");
@@ -2024,7 +2276,8 @@ function renderCmpCols(){   // diff:保留已有栏内容,只增删变化的
       `<button class="cmpstop" id="cmpstop-${p.id}" title="暂停这个模型当前的回答" hidden>■ 停止</button></div>`+
       `<div class="cmprunbar" id="cmprun-${p.id}" hidden><span class="pulse"></span><span class="txt">启动中</span><button class="cmpstopbar" title="停止这一栏当前回答">停止</button></div>`+
       `<div class="cmpcol-b" id="cmpb-${p.id}"></div>`+
-      `<div class="cmpcol-f"><textarea class="cmpcolin" id="cmpin-${p.id}" rows="1" wrap="soft" placeholder="只追问 ${nm}…（Enter 发送）"></textarea><button class="cmpcolsend" id="cmpcsend-${p.id}" title="只发给 ${nm}（单独继续这个对话）">→</button></div>`;
+      `<div class="cmpcatt" id="cmpcatt-${p.id}" hidden></div>`+
+      `<div class="cmpcol-f"><button class="cmpcolattach" id="cmpcattbtn-${p.id}" title="给 ${nm} 加附件（只随这一栏的追问发出）">📎</button><input type="file" class="cmpcolfile" id="cmpcfile-${p.id}" multiple hidden><textarea class="cmpcolin" id="cmpin-${p.id}" rows="1" wrap="soft" placeholder="只追问 ${nm}…（Enter 发送）"></textarea><button class="cmpcolsend" id="cmpcsend-${p.id}" title="只发给 ${nm}（单独继续这个对话）">→</button></div>`;
     box.appendChild(d);
     const sel=d.querySelector(".cmpmodelsel"); if(sel){ sel.addEventListener("click",e=>e.stopPropagation()); sel.addEventListener("change",e=>{ e.stopPropagation(); cmpSetModel(p.id, e.target.value); }); }
     const mi=d.querySelector(".cmpmodelinput"); if(mi){ const apply=()=>{ const v=mi.value.trim(); if(v) cmpSetModel(p.id,v); else mi.value=(CMP.modelPrefs&&CMP.modelPrefs[p.id])||CMP_FORCE_MODEL[p.id]||""; }; mi.addEventListener("click",e=>e.stopPropagation()); mi.addEventListener("blur",apply); mi.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); mi.blur(); } }); }
@@ -2036,6 +2289,10 @@ function renderCmpCols(){   // diff:保留已有栏内容,只增删变化的
     cs.onclick=()=>cmpRunOne(p.id);
     ci.addEventListener("keydown",e=>{ if(e.key==="Enter"&&!e.shiftKey){ if(e.isComposing||e.keyCode===229)return; e.preventDefault(); cmpRunOne(p.id);} });
     ci.addEventListener("input",()=>{ ci.style.height="auto"; ci.style.height=Math.min(ci.scrollHeight,90)+"px"; });
+    const catBtn=d.querySelector(".cmpcolattach"), catFile=d.querySelector(".cmpcolfile");   // 每栏独立附件:📎 → 选文件;贴文件也进该栏
+    if(catBtn&&catFile){ catBtn.onclick=()=>catFile.click(); catFile.onchange=e=>{ if(e.target.files.length) cmpColUpload(p.id,[...e.target.files]); e.target.value=""; }; }
+    ci.addEventListener("paste",e=>{ const fs=[...((e.clipboardData&&e.clipboardData.files)||[])]; if(fs.length){ e.preventDefault(); cmpColUpload(p.id,fs); } });
+    cmpColRenderAttach(p.id);   // 该栏被重建(如移除后再加回)时,恢复已存在的附件
   });
 }
 function cmpSetProgress(prov, text){   // 长任务可见进度:阶段 / 步数 / 秒表 / 最近工具或等待状态
@@ -2076,10 +2333,12 @@ async function cmpStopAll(){   // 全局取消:中断正在跑的列,同时清�
 }
 async function cmpRunOne(prov){   // 只追问这一个模型(单独继续该栏对话)
   const inp=$("#cmpin-"+CSS.escape(prov)); if(!inp) return;
-  const text=(inp.value||"").trim();
-  if(!text || CMP.running[prov] || CMP.dispatching[prov]) return;   // 该栏在跑或正在派发(ensure 间隙)→ 拦住,避免同栏并发把气泡冲乱
+  const raw=(inp.value||"").trim();
+  const hasAtt=!!(CMP.colAttach&&CMP.colAttach[prov]&&CMP.colAttach[prov].length);
+  if((!raw && !hasAtt) || CMP.running[prov] || CMP.dispatching[prov]) return;   // 无字且无附件,或该栏在跑/派发中→拦住
   CMP.dispatching[prov]=true;   // 同步占位锁:在 await 之前就置上,关闭"重复 Enter"窗口
   inp.value=""; inp.style.height="auto";
+  const text=cmpColWithAttach(prov, raw);   // 折入该栏附件路径 + 清空该栏附件条
   cmpAddMsg(prov,"u",esc(text));
   try{
     let ensured={}; try{ ensured=await api("/api/compare/ensure",{method:"POST",body:JSON.stringify({providers:[prov]})}); }catch(e){}
@@ -2091,7 +2350,7 @@ async function cmpResetBackends(){   // 重启所有对比后端(残留后端连
   const btn=$("#cmpResetBtn"); if(btn){ btn.disabled=true; btn.textContent="↻ 重启中…"; }
   try{ await api("/api/compare/reset",{method:"POST",body:"{}"}); }catch(e){}
   CMP.sessionId=null;   // 重启后端=清历史→开新会话边界
-  CMP.threads={}; CMP.seq={}; CMP.turn={}; CMP.running={}; CMP.busy=false; CMP.sendQ=[]; CMP.provQ={}; CMP.dispatching={}; CMP.cancelled={}; clearAttachmentList(CMP.attachments); cmpSyncSendUI(); cmpRenderAttach();
+  CMP.threads={}; CMP.seq={}; CMP.turn={}; CMP.running={}; CMP.busy=false; CMP.sendQ=[]; CMP.provQ={}; CMP.dispatching={}; CMP.cancelled={}; clearAttachmentList(CMP.attachments); Object.keys(CMP.colAttach||{}).forEach(pv=>{clearAttachmentList(CMP.colAttach[pv]); cmpColRenderAttach(pv);}); cmpSyncSendUI(); cmpRenderAttach();
   [...CMP.sel].forEach(p=>{ const b=$("#cmpb-"+CSS.escape(p)); if(b) b.innerHTML=""; const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent=""; const stop=$("#cmpstop-"+CSS.escape(p)); if(stop) stop.hidden=true; cmpClearProgress(p); const cs=$("#cmpcsend-"+CSS.escape(p)); if(cs) cs.disabled=false; });
   if(btn){ btn.disabled=false; btn.textContent="↻ 重启后端"; }
   const i=$("#cmpInput"); if(i) i.focus();
@@ -2099,7 +2358,7 @@ async function cmpResetBackends(){   // 重启所有对比后端(残留后端连
 async function cmpNewChat(){   // 新对话:清空所有栏历史 + 重建会话(学单一窗口的「新建对话」)
   if(Object.keys(CMP.threads).length && !(await cwConfirm("在这个窗口开新一轮对比?\n当前这轮已自动存进侧栏「多模型对比」会话,随时点回、不会丢。"))) return;
   CMP.sessionId=null;   // 开新对比会话 → 下次发送建新主题(旧会话已存,侧栏可点回)
-  CMP.threads={}; CMP.seq={}; CMP.turn={}; CMP.running={}; CMP.busy=false; CMP.sendQ=[]; CMP.provQ={}; CMP.dispatching={}; CMP.cancelled={}; clearAttachmentList(CMP.attachments); cmpSyncSendUI(); cmpRenderAttach();
+  CMP.threads={}; CMP.seq={}; CMP.turn={}; CMP.running={}; CMP.busy=false; CMP.sendQ=[]; CMP.provQ={}; CMP.dispatching={}; CMP.cancelled={}; clearAttachmentList(CMP.attachments); Object.keys(CMP.colAttach||{}).forEach(pv=>{clearAttachmentList(CMP.colAttach[pv]); cmpColRenderAttach(pv);}); cmpSyncSendUI(); cmpRenderAttach();
   [...CMP.sel].forEach(p=>{ const b=$("#cmpb-"+CSS.escape(p)); if(b) b.innerHTML=""; const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent=""; const stop=$("#cmpstop-"+CSS.escape(p)); if(stop) stop.hidden=true; cmpClearProgress(p); const cs=$("#cmpcsend-"+CSS.escape(p)); if(cs) cs.disabled=false; });
   const i=$("#cmpInput"); if(i) i.focus();
 }
@@ -2107,6 +2366,7 @@ function toggleMax(p){
   const cols=$("#cmpCols").querySelectorAll(".cmpcol");
   if(CMP.maxed===p){ CMP.maxed=null; cols.forEach(c=>c.classList.remove("max","hide")); }
   else { CMP.maxed=p; cols.forEach(c=>{ const me=c.dataset.p===p; c.classList.toggle("max",me); c.classList.toggle("hide",!me); }); }
+  renderCmpChips();   // 进/出放大 → 顶部 chips 同步进入/退出 tab 模式并高亮当前
 }
 function cmpAddMsg(p,cls,html){ const b=$("#cmpb-"+CSS.escape(p)); if(!b) return null; const d=document.createElement("div"); d.className="cmpmsg "+cls; d.innerHTML=html; b.appendChild(d); b.scrollTop=b.scrollHeight; return d; }
 function cmpProvBusy(p){ return !!(CMP.running[p]||CMP.dispatching[p]); }
@@ -2281,7 +2541,7 @@ async function cmpRun(prov,text,ens){
       const es=new EventSource(url(`/cmp/${prov}/v1/threads/${tid}/events?since_seq=${since}`));
       let done=false, sawTool=false, grace=null, phase="思考中", tick=null, poll=null, idle=null; const t0=Date.now();
       const secs=()=>Math.round((Date.now()-t0)/1000);
-      const finish=(failed)=>{ if(done)return; done=true; clearTimeout(grace); clearTimeout(idle); clearInterval(tick); clearInterval(poll); try{es.close()}catch(e){} cmpSetRunning(prov,false); CMP.turn[prov]=null; CMP.cancelled[prov]=false; if(cur)cur.remove(); if(ans&&!failed&&ans.textContent.trim()&&!ans.classList.contains("md")){ try{ ans.innerHTML=md(ans.textContent); ans.classList.add("md"); }catch(e){} }   // 收尾把流式纯文本整体重渲染成 markdown(跟单窗口一致);失败/已渲染则不动
+      const finish=(failed)=>{ if(done)return; done=true; clearTimeout(grace); clearTimeout(idle); clearInterval(tick); clearInterval(poll); try{es.close()}catch(e){} cmpSetRunning(prov,false); CMP.turn[prov]=null; CMP.cancelled[prov]=false; if(cur)cur.remove(); if(ans&&!failed&&ans.textContent.trim()&&!ans.classList.contains("md")){ const _rawAns=ans.textContent; try{ ans.innerHTML=md(_rawAns); ans.classList.add("md"); }catch(e){} try{ augmentOptions(ans.parentElement, _rawAns, "#cmpInput"); }catch(e){} }   // 收尾把流式纯文本整体重渲染成 markdown(跟单窗口一致);失败/已渲染则不动;末尾选项清单→可点选项(填入 #cmpInput)
         if(steps===0&&!rsn.textContent.trim()&&proc.parentNode)proc.remove(); if(A&&!ans.textContent.trim()&&!failed)A.remove(); if(st&&!/^[✓✗⏸⏱]/.test(st.textContent))st.textContent="✓ "+secs()+"s"; resolve(); };
       const syncFromThread=async()=>{
         if(done) return false;
@@ -2385,9 +2645,25 @@ window.addEventListener("DOMContentLoaded",()=>{
 #cmpHead{display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap}
 #cmpHead b{font-size:14px}
 #cmpChips{display:flex;gap:6px;flex-wrap:wrap;flex:1}
+/* 选项拾取器(模型末尾"选项清单+选择问句"→ 可点多选) */
+.optpicker{margin:10px 0 2px;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--panel2)}
+.optchips{display:flex;flex-wrap:wrap;gap:6px}
+.optchip{border:1px solid var(--line);border-radius:13px;padding:3px 11px;font-size:12.5px;cursor:pointer;background:var(--bg);color:var(--txt);user-select:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.optchip:hover{border-color:var(--accent)}
+.optchip.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.optchip.other{border-style:dashed}
+.optother{margin-top:7px;width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-family:var(--font);font-size:13px;background:var(--bg);color:var(--txt);outline:none}
+.optother:focus{border-color:var(--accent)}
+.optfill{margin-top:8px;border:none;border-radius:8px;padding:5px 13px;font-size:12.5px;cursor:pointer;background:var(--accent);color:#fff}
+.optfill:hover{opacity:.9}
 .cmpchip{border:1px solid var(--line);border-radius:13px;padding:3px 10px;font-size:12px;cursor:pointer;background:var(--bg);color:var(--dim);user-select:none}
 .cmpchip.on{background:var(--accent);color:#fff;border-color:var(--accent)}
 .cmpchip.nokey{opacity:.55}
+/* 放大(tab/书签)模式:已选模型=可点书签,当前 tab 实心高亮,其余书签描边;未参与对比的置灰不可点 */
+#cmpChips.tabmode .cmpchip{cursor:default}
+#cmpChips.tabmode .cmpchip.on{cursor:pointer;background:var(--bg);color:var(--accent);border-color:var(--accent)}
+#cmpChips.tabmode .cmpchip.on.tab{background:var(--accent);color:#fff;font-weight:700}
+#cmpChips.tabmode .cmpchip.dim{opacity:.38}
 #cmpClose{border:1px solid var(--line);background:var(--bg);border-radius:7px;padding:4px 10px;font-size:12px;cursor:pointer;color:var(--dim);display:inline-flex;align-items:center;gap:4px}
 #cmpInputRow{display:flex;gap:8px}
 #cmpInput{flex:1;min-height:44px;max-height:130px;resize:vertical;border:1px solid var(--line);border-radius:8px;padding:9px 11px;font:inherit;font-size:13px;background:var(--bg);color:var(--txt)}
@@ -2447,6 +2723,9 @@ input.cmpmodelinput:focus{border-color:var(--accent);background:var(--bg)}
 .cmpcolin{flex:1;min-width:0;resize:none;border:1px solid var(--line);border-radius:7px;padding:5px 8px;font:inherit;font-size:12px;background:var(--bg);color:var(--txt);max-height:90px;line-height:1.4}
 .cmpcolsend{flex:0 0 auto;border:none;background:var(--accent);color:#fff;border-radius:7px;padding:0 11px;font-size:15px;font-weight:600;cursor:pointer}
 .cmpcolsend:disabled{opacity:.45;cursor:default}
+.cmpcolattach{flex:0 0 auto;border:1px solid var(--line);background:var(--bg);border-radius:7px;padding:0 8px;font-size:14px;cursor:pointer;color:var(--dim)}
+.cmpcolattach:hover{border-color:var(--accent);color:var(--accent)}
+.cmpcatt{display:flex;flex-wrap:wrap;gap:5px;padding:6px 6px 0}
 #cmpNewBtn,#cmpResetBtn{border:1px solid var(--line);background:var(--bg);border-radius:7px;padding:4px 10px;font-size:12px;cursor:pointer;color:var(--dim);flex:0 0 auto;display:inline-flex;align-items:center;gap:4px}
 #cmpNewBtn:hover,#cmpResetBtn:hover{color:var(--accent);border-color:var(--accent)}
 #cmpResetBtn:disabled{opacity:.5;cursor:default}
