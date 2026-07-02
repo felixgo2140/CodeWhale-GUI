@@ -10,7 +10,7 @@
 Security: when bound to a non-loopback host (LAN), a token is REQUIRED. Without
 one it fails closed to 127.0.0.1, so the agent API is never exposed unprotected.
 """
-import http.server, socketserver, json, re, os, time, subprocess, shutil, urllib.request, urllib.error, urllib.parse, mimetypes
+import http.server, http.client, socketserver, json, re, os, time, subprocess, shutil, urllib.request, urllib.error, urllib.parse, mimetypes
 import base64, hashlib, tarfile, tempfile, io, threading, ssl, socket, ipaddress
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -1489,7 +1489,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     break
                 self.wfile.write(chunk)
                 self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError, OSError):
+        except (BrokenPipeError, ConnectionResetError, OSError, http.client.IncompleteRead, ValueError):
             pass
     def _cmp_route(self, method):   # /cmp/<provider>/v1/... → 确保该 provider 后端在跑 → 代理过去
         p = urllib.parse.urlparse(self.path).path
@@ -1550,7 +1550,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     break
                 self.wfile.write(chunk)
                 self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError, OSError):
+        except (BrokenPipeError, ConnectionResetError, OSError, http.client.IncompleteRead, ValueError):
             pass
 
     def do_GET(self):
