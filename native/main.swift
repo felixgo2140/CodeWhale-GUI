@@ -63,6 +63,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         let url = "http://127.0.0.1:3000/?token=\(readToken())"
         if let u = URL(string: url) { web.load(URLRequest(url: u)) }
     }
+
+    // 本壳只承载本地 GUI(127.0.0.1/localhost:3000)。判断某 URL 是否属于 App 自己的源。
+    func isAppOrigin(_ url: URL?) -> Bool {
+        guard let u = url else { return false }
+        if u.scheme == "about" { return true }                 // about:blank 等 WKWebView 内部导航
+        guard u.scheme == "http" else { return false }
+        let host = u.host ?? ""
+        return (host == "127.0.0.1" || host == "localhost") && (u.port ?? 3000) == 3000
+    }
+    // 导航策略:主框架只许停留在 App 自己的源;点到的外链改用系统浏览器打开(不把任意站点拉进原生壳)。
+    // 子框架(预览 iframe)放行 —— 预览功能本就要加载本地 dev / 用户确认的外部地址,且已被 sandbox 隔离。
+    func webView(_ w: WKWebView, decidePolicyFor action: WKNavigationAction,
+                 decisionHandler done: @escaping (WKNavigationActionPolicy) -> Void) {
+        let isMain = action.targetFrame?.isMainFrame ?? true    // targetFrame 为 nil = 要开新窗口,按主框架处理
+        let u = action.request.url
+        if !isMain || isAppOrigin(u) { done(.allow); return }
+        // 主框架要跳到外部地址:交给系统浏览器,壳内取消。
+        if let u = u, (u.scheme == "http" || u.scheme == "https") { NSWorkspace.shared.open(u) }
+        done(.cancel)
+    }
     // 加载失败(后端还没起)→ 稍等重试
     func webView(_ w: WKWebView, didFail nav: WKNavigation!, withError e: Error) { retry() }
     func webView(_ w: WKWebView, didFailProvisionalNavigation nav: WKNavigation!, withError e: Error) { retry() }
@@ -134,6 +154,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
 
     // ── window.open() → 独立原生窗口(自带最大化/缩放/最小化)。多模型对比可单独开窗、和主页面来回切,不必关掉对比。
     func webView(_ w: WKWebView, createWebViewWith config: WKWebViewConfiguration, for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        // window.open() 只为本源(?compare=1 独立对比窗)开原生窗口;指向外部地址的一律走系统浏览器,
+        // 不把任意站点拉进原生 WKWebView(否则等于给钓鱼/外链一个"看起来像 App"的原生窗)。
+        if let u = action.request.url, !isAppOrigin(u) {
+            if u.scheme == "http" || u.scheme == "https" { NSWorkspace.shared.open(u) }
+            return nil
+        }
         config.websiteDataStore = .default()        // 共享 localStorage/cookies(置顶、token、字号等)
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780),
                            styleMask: [.titled, .closable, .miniaturizable, .resizable],

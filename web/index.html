@@ -9,6 +9,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#faf9f7">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="CodeWhale">
 <style>
   :root{
@@ -62,6 +63,7 @@
   .grp{display:flex;align-items:center;gap:6px;padding:9px 8px 4px;margin-top:2px;font-size:11px;font-weight:700;color:var(--faint);letter-spacing:.3px;cursor:pointer;user-select:none}
   .grp:first-child{margin-top:0}
   .grp:hover{color:var(--dim)}
+  .grp:focus-visible,.thread:focus-visible,.runstatus-h:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 55%,transparent);outline-offset:2px}
   .grp .gcount{font-weight:500;opacity:.65}
   .grp .gcar{margin-left:auto;font-size:8px;opacity:.7;transition:transform .15s}
   .grp.collapsed .gcar{transform:rotate(-90deg)}
@@ -172,6 +174,25 @@
   .reason .rbody{display:none;margin-top:6px;padding:8px 12px;border-left:2px solid var(--line);color:var(--dim);font-size:12px;line-height:1.5;white-space:pre-wrap;max-height:200px;overflow-y:auto}
   .reason.open .rbody{display:block} .reason.open .head .caret{transform:rotate(90deg)}
   .reason .caret{transition:.15s;display:inline-block}
+  .runstatus{margin:0 0 12px 39px;border:1px solid var(--line);border-radius:9px;background:var(--panel);overflow:hidden;color:var(--dim);font-size:12px}
+  .runstatus-h{display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:pointer;user-select:none;min-height:32px}
+  .runstatus-h:hover{color:var(--accent)}
+  .runstatus .pulse{width:7px;height:7px;border-radius:50%;background:var(--run);box-shadow:0 0 0 0 rgba(192,138,46,.36);animation:runpulse 1.25s infinite;flex:0 0 auto}
+  @keyframes runpulse{70%{box-shadow:0 0 0 7px rgba(192,138,46,0)}100%{box-shadow:0 0 0 0 rgba(192,138,46,0)}}
+  .runstatus .ttl{font-weight:600;color:var(--txt);white-space:nowrap}
+  .runstatus .sub{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--faint)}
+  .runstatus .elapsed{font:11px var(--mono);color:var(--faint);white-space:nowrap}
+  .runstatus .caret{transition:.15s;color:var(--faint);display:inline-block}
+  .runstatus.open .caret{transform:rotate(90deg)}
+  .runstatus-b{display:none;border-top:1px solid var(--line);background:var(--bg);max-height:180px;overflow-y:auto;padding:6px 10px}
+  .runstatus.open .runstatus-b{display:block}
+  .runstep{display:flex;gap:7px;padding:3px 0;color:var(--dim);line-height:1.45;word-break:break-word}
+  .runstep .tm{font:10.5px var(--mono);color:var(--faint);flex:0 0 auto}
+  .runstep.err{color:var(--err)}
+  .runstatus.done .pulse{background:var(--ok);animation:none;box-shadow:none}
+  .runstatus.err .pulse{background:var(--err);animation:none;box-shadow:none}
+  .runstatus.stalled{border-color:color-mix(in srgb,var(--run) 55%,var(--line));background:color-mix(in srgb,var(--run) 7%,var(--panel))}
+  .runstatus.stalled .ttl{color:var(--run)}
 
   /* tool / command card */
   .tool{margin:0 0 20px 39px;border:1px solid var(--line);border-radius:9px;background:var(--panel);overflow:hidden}
@@ -241,6 +262,7 @@
   #pvUrl:focus{border-color:var(--accent)}
   #pvToggles{height:31px;border-bottom:1px solid var(--line);background:var(--panel);display:flex;align-items:center;gap:12px;padding:0 10px;font-size:11px;color:var(--dim)}
   #pvToggles label{display:flex;align-items:center;gap:5px;white-space:nowrap}
+  #pvToggles select{height:22px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--dim);font-size:11px;padding:0 6px}
   #pvError{border-bottom:1px solid #efc8c3;background:#fff1ef;color:var(--err);font:11px/1.45 var(--mono);padding:6px 10px;white-space:pre-wrap;max-height:110px;overflow:auto}
   #pvError[hidden]{display:none}
   #pvBody{flex:1;min-height:0;background:#d8d5cf;display:flex;align-items:center;justify-content:center;overflow:auto;padding:0}
@@ -394,9 +416,10 @@ if(location.search.indexOf("compare=1")>=0)document.documentElement.className+="
       <button class="pvbtn" data-pv-size="phone">手机</button>
       <label><input type="checkbox" id="pvAutoOpen">构建后自动打开</label>
       <label><input type="checkbox" id="pvAutoRefresh">重新构建后刷新</label>
+      <label>沙箱 <select id="pvSandboxMode" title="兼容模式适合 localhost 开发预览;安全模式会去掉同源权限"><option value="compat">兼容</option><option value="safe">安全</option><option value="auto">自动</option></select></label>
     </div>
     <div id="pvError" hidden></div>
-    <div id="pvBody"><div id="pvViewport"><iframe id="previewFrame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"></iframe></div></div>
+    <div id="pvBody"><div id="pvViewport"><iframe id="previewFrame" sandbox="allow-scripts allow-forms allow-popups allow-downloads"></iframe></div></div>
   </aside>
 
   <div class="modal" id="modal">
@@ -406,12 +429,13 @@ if(location.search.indexOf("compare=1")>=0)document.documentElement.className+="
     </div>
   </div>
 
+<script src="markdown.js"></script>
 <script>
 const API = location.origin;            // 同源:经 server.py 代理到本机 codewhale(免 CORS,适配手机)
 const TOKEN = (new URLSearchParams(location.search).get("token")) || localStorage.getItem("cw_token") || "";
 if(TOKEN){ localStorage.setItem("cw_token",TOKEN); if(new URLSearchParams(location.search).get("token")) history.replaceState({},"",location.pathname); }
 // 新会话 workspace 不再由前端指定:createThread 传空 body,app-server 用自身工作目录($HOME)→ 任何机器都正确,无需注入/写死路径
-const url = p => API + p + (TOKEN ? (p.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOKEN) : "");
+const url = p => API + p;   // 鉴权优先走 HttpOnly cookie;TOKEN 只作为旧入口/localStorage 的 Authorization 兜底,不再拼进 URL
 const auth = TOKEN ? {Authorization:"Bearer "+TOKEN} : {};
 
 const $ = s => document.querySelector(s);
@@ -420,18 +444,80 @@ const state = { threads:[], activeId:null, es:null, items:new Map(), seen:new Se
   cmpThreads:new Set(JSON.parse(localStorage.getItem("cw_cmp")||"[]")),                 // 多模型对比建的 thread → 侧栏单独归一组
   cmpSessions:JSON.parse(localStorage.getItem("cw_cmp_sessions")||"[]"),                // 对比会话:[{id,topic,ts,threads:{prov:tid}}] → 侧栏每会话一行,点击回到当时对比
   grpCollapsed:new Set(JSON.parse(localStorage.getItem("cw_grpcollapsed")||"[]")),      // 折叠的分组(置顶/对比/对话)
-  autoApprove:false, allowShell:false, queue:[], attachments:[], stopTurnId:null, stopRequestedAt:0 };  // 按会话,不再全局持久
-const preview={url:localStorage.getItem("cw_preview_url")||"", scanT:null, lastKey:"", autoOpen:localStorage.getItem("cw_pv_auto_open")!=="0", autoRefresh:localStorage.getItem("cw_pv_auto_refresh")!=="0", size:localStorage.getItem("cw_pv_size")||"desktop"};
+  autoApprove:false, allowShell:false, queue:[], attachments:[], stopTurnId:null, stopRequestedAt:0, runUI:null };  // 按会话,不再全局持久
+const preview={url:localStorage.getItem("cw_preview_url")||"", scanT:null, lastKey:"", autoOpen:localStorage.getItem("cw_pv_auto_open")!=="0", autoRefresh:localStorage.getItem("cw_pv_auto_refresh")!=="0", size:localStorage.getItem("cw_pv_size")||"desktop", sandboxMode:localStorage.getItem("cw_pv_sandbox")||"auto", confirmedExternal:new Set()};
 
+function errorBodyText(body){
+  let s=String(body&&body.message||body||"").trim();
+  try{
+    const j=JSON.parse(s);
+    s=String(j.error||j.message||j.detail||j.output||s);
+  }catch(e){}
+  return s.replace(/\s+/g," ").trim();
+}
+function explainError(input,path="",status=0){
+  const raw=errorBodyText(input);
+  const hay=(path+" "+raw).toLowerCase();
+  let msg=raw||"未知错误";
+  if(/has no auth configured|no auth configured|api_key_env|api key env/.test(hay)){
+    msg="该模型还没有配置 API key。请打开左下模型设置,选择对应 provider 后填写 key；换电脑后也需要在那台电脑本机重新配置。";
+  }else if(/invalid api key|incorrect api key|api key is invalid|unauthorized api key|bad api key/.test(hay)){
+    msg="API key 无效。请检查模型设置里的 provider 是否选对、key 是否完整,以及是否复制了多余空格。";
+  }else if(/free_quota_exhausted|endpoint is inactive|quota|insufficient balance|402/.test(hay)){
+    msg="额度或计费状态不可用。请确认对应平台已充值/开通 endpoint,并且当前 key 有权限调用这个模型。";
+  }else if(status===401 || /\b401\b|unauthorized|forbidden token|invalid token/.test(hay)){
+    msg="未授权。当前页面 token 可能和后端不匹配,请从 CodeWhale App 内重新打开或刷新更新后的入口。";
+  }else if(status===404 || /\b404\b|not found/.test(hay)){
+    msg="接口不存在或当前版本不完整。请确认 GUI 和 CodeWhale 后端都已更新到同一批版本。";
+  }else if(/failed to fetch|networkerror|network error|load failed|eventsource/.test(hay)){
+    msg="网络连接失败。请确认本机 CodeWhale 后端仍在运行,或重启后端后再试。";
+  }
+  return (status?("HTTP "+status+": "):"")+msg+(raw&&msg!==raw?(" 原始信息: "+raw.slice(0,240)):"");
+}
+function makeApiError(path,status,body){
+  const e=new Error(explainError(body,path,status));
+  e.status=status; e.path=path; e.body=body;
+  return e;
+}
 async function api(path, opts={}){
-  const r = await fetch(url(path), {...opts, headers:{...(opts.body?{"Content-Type":"application/json"}:{}),...auth,...(opts.headers||{})}});
-  if(!r.ok) throw new Error(path+" → HTTP "+r.status+" "+(await r.text()).slice(0,200));
+  let r;
+  try{ r = await fetch(url(path), {...opts, headers:{...(opts.body?{"Content-Type":"application/json"}:{}),...auth,...(opts.headers||{})}}); }
+  catch(e){ throw makeApiError(path,0,e); }
+  if(!r.ok) throw makeApiError(path,r.status,(await r.text()).slice(0,1000));
   const ct = r.headers.get("content-type")||""; return ct.includes("json") ? r.json() : r.text();
 }
 
 /* ---------- app preview ---------- */
 function previewAbs(u){ if(!u)return ""; return u.startsWith("/") ? location.origin+u : u; }
 function previewIsOpen(){ const p=$("#previewPane"); return !!p && !p.hidden; }
+function previewTrustedUrl(raw){
+  try{
+    if(!String(raw||"").trim()) return false;
+    const u=new URL(previewAbs(raw),location.href);
+    const host=u.hostname.replace(/^\[|\]$/g,"");
+    return u.protocol==="file:" || u.origin===location.origin || ["localhost","127.0.0.1","0.0.0.0","::1"].includes(host);
+  }catch(e){ return false; }
+}
+function previewSameOrigin(raw){
+  try{ return new URL(previewAbs(raw||""),location.href).origin===location.origin; }catch(e){ return false; }
+}
+function previewSandboxValue(raw){
+  const target = raw||preview.url;
+  // Same-origin preview (e.g. /preview/static/<pid>/) holds UNTRUSTED model/dist HTML.
+  // Granting allow-same-origin there lets it read parent localStorage (cw_token) and
+  // call authenticated APIs = token leak + RCE. Only cross-origin dev URLs may keep
+  // allow-same-origin (they get their own origin, harmless to us).
+  const safe = preview.sandboxMode==="safe"
+    || previewSameOrigin(target)
+    || (preview.sandboxMode==="auto" && !previewTrustedUrl(target));
+  return safe ? "allow-scripts allow-forms allow-popups allow-downloads" : "allow-scripts allow-same-origin allow-forms allow-popups allow-downloads";
+}
+function previewApplySandbox(raw){
+  const f=$("#previewFrame"); if(!f) return;
+  const val=previewSandboxValue(raw);
+  if(f.getAttribute("sandbox")!==val) f.setAttribute("sandbox",val);
+  const sel=$("#pvSandboxMode"); if(sel) sel.value=preview.sandboxMode;
+}
 function previewShow(){
   const p=$("#previewPane"), r=$("#previewResize"), b=$("#previewbtn");
   if(!p) return;
@@ -448,11 +534,16 @@ function previewSetError(msg){
 }
 function previewLoad(raw, source="manual"){
   const u=previewAbs((raw||"").trim()); if(!u) return;
+  if(source==="manual" && !previewTrustedUrl(u) && !preview.confirmedExternal.has(u)){
+    cwConfirm("预览将打开外部地址:\n"+u+"\n\n建议只打开你信任的本地开发地址。继续?").then(ok=>{ if(ok){ preview.confirmedExternal.add(u); previewLoad(u,"confirmed"); } });
+    return;
+  }
   const f=$("#previewFrame"), inp=$("#pvUrl");
   preview.url=u; try{localStorage.setItem("cw_preview_url",u);}catch(e){}
   if(inp) inp.value=u;
   if(source!=="silent" && (preview.autoOpen || previewIsOpen())) previewShow();
   previewSetError("");
+  previewApplySandbox(u);
   if(f){
     if(f.src===u && preview.autoRefresh) f.src = u + (u.includes("?")?"&":"?") + "cw_reload=" + Date.now();
     else f.src=u;
@@ -527,7 +618,7 @@ function cwConfirm(msg){ return new Promise(res=>{
   ov.onclick=e=>{ if(e.target===ov) done(false); };
   setTimeout(()=>ov.querySelector(".cwdlg-ok").focus(),30);
 }); }
-const esc = s => (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const esc = s => (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 const escAttr = s => esc(s).replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 const ICONS={
   sidebar:'<rect x="3" y="4" width="18" height="16" rx="3"></rect><path d="M9 4v16"></path>',
@@ -563,6 +654,8 @@ function iconLabel(name,label){ return `${icon(name)}<span>${label}</span>`; }
 function setButtonIcon(sel,name,label){
   const b=$(sel); if(!b) return;
   b.innerHTML=label==null ? icon(name) : iconLabel(name,label);
+  const aria=label || b.getAttribute("title") || b.textContent.trim();
+  if(aria) b.setAttribute("aria-label",aria);
 }
 function hydrateIcons(){
   setButtonIcon("#sidebarToggle","sidebar");
@@ -598,40 +691,14 @@ function hydrateIcons(){
     b.innerHTML=iconLabel(nm,label);
   });
 }
-function md(t){
-  // 完整 markdown,转义优先(防 XSS):所有文本先 esc(),再在转义后的文本上套标签;原始 < > 永不会变成真标签。
-  t=(t||"").replace(/\r\n/g,"\n");
-  const fences=[];                                                   // 代码块先抽出占位(自成一行,内部不当 markdown)
-  t=t.replace(/```(\w*)\n?([\s\S]*?)```/g,function(m,lang,code){ fences.push('<pre><code>'+esc(code.replace(/\n+$/,''))+'</code></pre>'); return "\n[[CWF"+(fences.length-1)+"]]\n"; });
-  var inl = function(s){ return esc(s)                               // 行内:先转义,再套标签
-    .replace(/`([^`\n]+)`/g,function(m,c){return '<code>'+c+'</code>';})
-    .replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>')
-    .replace(/(^|[^*\w])\*(?!\s)([^*\n]+?)\*(?!\*)/g,'$1<em>$2</em>')
-    .replace(/(^|[^_\w])_(?!\s)([^_\n]+?)_(?![\w])/g,'$1<em>$2</em>')
-    .replace(/~~([^~\n]+)~~/g,'<del>$1</del>')
-    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>'); };
-  var lines=t.split("\n"), out=[], i=0;
-  var fence=function(l){ return /^\[\[CWF(\d+)\]\]$/.exec(l); };
-  while(i<lines.length){
-    var l=lines[i], f=fence(l);
-    if(f){ out.push(fences[+f[1]]); i++; continue; }
-    if(!l.trim()){ i++; continue; }
-    var h=l.match(/^(#{1,6})\s+(.*)$/);                              // 标题
-    if(h){ var lv=Math.min(h[1].length,4); out.push("<h"+lv+">"+inl(h[2])+"</h"+lv+">"); i++; continue; }
-    if(/^(\s*[-*_]){3,}\s*$/.test(l)){ out.push("<hr>"); i++; continue; }   // 分隔线
-    if(/^\s*>\s?/.test(l)){ var q=[]; while(i<lines.length&&/^\s*>\s?/.test(lines[i])){ q.push(lines[i].replace(/^\s*>\s?/,"")); i++; } out.push("<blockquote>"+inl(q.join("\n")).replace(/\n/g,"<br>")+"</blockquote>"); continue; }   // 引用
-    if(/\|/.test(l)&&i+1<lines.length&&/^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(lines[i+1])){   // 表格
-      var pr=function(r){ return r.replace(/^\s*\|/,"").replace(/\|\s*$/,"").split("|").map(function(c){return c.trim();}); };
-      var head=pr(l); i+=2; var rows=[];
-      while(i<lines.length&&/\|/.test(lines[i])&&lines[i].trim()){ rows.push(pr(lines[i])); i++; }
-      out.push("<table><thead><tr>"+head.map(function(c){return "<th>"+inl(c)+"</th>";}).join("")+"</tr></thead><tbody>"+rows.map(function(r){return "<tr>"+r.map(function(c){return "<td>"+inl(c)+"</td>";}).join("")+"</tr>";}).join("")+"</tbody></table>"); continue;
-    }
-    if(/^\s*[-*+]\s+/.test(l)){ var it=[]; while(i<lines.length&&/^\s*[-*+]\s+/.test(lines[i])){ it.push(lines[i].replace(/^\s*[-*+]\s+/,"")); i++; } out.push("<ul>"+it.map(function(x){return "<li>"+inl(x)+"</li>";}).join("")+"</ul>"); continue; }   // 无序列表
-    if(/^\s*\d+[.)]\s+/.test(l)){ var it2=[]; while(i<lines.length&&/^\s*\d+[.)]\s+/.test(lines[i])){ it2.push(lines[i].replace(/^\s*\d+[.)]\s+/,"")); i++; } out.push("<ol>"+it2.map(function(x){return "<li>"+inl(x)+"</li>";}).join("")+"</ol>"); continue; }   // 有序列表
-    var p=[]; while(i<lines.length&&lines[i].trim()&&!fence(lines[i])&&!/^(#{1,6}\s|\s*>\s?|\s*[-*+]\s|\s*\d+[.)]\s)/.test(lines[i])&&!/^(\s*[-*_]){3,}\s*$/.test(lines[i])){ p.push(lines[i]); i++; }   // 段落
-    if(p.length) out.push("<p>"+inl(p.join("\n")).replace(/\n/g,"<br>")+"</p>"); else i++;
-  }
-  return out.join("").replace(/\[\[CWF(\d+)\]\]/g,function(m,n){return fences[+n]||"";});
+function keyboardButton(el,action,label){
+  el.tabIndex=0;
+  el.setAttribute("role","button");
+  if(label) el.setAttribute("aria-label",label);
+  el.addEventListener("keydown",e=>{
+    if(e.target!==el) return;
+    if(e.key==="Enter"||e.key===" "){ e.preventDefault(); action(e); }
+  });
 }
 function relTime(s){ if(!s) return ""; const d=(Date.now()-new Date(s).getTime())/1000;
   if(d<60)return "刚刚"; if(d<3600)return Math.floor(d/60)+"分钟前"; if(d<86400)return Math.floor(d/3600)+"小时前"; return Math.floor(d/86400)+"天前"; }
@@ -682,6 +749,7 @@ function threadEl(t){   // 单条对话 DOM
     (t.preview?`<div class="prev">${esc(t.preview)}</div>`:"")+
     `<div class="meta"><span>${esc(PROV_SHORT[t.provider]||t.provider||t.model||"")}</span><span>${relTime(t.updated_at)}</span></div>`;
   d.onclick=()=>openThread(t.id);
+  keyboardButton(d,()=>openThread(t.id),`打开对话: ${t.title||"未命名"}`);
   d.querySelector(".pin").onclick=(e)=>{e.stopPropagation();togglePin(t.id);};
   d.querySelector(".del").onclick=(e)=>{e.stopPropagation();deleteThread(t.id,t.title);};
   d.querySelector(".rename").onclick=(e)=>{e.stopPropagation();renameThread(t.id,t.title);};
@@ -695,6 +763,7 @@ function cmpSessionEl(s){   // 对比会话行:点=回到当时整场对比
     `<span class="actions"><button class="act del" title="从列表删除此对比会话">${icon("trash")}</button></span></div>`+
     `<div class="meta"><span>${provs.length} 模型 · ${esc(names)}</span><span>${relTime(s.ts||0)}</span></div>`;
   d.onclick=()=>openCompareWindow(s.id);   // 点会话 → 新开一个独立窗口还原那场对比(主窗口不受影响)
+  keyboardButton(d,()=>openCompareWindow(s.id),`打开对比会话: ${s.topic||"对比"}`);
   d.querySelector(".del").onclick=(e)=>{e.stopPropagation();deleteCmpSession(s.id,s.topic);};
   return d;
 }
@@ -739,6 +808,7 @@ function renderThreads(){
       const h=document.createElement("div"); h.className="grp"+(collapsed?" collapsed":"");
       h.innerHTML=`<span>${g.label}</span><span class="gcount">${g.count}</span><span class="gcar">▼</span>`;
       h.onclick=()=>toggleGroup(g.key);
+      keyboardButton(h,()=>toggleGroup(g.key),`${collapsed?"展开":"折叠"}${g.label}`);
       box.appendChild(h);
       if(collapsed) continue;
     }
@@ -809,13 +879,13 @@ async function deleteThread(id,title){
   try{ await api(`/v1/threads/${id}`,{method:"PATCH",body:JSON.stringify({archived:true})});
     state.threads=state.threads.filter(t=>t.id!==id);
     if(state.pinned.delete(id)) savePins();
-    if(state.activeId===id){ closeStream(); state.activeId=null; $("#mwrap").innerHTML='<div class="empty">已删除。左侧选择或新建对话</div>'; $("#ttitle").textContent="CodeWhale"; $("#tmeta").innerHTML=""; setRunning(false); state.autoApprove=false; state.allowShell=false; renderAuto(); renderShell(); }
+    if(state.activeId===id){ closeStream(); runStatusReset(false); state.activeId=null; $("#mwrap").innerHTML='<div class="empty">已删除。左侧选择或新建对话</div>'; $("#ttitle").textContent="CodeWhale"; $("#tmeta").innerHTML=""; setRunning(false); state.autoApprove=false; state.allowShell=false; renderAuto(); renderShell(); }
     renderThreads();
   }catch(e){ alert("删除失败: "+e.message); }
 }
 async function loadBalance(){
   const el=$("#balance");
-  try{ const d=await (await fetch(url("/api/balance"))).json();
+  try{ const d=await api("/api/balance");
     if(d.glm){   // GLM(z.ai)= Coding Plan 订阅,显示每 5h 用量额度而非美元余额
       if(d.no_plan){ el.textContent="GLM 无套餐"; el.title="此 z.ai key 未订阅 GLM Coding Plan → 无用量额度,且 CodeWhale 的 coding 端点可能受限。订阅 Lite/Pro/Max 后这里显示每 5 小时用量。"; return; }
       if(d.error){ el.textContent="GLM ⚠"; el.title="GLM 用量读取失败:"+d.error; return; }
@@ -833,11 +903,11 @@ async function loadBalance(){
 }
 let updInfo=null;
 async function loadVersion(){
-  try{ const d=await (await fetch(url("/v1/runtime/info"))).json(); if(d.codewhale_version) $("#version").textContent="v"+d.codewhale_version; }catch{}
+  try{ const d=await api("/v1/runtime/info"); if(d.codewhale_version) $("#version").textContent="v"+d.codewhale_version; }catch{}
 }
 async function checkUpdate(){
   try{
-    const d=await (await fetch(url("/api/update/check"))).json();
+    const d=await api("/api/update/check");
     updInfo=d;
     if(d.current) $("#version").textContent=(""+d.current).replace(/^v?/,"v");
     const btn=$("#updbtn");
@@ -851,7 +921,7 @@ async function doUpdate(){
   if(!(await cwConfirm(`更新 CodeWhale 到 ${updInfo&&updInfo.latest||"最新版"}?\n会下载新版并重启后端(约 1 分钟;当前会话数据不受影响)`))) return;
   btn.classList.add("busy"); btn.textContent="⏳ 更新中…";
   try{
-    const r=await (await fetch(url("/api/update/apply"),{method:"POST",headers:auth})).json();
+    const r=await api("/api/update/apply",{method:"POST",body:"{}"});
     if(r.ok){ btn.textContent="✓ 重启中…"; setTimeout(()=>location.reload(), 4500); }
     else { btn.classList.remove("busy"); btn.textContent="✗ 重试"; alert("更新失败:\n"+(r.output||"")); }
   }catch(e){ btn.classList.remove("busy"); btn.textContent="✗ 重试"; alert("更新出错: "+e.message); }
@@ -859,7 +929,7 @@ async function doUpdate(){
 let guiUpd=null;
 async function checkGuiUpdate(){
   try{
-    const d=await (await fetch(url("/api/update/gui/check"))).json();
+    const d=await api("/api/update/gui/check");
     guiUpd=d; const btn=$("#guiupdbtn");
     if(d.available && d.latest && !btn.classList.contains("busy")){
       btn.style.display="inline-block"; btn.textContent="↑ 界面 "+d.latest;
@@ -894,10 +964,102 @@ async function toggleAuto(){
   if(state.autoApprove) document.querySelectorAll(".tool.needapproval").forEach(c=>{ if(c.dataset.aid) decide(c.dataset.aid,"allow",c,true); });  // 打开时立即放行当前所有待审批项
 }
 
+/* ---------- running status ---------- */
+function runFmt(ms){
+  const s=Math.max(0,Math.floor((ms||0)/1000));
+  if(s<60) return s+"s";
+  const m=Math.floor(s/60), r=s%60;
+  return m+"m"+(r?(" "+r+"s"):"");
+}
+function runStatusReset(remove){
+  if(state.runUI&&state.runUI.timer) clearInterval(state.runUI.timer);
+  if(remove&&state.runUI&&state.runUI.el) state.runUI.el.remove();
+  state.runUI=null;
+}
+function runStatusEnsure(label="启动中",detail="等待模型响应"){
+  let ui=state.runUI;
+  if(ui&&ui.el&&document.body.contains(ui.el)){
+    $("#mwrap").appendChild(ui.el);   // 保持状态条贴在当前输出后面,不被后来的消息块盖住
+    return ui;
+  }
+  const el=document.createElement("div");
+  el.className="runstatus";
+  el.innerHTML=`<div class="runstatus-h"><span class="caret">▸</span><span class="pulse"></span><span class="ttl"></span><span class="sub"></span><span class="elapsed">0s</span></div><div class="runstatus-b"></div>`;
+  const head=el.querySelector(".runstatus-h");
+  head.onclick=()=>el.classList.toggle("open");
+  keyboardButton(head,()=>el.classList.toggle("open"),"展开或折叠运行过程");
+  $("#mwrap").appendChild(el);
+  ui={el,title:el.querySelector(".ttl"),sub:el.querySelector(".sub"),body:el.querySelector(".runstatus-b"),elapsed:el.querySelector(".elapsed"),started:Date.now(),lastAt:Date.now(),lastLabel:label,lastDetail:detail,lastStep:"",steps:0,timer:null};
+  state.runUI=ui;
+  ui.timer=setInterval(()=>runStatusTick(),1000);
+  runStatusUpdate(label,detail);
+  runStatusStep("本轮开始");
+  return ui;
+}
+function runStatusTick(){
+  const ui=state.runUI; if(!ui) return;
+  const now=Date.now(), idle=now-(ui.lastAt||now);
+  ui.elapsed.textContent=runFmt(now-ui.started);
+  ui.el.classList.toggle("stalled",idle>90000);
+  if(idle>90000){ ui.title.textContent="可能卡住"; ui.sub.textContent=`${runFmt(idle)} 没有新事件 · ${ui.lastDetail||ui.lastLabel||"等待响应"}`; }
+  else if(idle>30000 && state.running){ ui.sub.textContent=`等待响应 ${runFmt(idle)} · ${ui.lastDetail||ui.lastLabel||""}`; }
+}
+function runStatusUpdate(label,detail,kind){
+  const ui=runStatusEnsure(label,detail);
+  ui.lastAt=Date.now(); ui.lastLabel=label||ui.lastLabel; ui.lastDetail=detail||ui.lastDetail||"";
+  ui.el.classList.remove("done","err","stalled");
+  if(kind) ui.el.classList.add(kind);
+  ui.title.textContent=label||"处理中";
+  ui.sub.textContent=detail||"";
+  ui.elapsed.textContent=runFmt(Date.now()-ui.started);
+  $("#mwrap").appendChild(ui.el);
+  return ui;
+}
+function runStatusStep(text,cls){
+  const ui=runStatusEnsure();
+  const t=String(text||"").replace(/\s+/g," ").trim();
+  if(!t||t===ui.lastStep) return;
+  ui.lastStep=t; ui.steps++;
+  const d=document.createElement("div");
+  d.className="runstep"+(cls?(" "+cls):"");
+  d.innerHTML=`<span class="tm">${runFmt(Date.now()-ui.started)}</span><span></span>`;
+  d.lastChild.textContent=t;
+  ui.body.appendChild(d);
+  while(ui.body.children.length>80) ui.body.firstChild.remove();
+  ui.body.scrollTop=ui.body.scrollHeight;
+}
+function runLabelForItem(item){
+  const kind=item&&item.kind, summary=String((item&&item.summary)||"").replace(/\s+/g," ").slice(0,120);
+  if(kind==="agent_reasoning") return ["思考中", summary||"正在整理思路"];
+  if(kind==="agent_message") return ["输出中", summary||"正在生成回复"];
+  if(kind==="command_execution") return ["执行命令", summary||"正在运行 shell/终端命令"];
+  if(kind==="tool_call") return ["调用工具", summary||"正在调用工具"];
+  if(kind==="file_change") return ["修改文件", summary||"正在写入或更新文件"];
+  if(kind==="error") return ["出错", summary||"运行时出现错误"];
+  return ["处理中", summary||kind||"等待下一步"];
+}
+function runStatusFromItem(item,phase){
+  const pair=runLabelForItem(item||{}), label=pair[0], detail=pair[1];
+  runStatusUpdate(phase||label,detail);
+  if(item&&item.kind&&item.kind!=="agent_message"&&item.kind!=="agent_reasoning") runStatusStep(`${phase||label}: ${detail}`);
+}
+function runStatusFinish(label,kind){
+  const ui=state.runUI; if(!ui) return;
+  if(ui.timer) clearInterval(ui.timer);
+  ui.title.textContent=label||"已完成";
+  ui.sub.textContent=ui.steps?`过程 ${ui.steps} 步`:"本轮结束";
+  ui.elapsed.textContent=runFmt(Date.now()-ui.started);
+  ui.el.classList.remove("stalled");
+  ui.el.classList.add(kind==="err"?"err":"done");
+  runStatusStep(label||"已完成",kind==="err"?"err":"");
+  state.runUI=null;
+}
+
 /* ---------- open / stream a thread ---------- */
 function closeStream(){ if(state.es){ state.es.close(); state.es=null; } }
 function renderThreadSnapshot(rec, preserveQueue=false){
   const wrap=$("#mwrap"), queued=preserveQueue?state.queue.map(q=>q.el).filter(Boolean):[];
+  runStatusReset(false);
   state.items.clear(); state._optimUser=null; wrap.innerHTML="";
   state.latestSeq=Math.max(state.latestSeq||0, rec.latest_seq||0);
   for(const it of (rec.items||[])){
@@ -919,11 +1081,12 @@ async function syncActiveTurn(){
     if(lastTurn.id) state.turnId=lastTurn.id;
     if(isTurnDone(status)){
       if(isStoppingTurn(lastTurn.id)){ state.stopTurnId=null; state.stopRequestedAt=0; }
+      runStatusFinish(normTurnStatus(status)==="completed"?"已完成":(normTurnStatus(status)==="interrupted"?"已停止":"已结束"), normTurnStatus(status)==="failed"||normTurnStatus(status)==="error"?"err":"done");
       if((rec.latest_seq||0)>(state.latestSeq||0)) renderThreadSnapshot(rec,true);
       setRunning(false); refreshActiveMeta(); processQueue();
     }else if(isTurnRunning(status)){
       const freshStop=isStoppingTurn(lastTurn.id) && Date.now()-state.stopRequestedAt<15000;
-      if(!freshStop) setRunning(true);
+      if(!freshStop){ setRunning(true); runStatusUpdate("同步中","后端仍在运行,等待新事件"); }
     }
   }catch(e){ console.warn("active turn sync failed", e); }
   finally{ state._activeSyncing=false; }
@@ -931,6 +1094,7 @@ async function syncActiveTurn(){
 async function openThread(id){
   if(state.activeId===id && state.es) return;
   closeStream();
+  runStatusReset(false);
   state.activeId=id; state.items.clear(); state.seen.clear(); state.turnId=null; state._optimUser=null; state.stopTurnId=null; state.stopRequestedAt=0; setRunning(false);
   state.autoApprove=false; state.allowShell=false; renderAuto(); renderShell(); loadAutoState(id);   // 读该会话真实 auto_approve/allow_shell 如实显示
   renderThreads(); closeDrawer();
@@ -950,8 +1114,10 @@ async function openThread(id){
     since=rec.latest_seq||0; state.latestSeq=since;
     const lastTurn=(rec.turns||[]).slice(-1)[0];   // 切到一条仍在跑的对话:快照不会重放已发生的 turn.started → 据此同步 running,否则会误发触发 409
     const tst=(lastTurn&&lastTurn.status)||(rec.thread||{}).latest_turn_status||"";
-    if(isTurnRunning(tst)){ state.turnId=(lastTurn&&lastTurn.id)||state.turnId; setRunning(true); }
+    const stillRunning=isTurnRunning(tst);
+    if(stillRunning) state.turnId=(lastTurn&&lastTurn.id)||state.turnId;
     renderThreadSnapshot(rec);
+    if(stillRunning){ setRunning(true); runStatusUpdate("同步中","这轮还在运行,正在接收新状态"); runStatusStep("恢复运行中的对话"); }
   }catch(e){ $("#mwrap").innerHTML=""; since=0; console.warn("快照载入失败,退回从0重放",e); }
 
   const es=new EventSource(url(`/v1/threads/${id}/events?since_seq=${since}`));
@@ -971,18 +1137,41 @@ function onEvent(ev, e){
   const p=m.payload||{};
   if(m.seq!=null) state.latestSeq=Math.max(state.latestSeq||0,m.seq);
   switch(ev){
-    case "turn.started": state.turnId=m.turn_id; if(!isStoppingTurn(m.turn_id)) setRunning(true); break;
-    case "turn.interrupt_requested": state.stopTurnId=m.turn_id||state.turnId; state.stopRequestedAt=Date.now(); setRunning(false); break;
-    case "turn.completed": state.stopTurnId=null; state.stopRequestedAt=0; setRunning(false); refreshActiveMeta(); processQueue(); break;
-    case "turn.failed": case "turn.interrupted": state.stopTurnId=null; state.stopRequestedAt=0; setRunning(false); refreshActiveMeta(); processQueue(); break;
-    case "turn.lifecycle": if(p.status&&isTurnRunning(p.status)){ if(!isStoppingTurn(m.turn_id||state.turnId)) setRunning(true); } else if(p.status&&isTurnDone(p.status)){ state.stopTurnId=null; state.stopRequestedAt=0; setRunning(false); processQueue(); } break;
-    case "item.started": startItem(m.item_id, p.item); break;
-    case "item.delta": deltaItem(m.item_id, p.delta, p.kind); break;
-    case "item.completed": completeItem(m.item_id, p.item); break;
-    case "item.failed": case "item.interrupted": completeItem(m.item_id, p.item, true); break;
-    case "approval.required": approvalRequired(m, p); break;
-    case "approval.decided": case "approval.timeout": approvalResolved(m,p,ev); break;
-    case "sandbox.denied": sysnote("⛔ 沙箱拒绝: "+(p.detail||p.reason||"")); break;
+    case "turn.started":
+      state.turnId=m.turn_id;
+      if(!isStoppingTurn(m.turn_id)){ setRunning(true); runStatusUpdate("思考中","本轮已开始,等待模型输出"); runStatusStep("模型开始处理"); }
+      break;
+    case "turn.interrupt_requested":
+      state.stopTurnId=m.turn_id||state.turnId; state.stopRequestedAt=Date.now(); runStatusUpdate("正在停止","已请求中断当前轮"); runStatusStep("已请求停止"); setRunning(false); break;
+    case "turn.completed":
+      state.stopTurnId=null; state.stopRequestedAt=0; runStatusFinish("已完成","done"); setRunning(false); refreshActiveMeta(); processQueue(); break;
+    case "turn.failed":
+      state.stopTurnId=null; state.stopRequestedAt=0; runStatusFinish("本轮失败","err"); setRunning(false); refreshActiveMeta(); processQueue(); break;
+    case "turn.interrupted":
+      state.stopTurnId=null; state.stopRequestedAt=0; runStatusFinish("已停止","done"); setRunning(false); refreshActiveMeta(); processQueue(); break;
+    case "turn.lifecycle":
+      if(p.status&&isTurnRunning(p.status)){ if(!isStoppingTurn(m.turn_id||state.turnId)){ setRunning(true); runStatusUpdate("处理中",p.status); } }
+      else if(p.status&&isTurnDone(p.status)){ state.stopTurnId=null; state.stopRequestedAt=0; runStatusFinish(normTurnStatus(p.status)==="completed"?"已完成":"已结束",normTurnStatus(p.status)==="failed"?"err":"done"); setRunning(false); processQueue(); }
+      break;
+    case "item.started":
+      startItem(m.item_id, p.item); runStatusFromItem(p.item,"开始处理"); break;
+    case "item.delta":
+      deltaItem(m.item_id, p.delta, p.kind);
+      if(p.kind==="agent_reasoning") runStatusUpdate("思考中","正在推理和规划");
+      else if(p.kind==="agent_message") runStatusUpdate("输出中","正在生成回复");
+      else if(p.kind==="command_execution") runStatusUpdate("执行命令","正在接收终端输出");
+      break;
+    case "item.completed":
+      completeItem(m.item_id, p.item);
+      if(p.item&&p.item.kind&&p.item.kind!=="agent_message"&&p.item.kind!=="agent_reasoning"){ const pair=runLabelForItem(p.item); runStatusStep(`完成: ${pair[1]||pair[0]}`); runStatusUpdate("整理中","工具步骤已完成,等待模型继续"); }
+      break;
+    case "item.failed": case "item.interrupted":
+      completeItem(m.item_id, p.item, true);
+      { const pair=runLabelForItem(p.item||{}); runStatusStep(`失败: ${pair[1]||pair[0]}`,"err"); runStatusUpdate("步骤失败",pair[1]||"某一步失败","err"); }
+      break;
+    case "approval.required": approvalRequired(m, p); runStatusUpdate("等待审批",p.tool_name||p.tool||p.command||p.summary||"工具调用需要确认"); runStatusStep("等待审批: "+(p.tool_name||p.tool||p.command||p.summary||"工具调用")); break;
+    case "approval.decided": case "approval.timeout": approvalResolved(m,p,ev); runStatusUpdate("审批已处理",ev==="approval.timeout"?"审批超时":(p.decision==="allow"?"已允许工具调用":"已拒绝工具调用")); runStatusStep(ev==="approval.timeout"?"审批超时":(p.decision==="allow"?"审批通过":"审批拒绝")); break;
+    case "sandbox.denied": sysnote("⛔ 沙箱拒绝: "+(p.detail||p.reason||"")); runStatusStep("沙箱拒绝: "+(p.detail||p.reason||""),"err"); runStatusUpdate("沙箱拒绝",p.detail||p.reason||"工具被拒绝","err"); break;
   }
   scrollDown();
 }
@@ -1159,11 +1348,11 @@ async function send(queuedText){
     if(!state.activeId){ const t=await createThread(); _addOptimisticThread(t.id, text.replace(/\s+/g," ").trim().slice(0,40)); await openThread(t.id); loadThreads(); }   // 乐观立刻把新 thread 加进侧栏(否则慢 SWR 缓存下首条消息不生成可见 thread,要发第二条才出现);loadThreads 后台刷,不阻塞
     // 乐观渲染:会话就绪后立刻显示用户消息 + 进入"运行中"(思考指示),不等 SSE。否则首条要等后端起 turn(~1s+,推理模型更久),
     // 这段时间窗口空白,体感像"卡住/过好久才显示"。真 user_message 事件到达时由 startItem 认领这个气泡,不重复。
-    const oel=row("user","你"); oel.querySelector(".content").innerHTML=md(text); $("#mwrap").appendChild(oel); state._optimUser=oel; setRunning(true); scrollDown(true);
+    const oel=row("user","你"); oel.querySelector(".content").innerHTML=md(text); $("#mwrap").appendChild(oel); state._optimUser=oel; setRunning(true); runStatusUpdate("发送中","正在把消息交给模型"); scrollDown(true);
     const th=state.threads.find(x=>x.id===state.activeId);
     const freezeName = !th || !th.title || th.title==="New Thread";   // 首条消息 → 把名字锁成这句话,之后后端不再每轮重算
     const r=await api(`/v1/threads/${state.activeId}/turns`,{method:"POST",body:JSON.stringify({prompt:text})});
-    state.turnId=r?.turn?.id||state.turnId; setRunning(true);
+    state.turnId=r?.turn?.id||state.turnId; setRunning(true); runStatusUpdate("思考中","请求已送达,等待模型返回状态"); runStatusStep("请求已送达");
     if(freezeName){
       const title=text.replace(/\s+/g," ").trim().slice(0,40);
       api(`/v1/threads/${state.activeId}`,{method:"PATCH",body:JSON.stringify({title})}).then(()=>{
@@ -1175,10 +1364,12 @@ async function send(queuedText){
     if(state._optimUser){ state._optimUser.remove(); state._optimUser=null; }   // 发送失败/转排队 → 移除乐观气泡(由排队占位或错误提示接管)
     if(/\b409\b|active turn/i.test(e.message||"")){   // 该对话仍有一轮在跑(切回来误发/连点)→ 不报错,转为排队,turn 完成后自动发
       setRunning(true); state.queue.push({text, el:(()=>{ const el=document.createElement("div"); el.className="msg user queued"; el.innerHTML=`<div class="av">你</div><div class="body"><div class="who">⏳ 排队中(上一轮还在跑)</div><div class="content"></div><button class="qx" title="取消排队">✕</button></div>`; el.querySelector(".content").textContent=text; el.querySelector(".qx").onclick=()=>{ const i=state.queue.findIndex(q=>q.el===el); if(i>=0) state.queue.splice(i,1); el.remove(); }; $("#mwrap").appendChild(el); scrollDown(true); return el; })()});
+      runStatusUpdate("排队中","上一轮仍在运行,这条会稍后发送");
       return;
     }
     inp.value=text; inp.style.height="auto"; inp.style.height=Math.min(inp.scrollHeight,200)+"px"; inp.focus();  // 失败:文字留回输入框
     $("#sendbtn").disabled=false;
+    runStatusFinish("发送失败","err");
     sysnote("发送失败: "+e.message);
   }
 }
@@ -1204,15 +1395,15 @@ async function interrupt(){
   let turn=state.turnId;
   if(!turn){ try{ const rec=await api(`/v1/threads/${state.activeId}`); turn=(rec.thread||rec).latest_turn_id; }catch{} }  // turnId 丢了就查回来
   if(!turn) return;
-  state.stopTurnId=turn; state.stopRequestedAt=Date.now(); setRunning(false);
+  state.stopTurnId=turn; state.stopRequestedAt=Date.now(); runStatusUpdate("正在停止","准备中断当前轮并处理悬挂审批"); setRunning(false);
   const cards=pendingApprovalCards();
   if(cards.length) await Promise.allSettled(cards.map(c=>decide(c.dataset.aid,"deny",c,true)));   // 停止时先拒掉悬挂审批,否则后端会继续等工具批准
   try{ await api(`/v1/threads/${state.activeId}/turns/${turn}/interrupt`,{method:"POST",body:"{}"}); setRunning(false);
     if(state.queue.length){ state.queue.forEach(q=>q.el.remove()); state.queue=[]; }   // 停止=连排队的也取消
     sysnote("⏹ 已请求停止"); }
   catch(e){
-    if(approvalGoneError(e)){ state.stopTurnId=null; state.stopRequestedAt=0; sysnote("⏹ 这轮已经结束"); }
-    else sysnote("停止失败: "+e.message);
+    if(approvalGoneError(e)){ state.stopTurnId=null; state.stopRequestedAt=0; runStatusFinish("这轮已经结束","done"); sysnote("⏹ 这轮已经结束"); }
+    else { runStatusUpdate("停止失败",e.message,"err"); sysnote("停止失败: "+e.message); }
   }
 }
 // 乐观把新对话立刻加进侧栏(慢 SWR 缓存要很久才有它)。pendingNew 保证后台 loadThreads 刷新时不被冲掉,直到它真出现再去重。
@@ -1240,7 +1431,7 @@ async function uploadFiles(files){
     if(f.size>50*1024*1024){ sysnote("⚠ "+f.name+" 超过 50MB,跳过"); continue; }
     try{
       const buf=await f.arrayBuffer();
-      const r=await fetch(url("/api/upload"),{method:"POST",headers:{...auth,"X-Filename":encodeURIComponent(f.name)},body:buf});
+      const r=await fetch(url("/api/upload"),{method:"POST",headers:{...auth,"X-Filename":encodeURIComponent(f.name),"X-Upload-Scope":state.activeId||"inbox"},body:buf});
       const d=await r.json();
       if(d.path) state.attachments.push(uploadAttachmentRecord(f,d)); else sysnote("⚠ 上传失败: "+(d.error||f.name));
     }catch(e){ sysnote("⚠ 上传失败: "+e.message); }
@@ -1459,7 +1650,7 @@ async function openUpdate(){
     }catch(e){ a.innerHTML='<span class="st err">检查失败</span>'; }
   })();
   (async()=>{ const a=$("#u_cw_act"), c=$("#u_cw");
-    try{ const d=await (await fetch(url("/api/update/check"))).json(); c.textContent=" 当前 "+(d.current||"?");
+    try{ const d=await api("/api/update/check"); c.textContent=" 当前 "+(d.current||"?");
       if(d.error){ a.innerHTML='<span class="st err">检查失败</span>'; return; }
       if(d.available && d.latest){ const b=document.createElement("button"); b.className="btn primary"; b.textContent="↑ 更新到 "+d.latest; b.onclick=()=>applyUpd(b,"/api/update/apply"); a.innerHTML=""; a.appendChild(b); }
       else a.innerHTML='<span class="st ok">已是最新</span>';
@@ -1531,10 +1722,20 @@ $("#pvBack").onclick=()=>{ try{$("#previewFrame").contentWindow.history.back();}
 $("#pvForward").onclick=()=>{ try{$("#previewFrame").contentWindow.history.forward();}catch(e){} };
 $("#pvAutoOpen").checked=preview.autoOpen;
 $("#pvAutoRefresh").checked=preview.autoRefresh;
+$("#pvSandboxMode").value=preview.sandboxMode;
 $("#pvAutoOpen").onchange=e=>{ preview.autoOpen=!!e.target.checked; try{localStorage.setItem("cw_pv_auto_open",preview.autoOpen?"1":"0");}catch(x){} };
 $("#pvAutoRefresh").onchange=e=>{ preview.autoRefresh=!!e.target.checked; try{localStorage.setItem("cw_pv_auto_refresh",preview.autoRefresh?"1":"0");}catch(x){} };
+$("#pvSandboxMode").onchange=e=>{
+  preview.sandboxMode=["compat","safe","auto"].includes(e.target.value)?e.target.value:"compat";
+  try{localStorage.setItem("cw_pv_sandbox",preview.sandboxMode);}catch(x){}
+  previewApplySandbox(preview.url);
+  if(preview.url && previewIsOpen()){
+    const f=$("#previewFrame"), u=preview.url;
+    if(f) f.src=u+(u.includes("?")?"&":"?")+"cw_sandbox="+Date.now();
+  }
+};
 document.querySelectorAll("[data-pv-size]").forEach(b=>b.onclick=()=>previewSetSize(b.dataset.pvSize));
-previewSetSize(preview.size); previewBindFrameDiagnostics();
+previewSetSize(preview.size); previewApplySandbox(preview.url); previewBindFrameDiagnostics();
 if(preview.url){ const inp=$("#pvUrl"); if(inp) inp.value=preview.url; }
 $("#updbtn").onclick=doUpdate;
 $("#guiupdbtn").onclick=openUpdate;   // 顶栏「↑ 界面」直接打开更新中心(带下载/应用进度条),不再走旧的同步弹窗
@@ -1712,9 +1913,7 @@ async function openCompare(){
 }
 function closeCompare(){ $("#cmpView").hidden=true; }
 function openCompareWindow(sessionId){   // 开一个全新独立对比窗口(原生壳 createWebViewWith → 新 NSWindow,可拖/缩放/最小化、能同时开多个);带 sessionId 则在新窗口里还原那场对比
-  const tk=new URLSearchParams(location.search).get("token")||"";
   let u=location.origin+location.pathname+"?compare=1";
-  if(tk) u+="&token="+encodeURIComponent(tk);
   if(sessionId) u+="&session="+encodeURIComponent(sessionId);
   let w=null; try{ w=window.open(u,"_blank"); }catch(e){}
   if(w) return;   // 新原生壳:独立窗口已开
@@ -2011,7 +2210,7 @@ async function cmpUploadFiles(files){
     if(f.size>50*1024*1024){ cwToast("⚠ "+f.name+" 超过 50MB,跳过"); continue; }
     try{
       const buf=await f.arrayBuffer();
-      const r=await fetch(url("/api/upload"),{method:"POST",headers:{...auth,"X-Filename":encodeURIComponent(f.name)},body:buf});
+      const r=await fetch(url("/api/upload"),{method:"POST",headers:{...auth,"X-Filename":encodeURIComponent(f.name),"X-Upload-Scope":CMP.sessionId?("cmp_"+CMP.sessionId):"cmp"},body:buf});
       const d=await r.json();
       if(d.path) CMP.attachments.push(uploadAttachmentRecord(f,d)); else cwToast("⚠ 上传失败: "+(d.error||f.name));
     }catch(e){ cwToast("⚠ 上传失败: "+e.message); }

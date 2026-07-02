@@ -10,13 +10,36 @@
 Security: when bound to a non-loopback host (LAN), a token is REQUIRED. Without
 one it fails closed to 127.0.0.1, so the agent API is never exposed unprotected.
 """
-import http.server, http.client, socketserver, json, re, os, time, subprocess, shutil, urllib.request, urllib.error, urllib.parse, mimetypes
-import base64, hashlib, tarfile, tempfile, io, threading, ssl, socket, ipaddress
+import http.server, http.client, socketserver, json, re, os, time, subprocess, shutil, urllib.request, urllib.error, urllib.parse, mimetypes, secrets
+import base64, hashlib, tarfile, tempfile, io, threading, ssl, socket, ipaddress, signal, tomllib
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
 CFG = os.path.expanduser("~/.codewhale/config.toml")
 TOKEN_FILE = os.path.expanduser("~/.codewhale-gui/token")
+
+def _atomic_write(path, text, secret=False):
+    """原子写:写 <path>.tmp 后 os.replace。secret=True 的文件(含 api_key/token)
+    在写入前把 tmp 权限收到 0600,消除 os.replace 前的全用户可读窗口。"""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if secret:
+        fd = os.open(tmp, flags, 0o600)
+    else:
+        fd = os.open(tmp, flags, 0o644)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+    except Exception:
+        try: os.unlink(tmp)
+        except Exception: pass
+        raise
+    os.replace(tmp, path)
+    return path
+
+def _atomic_write_json(path, obj, secret=False, ensure_ascii=True):
+    _atomic_write(path, json.dumps(obj, ensure_ascii=ensure_ascii), secret=secret)
 PINS_FILE = os.path.expanduser("~/.codewhale-gui/pins.json")
 CMP_THREADS_FILE = os.path.expanduser("~/.codewhale-gui/cmp_threads.json")   # 多模型对比建的 thread id 集合 → 侧栏按组归类(对比/普通分开),跨窗口共享
 CMP_SESSIONS_FILE = os.path.expanduser("~/.codewhale-gui/cmp_sessions.json")  # 对比会话 [{id,topic,ts,threads:{prov:tid}}] → 侧栏每会话一行、点回当时对比,跨窗口共享
@@ -27,6 +50,12 @@ PORT = int(os.environ.get("CW_PORT", "3000"))
 PREVIEW_ROOTS = {}
 PREVIEW_LOCK = threading.Lock()
 PREVIEW_DIR_NAMES = ("dist", "build", "out", "public", "_site")
+TOKEN_COOKIE = "cw_token"
+PREVIEW_DENY_NAMES = {".env", ".env.local", ".env.production", ".npmrc", ".pypirc", "id_rsa", "id_ed25519"}
+PREVIEW_DENY_EXTS = {".pem", ".key", ".p12", ".pfx", ".sqlite", ".db", ".log", ".bak", ".tmp", ".toml", ".json", ".yaml", ".yml", ".env"}
+MCP_ALLOWED_BINS = {"npx", "node", "uvx", "python", "python3", "bun", "deno"}
+MCP_SAFE_DIRS = tuple(os.path.realpath(os.path.expanduser(p)) for p in (
+    "~/codewhale-gui", "~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"))
 
 # ── 安全在线更新(签名验证)──
 # 内嵌发布公钥(Ed25519,验签锚点)。私钥仅发布者持有,绝不随包分发。
@@ -47,6 +76,9 @@ def read_token():
     except FileNotFoundError:
         return None
 TOKEN = read_token()
+
+def _token_ok(value):
+    return bool(TOKEN and value and secrets.compare_digest(str(value), TOKEN))
 
 # Fail closed: no token + non-loopback bind => refuse to expose the agent.
 if BIND not in ("127.0.0.1", "localhost") and not TOKEN:
@@ -84,7 +116,7 @@ def _local_proxy():
 
 def _preview_id(root):
     seed = (TOKEN or "") + "\0" + os.path.realpath(root)
-    return hashlib.sha256(seed.encode()).hexdigest()[:18]
+    return hashlib.sha256(seed.encode()).hexdigest()[:32]
 
 def _preview_register_dir(path):
     root = os.path.realpath(os.path.expanduser(path or ""))
@@ -224,9 +256,11 @@ def _build_ca_bundle():
         pass
     return True
 _ssl_ctx_cache = None
+_ssl_ctx_ts = 0.0
 def _ssl_context():
-    global _ssl_ctx_cache
-    if _ssl_ctx_cache is not None:
+    global _ssl_ctx_cache, _ssl_ctx_ts
+    now = time.time()
+    if _ssl_ctx_cache is not None and (now - _ssl_ctx_ts) < 86400:   # 24h TTL:launchd 长跑时 CA 过期能自动重建
         return _ssl_ctx_cache
     ctx = ssl.create_default_context()
     try:
@@ -237,6 +271,7 @@ def _ssl_context():
     except Exception:
         pass
     _ssl_ctx_cache = ctx
+    _ssl_ctx_ts = now
     return ctx
 def _open_url(req, timeout):
     # 直连优先(TUN 能兜住就成);失败再走探测到的本机代理。两条路都用合并后的 CA 上下文校验。
@@ -253,18 +288,20 @@ def _open_url(req, timeout):
         return opener.open(req, timeout=timeout)
 
 _bal = {"t": 0.0, "d": None}
-def deepseek_key():
-    s = open(CFG, encoding="utf-8").read()
-    m = re.search(r'\[providers\.deepseek\][^\[]*?api_key\s*=\s*"([^"]+)"', s, re.S) \
-        or re.search(r'^api_key\s*=\s*"([^"]+)"', s, re.M)
-    return m.group(1) if m else None
-def _provider_key(prov):   # 读 [providers.<prov>] api_key
+def _load_config():
+    # 用 tomllib 正确解析 config.toml(替代正则:注释里的 api_key、单引号值、多行值都不会误匹配)。
+    # 每次现读现解析(文件小、够快),避免缓存与 set_model 写入不同步。
     try:
-        s = open(CFG, encoding="utf-8").read()
+        with open(CFG, "rb") as f:
+            return tomllib.load(f)
     except Exception:
-        return None
-    m = re.search(r'\[providers\.' + re.escape(prov) + r'\][^\[]*?\n[ \t]*api_key[ \t]*=[ \t]*"([^"]+)"', s, re.S)   # 只认行首未注释的 api_key,跳过 "# api_key = 占位符"
-    return m.group(1) if m else None
+        return {}
+def deepseek_key():
+    cfg = _load_config()
+    return (cfg.get("providers", {}).get("deepseek", {}).get("api_key")
+            or cfg.get("api_key"))   # deepseek key 可能在顶层
+def _provider_key(prov):   # 读 [providers.<prov>] api_key
+    return _load_config().get("providers", {}).get(prov, {}).get("api_key")
 def _tokenhub_key_probe(key, model):
     # 保存混元前做一次轻量校验:只把 "invalid api key" 当硬失败;402 说明 key 有效但套餐/额度不可用。
     key = (key or "").strip()
@@ -435,6 +472,26 @@ def _get_manifest(cfg):
     _verify_sig(man, sig)                                           # ★ 安全核心:验签通过才信任清单
     return json.loads(man)
 
+def _validate_gui_tar_members(members):
+    for mem in members:
+        name = mem.name.lstrip("./")
+        if mem.issym() or mem.islnk():
+            raise ValueError(f"含链接,拒绝:{name}")
+        if name.startswith("/") or ".." in name.split("/"):
+            raise ValueError(f"路径穿越,拒绝:{name}")
+        if not (name == "server.py" or name == "VERSION" or name == "web" or name.startswith("web/")):
+            raise ValueError(f"不允许的文件,拒绝:{name}")
+
+def _validate_native_app_tar_members(members):
+    for mem in members:
+        name = mem.name.lstrip("./")
+        if mem.issym() or mem.islnk():
+            raise ValueError("含链接,拒绝")
+        if name.startswith("/") or ".." in name.split("/"):
+            raise ValueError("路径穿越,拒绝")
+        if not (name == "CodeWhale.app" or name.startswith("CodeWhale.app/")):
+            raise ValueError("非法成员:" + name)
+
 def gui_update_check():
     cur = _gui_version()
     cfg = _update_cfg()
@@ -490,14 +547,7 @@ def _gui_update_worker(cfg, m):
         tmp = tempfile.mkdtemp(prefix="cwgui-upd-")
         try:
             with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
-                for mem in tf.getmembers():
-                    name = mem.name.lstrip("./")
-                    if mem.issym() or mem.islnk():
-                        raise ValueError(f"含链接,拒绝:{name}")
-                    if name.startswith("/") or ".." in name.split("/"):
-                        raise ValueError(f"路径穿越,拒绝:{name}")
-                    if not (name == "server.py" or name == "VERSION" or name == "web" or name.startswith("web/")):
-                        raise ValueError(f"不允许的文件,拒绝:{name}")
+                _validate_gui_tar_members(tf.getmembers())
                 tf.extractall(tmp)
             bak = ROOT + ".bak"
             shutil.rmtree(bak, ignore_errors=True)
@@ -639,14 +689,22 @@ def _seed_cmp_from_tprov():
 
 # ── 文件上传:存到 ~/codewhale-uploads(在 agent workspace=$HOME 下,read_file 能读)──
 UPLOAD_DIR = os.path.expanduser("~/codewhale-uploads")
-def save_upload(raw, filename):
+def _safe_upload_scope(scope):
+    scope = (scope or "").strip()
+    if re.match(r'^thr_[A-Za-z0-9_-]+$', scope):
+        return scope
+    if re.match(r'^cmp_[A-Za-z0-9_-]+$', scope):
+        return scope
+    return "inbox"
+def save_upload(raw, filename, scope=None):
     name = os.path.basename(filename or "file")
     name = re.sub(r"[^A-Za-z0-9._一-鿿 -]", "_", name).strip() or "file"
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    root = os.path.join(UPLOAD_DIR, _safe_upload_scope(scope))
+    os.makedirs(root, exist_ok=True)
     base, ext = os.path.splitext(name)
-    dest = os.path.join(UPLOAD_DIR, name); n = 1
+    dest = os.path.join(root, name); n = 1
     while os.path.exists(dest):
-        dest = os.path.join(UPLOAD_DIR, f"{base}-{n}{ext}"); n += 1
+        dest = os.path.join(root, f"{base}-{n}{ext}"); n += 1
     with open(dest, "wb") as f:
         f.write(raw)
     return {"path": dest, "name": os.path.basename(dest), "size": len(raw)}
@@ -672,11 +730,63 @@ def read_mcp():
     except Exception:
         return {"servers": {}}
 def write_mcp(cfg):
-    os.makedirs(os.path.dirname(MCP_FILE), exist_ok=True)
-    tmp = MCP_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, MCP_FILE)
+    # MCP 配置的 env 里可能含 API key/token → tmp 先 0600
+    _atomic_write(MCP_FILE, json.dumps(cfg, ensure_ascii=False, indent=2), secret=True)
+def _mcp_safe_command(command):
+    command = os.path.expanduser(str(command or "").strip())
+    if not command:
+        return ""
+    if any(c in command for c in "\r\n\0"):
+        raise ValueError("command 含非法字符")
+    base = os.path.basename(command)
+    if base not in MCP_ALLOWED_BINS:
+        raise ValueError("只允许 npx/node/uvx/python/bun/deno 这类 MCP 启动命令;自定义 shell 请手动编辑 ~/.codewhale/mcp.json")
+    if os.sep in command:
+        rp = os.path.realpath(command)
+        if not any(rp == d or rp.startswith(d + os.sep) for d in MCP_SAFE_DIRS):
+            raise ValueError("command 不在允许目录内")
+        return rp
+    found = shutil.which(command, path=_PATH)
+    if not found:
+        raise ValueError("找不到 command: " + command)
+    return command
+def _mcp_safe_args(args):
+    if not isinstance(args, list):
+        raise ValueError("args 必须是数组")
+    out = []
+    for a in args[:80]:
+        s = str(a)
+        if len(s) > 500 or any(c in s for c in "\r\n\0"):
+            raise ValueError("args 含非法字符或过长")
+        out.append(s)
+    return out
+def _mcp_safe_env(env):
+    if not env:
+        return {}
+    if not isinstance(env, dict):
+        raise ValueError("env 必须是对象")
+    blocked = {"PATH", "HOME", "SHELL", "IFS", "PYTHONPATH", "NODE_OPTIONS"}
+    out = {}
+    for k, v in list(env.items())[:30]:
+        key = str(k)
+        val = str(v)
+        if not re.match(r'^[A-Za-z_][A-Za-z0-9_]{0,80}$', key):
+            raise ValueError("env key 非法")
+        if key in blocked or key.startswith(("DYLD_", "LD_")):
+            raise ValueError("env 不允许覆盖敏感变量: " + key)
+        if len(val) > 1000 or any(c in val for c in "\r\n\0"):
+            raise ValueError("env value 含非法字符或过长")
+        out[key] = val
+    return out
+def _mcp_safe_url(value):
+    value = str(value or "").strip()
+    if not value:
+        return None
+    u = urllib.parse.urlparse(value)
+    host = (u.hostname or "").strip("[]")
+    if u.scheme not in ("http", "https") or host not in ("127.0.0.1", "localhost", "::1"):
+        raise ValueError("MCP url 仅允许 localhost/127.0.0.1")
+    return value
 def list_mcp():   # 合并 mcp.json 配置 + doctor 实时状态
     cfg = read_mcp().get("servers", {}) or {}
     status = {s.get("name"): s for s in (doctor().get("mcp", {}).get("servers") or [])}
@@ -710,8 +820,12 @@ def list_skills():   # 扫各 skills 目录下含 SKILL.md 的子目录
     return sorted(seen.values(), key=lambda x: x["name"])
 def read_skill(path):   # 安全读 <skill dir>/SKILL.md
     rp = os.path.realpath(path)
-    if "/skills/" not in rp + "/" and not rp.endswith("/skills"):
-        return {"error": "path not under a skills dir"}
+    roots = []
+    for info in (doctor().get("skills", {}) or {}).values():
+        if isinstance(info, dict) and info.get("present") and info.get("path"):
+            roots.append(os.path.realpath(info["path"]))
+    if not any(os.path.dirname(rp) == root for root in roots):
+        return {"error": "path not in registered skills dirs"}
     md = os.path.join(rp, "SKILL.md")
     try:
         return {"path": md, "content": open(md, encoding="utf-8", errors="replace").read()[:60000]}
@@ -724,12 +838,8 @@ def _cfg_get(key):
     # 不再 shell 出 `codewhale config get`:那步依赖 PATH、还可能被 DEBUG 噪音污染,
     # 在别的机器上会让 provider 读错 → 余额误判为不可用。读文件最稳、无依赖。
     k = key.split(".")[-1]
-    try:
-        s = open(CFG, encoding="utf-8").read()
-        m = re.search(r'(?m)^' + re.escape(k) + r'\s*=\s*"([^"]*)"', s)   # 行首顶层 key = "value"
-        return m.group(1).strip() if m else ""
-    except Exception:
-        return ""
+    v = _load_config().get(k)
+    return v.strip() if isinstance(v, str) else ""
 def current_model():
     return {"provider": _cfg_get("provider") or "deepseek", "model": _cfg_get("default_text_model")}
 def provider_key_status():   # 哪些 provider 已有凭证(含 OAuth)
@@ -776,10 +886,7 @@ def _set_custom_api_key(key):
             lines[ki] = newln
         else:
             lines.insert(start + 1, newln)
-    tmp = CFG + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-    os.replace(tmp, CFG)
+    _atomic_write(CFG, "\n".join(lines), secret=True)   # 含 api_key → tmp 先 0600
 
 def set_model(provider, model, api_key):
     provider = (provider or "").strip()
@@ -837,6 +944,7 @@ CMP_PORTS = {}            # provider -> 已分配端口
 _cmp_lock = threading.Lock()
 _cmp_launching = {}       # provider -> True(正在启动,避免重复 Popen 同端口)
 _PORT_UP = {}             # port -> 过期时间戳(缓存"活着",省去每次请求都探活的 HTTP 往返)
+_PORT_UP_LOCK = threading.Lock()   # ThreadingHTTPServer 多线程并发读写 _PORT_UP,加锁避免竞态
 def _cmp_model(prov):
     return "deepseek-v4-pro" if prov == "deepseek" else "auto"   # 顶层 default_text_model 只认 "auto" 或 DeepSeek 模型 id;非 deepseek 一律 auto
 # 非 deepseek 的 default_text_model="auto" 会让 CodeWhale 自动路由、在轮次间乱选模型(GLM 栏一会儿答 GLM 一会儿答 deepseek)。
@@ -871,8 +979,7 @@ def _model_prefs():
     except Exception: return {}
 def _set_model_pref(prov, model):
     d = _model_prefs(); d[prov] = model
-    os.makedirs(os.path.dirname(_MODEL_PREFS_FILE), exist_ok=True)
-    json.dump(d, open(_MODEL_PREFS_FILE, "w"))
+    _atomic_write_json(_MODEL_PREFS_FILE, d)
 def _model_pref(prov):                                                # 用户选的实际模型;无则默认
     p = (_model_prefs().get(prov) or "").strip()
     if p: return p
@@ -1019,11 +1126,7 @@ def _refresh_native_app():
         tmpd = tempfile.mkdtemp(prefix="cw-app-")
         try:
             with tarfile.open(tmpf, "r:gz") as tf:
-                for mem in tf.getmembers():                            # 逐成员安全校验:禁链接/穿越,只许 CodeWhale.app/**
-                    n = mem.name.lstrip("./")
-                    if mem.issym() or mem.islnk(): raise ValueError("含链接,拒绝")
-                    if n.startswith("/") or ".." in n.split("/"): raise ValueError("路径穿越,拒绝")
-                    if not (n == "CodeWhale.app" or n.startswith("CodeWhale.app/")): raise ValueError("非法成员:" + n)
+                _validate_native_app_tar_members(tf.getmembers())       # 逐成员安全校验:禁链接/穿越,只许 CodeWhale.app/**
                 tf.extractall(tmpd)
             newapp = os.path.join(tmpd, "CodeWhale.app")
             if not os.path.isdir(newapp): raise ValueError("包内无 CodeWhale.app")
@@ -1053,6 +1156,24 @@ def _refresh_native_app():
         _app_refresh_lock.release()
 def _cmp_safe(prov):
     return re.sub(r'[^a-zA-Z0-9_-]', '_', prov)
+def _kill_gracefully(pid, timeout=3):
+    """先 SIGTERM 给进程清理机会(存状态/关文件/放锁),最多等 timeout 秒仍在则 SIGKILL。"""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+    for _ in range(timeout * 10):
+        try:
+            os.kill(pid, 0)          # 探活:抛 OSError 即已退出
+            time.sleep(0.1)
+        except OSError:
+            return
+    try: os.kill(pid, signal.SIGKILL)
+    except OSError: pass
 def _cmp_reset(prov):
     # 改 provider key/model 后,杀旧 per-provider 后端并删派生配置,下次请求用新配置重起。
     with _cmp_lock:
@@ -1063,8 +1184,7 @@ def _cmp_reset(prov):
             out = subprocess.run(["lsof", "-nP", "-tiTCP:%d" % port, "-sTCP:LISTEN"],
                                  capture_output=True, text=True, timeout=5).stdout
             for pid in out.split():
-                try: os.kill(int(pid), 9)
-                except Exception: pass
+                _kill_gracefully(pid)   # 先 SIGTERM 给清理机会,超时才 SIGKILL
         except Exception: pass
     try:
         os.remove(os.path.join(CMP_DIR, _cmp_safe(prov) + ".toml"))
@@ -1156,18 +1276,21 @@ def _cmp_write_config(prov):
     else:
         s = s.rstrip() + '\n\n[skills]\nalways_load = ["compare-research"]\n'
     path = os.path.join(CMP_DIR, _cmp_safe(prov) + ".toml")
-    open(path, "w").write(s)
+    _atomic_write(path, s, secret=True)   # 派生 config 含 api_key → 原子写 + tmp 0600
     return path
 def _port_up(port):
-    exp = _PORT_UP.get(port)                                     # 命中缓存(15s 内确认过活着)→ 直接 True,免 HTTP 往返
+    with _PORT_UP_LOCK:
+        exp = _PORT_UP.get(port)                                 # 命中缓存(15s 内确认过活着)→ 直接 True,免 HTTP 往返
     if exp and exp > time.time():
         return True
     try:
         urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2)
-        _PORT_UP[port] = time.time() + 15
+        with _PORT_UP_LOCK:
+            _PORT_UP[port] = time.time() + 15
         return True
     except Exception:
-        _PORT_UP.pop(port, None)
+        with _PORT_UP_LOCK:
+            _PORT_UP.pop(port, None)
         return False
 def ensure_provider_server(prov):
     if not re.match(r'^[a-zA-Z0-9_-]+$', prov or ""):
@@ -1236,7 +1359,7 @@ _tprov_lock = threading.Lock()
 def _pin_thread(tid, prov):
     with _tprov_lock:
         _tprov[tid] = prov
-        try: json.dump(_tprov, open(_TPROV_FILE, "w"))
+        try: _atomic_write_json(_TPROV_FILE, _tprov)
         except Exception: pass
 SINGLE_THREADS_FILE = os.path.expanduser("~/.codewhale-gui/single_threads.json")
 def read_single_threads():   # 单窗口主动 pin 过的 thread:不应被 _tprov 兜底误归到对比分组
@@ -1273,8 +1396,7 @@ def _newchat_provider():
 def _set_newchat_provider(prov):
     if prov in _NEWCHAT_REQUIRES_KEY and not _provider_key(prov):
         raise ValueError("腾讯混元 API key 未配置,请先在模型面板保存混元 key")
-    os.makedirs(os.path.dirname(NEWCHAT_FILE), exist_ok=True)
-    json.dump({"provider": prov}, open(NEWCHAT_FILE, "w"))
+    _atomic_write_json(NEWCHAT_FILE, {"provider": prov})
 def _route_base(path):       # /v1/threads/<tid>/* 路由到该对话锁定的 provider 后端;未锁定或锁定=当前默认→:7878
     m = re.match(r'^/v1/threads/(thr_[a-zA-Z0-9_-]+)', path or "")
     if m:
@@ -1334,7 +1456,7 @@ def _fetch_threads_now():
     for t in arr:
         t["provider"] = _model_to_provider(t.get("model")) or _tprov.get(t.get("id")) or dflt
     _threads_cache["v"] = arr; _threads_cache["t"] = time.time()
-    try: json.dump(arr, open(_THREADS_CACHE_FILE, "w"))   # 落盘:服务重启也有暖缓存
+    try: _atomic_write_json(_THREADS_CACHE_FILE, arr)   # 落盘:服务重启也有暖缓存
     except Exception: pass
     return arr
 def _bg_refresh_threads():
@@ -1407,18 +1529,56 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # SPA 外壳(index.html)绝不缓存:否则 WKWebView/浏览器会缓存旧版,⌘R 或在线更新后页面看着没变
         # (本次亲历:preview 拿到了几版之前的缓存)。其余静态资源(图标/manifest)照常可缓存。
         p = urllib.parse.urlparse(self.path).path
+        if self._auth_bootstrap():
+            self.send_header("Set-Cookie", f"{TOKEN_COOKIE}={urllib.parse.quote(TOKEN)}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        # CSP 只加在 GUI 外壳文档上(不加在 /preview/static/ —— 那里的职责就是渲染任意
+        # HTML/JS,CSP 会破功;那部分不受信内容已由 iframe safe-sandbox 隔离)。
+        # SPA 用内联脚本 → script/style 必须 'unsafe-inline',但仍收紧 connect/object/base/form。
+        is_shell = p in ("/", "/index.html") and not p.startswith("/preview/")
+        if is_shell:
+            self.send_header("Content-Security-Policy",
+                "default-src 'self'; "
+                "script-src 'self' 'unsafe-inline'; "
+                "style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data: blob:; "
+                "font-src 'self' data:; "
+                "connect-src 'self'; "
+                "frame-src 'self' http://localhost:* http://127.0.0.1:* https:; "
+                "object-src 'none'; base-uri 'none'; form-action 'self'")
         if p == "/" or p.endswith(".html"):
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.send_header("Pragma", "no-cache")
         super().end_headers()
 
+    def _query_token(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        return q.get("token", [None])[0]
+    def _cookie_token(self):
+        raw = self.headers.get("Cookie", "")
+        for part in raw.split(";"):
+            if "=" not in part:
+                continue
+            k, v = part.strip().split("=", 1)
+            if k == TOKEN_COOKIE:
+                return urllib.parse.unquote(v)
+        return None
+    def _auth_bootstrap(self):
+        if not TOKEN:
+            return False
+        auth = self.headers.get("Authorization", "")
+        bearer = auth[7:] if auth.startswith("Bearer ") else None
+        return _token_ok(bearer) or _token_ok(self._query_token())
     def _authed(self):
         if not TOKEN:
             return True
-        if self.headers.get("Authorization", "") == "Bearer " + TOKEN:
+        auth = self.headers.get("Authorization", "")
+        bearer = auth[7:] if auth.startswith("Bearer ") else None
+        if _token_ok(bearer) or _token_ok(self._cookie_token()) or _token_ok(self._query_token()):
             return True
-        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        return q.get("token", [None])[0] == TOKEN
+        return False
     def _deny(self):
         self.send_response(401)
         self.send_header("Content-Type", "application/json")
@@ -1433,7 +1593,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
     def _serve_preview_static(self, path):
-        m = re.match(r'^/preview/static/([a-f0-9]{18})(?:/(.*))?$', path)
+        if not self._authed():
+            return self._deny()
+        m = re.match(r'^/preview/static/([a-f0-9]{32})(?:/(.*))?$', path)
         if not m:
             return self.send_error(404)
         pid, rel = m.group(1), urllib.parse.unquote(m.group(2) or "")
@@ -1450,6 +1612,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_error(403)
         if not os.path.exists(target) and "." not in os.path.basename(rel):
             target = os.path.join(root, "index.html")   # SPA fallback
+        parts = [x for x in os.path.relpath(target, root).split(os.sep) if x]
+        base = os.path.basename(target)
+        ext = os.path.splitext(base)[1].lower()
+        if any(x.startswith(".") for x in parts) or base in PREVIEW_DENY_NAMES or ext in PREVIEW_DENY_EXTS:
+            return self.send_error(403)
         if not os.path.isfile(target):
             return self.send_error(404)
         ctype = mimetypes.guess_type(target)[0] or "application/octet-stream"
@@ -1473,7 +1640,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if ct:
             req.add_header("Content-Type", ct)
         try:
-            resp = _LOCAL.open(req, timeout=1800)
+            resp = _LOCAL.open(req, timeout=600)   # socket 超时对后续 read 也生效:上游中途卡死时 read1 于 600s 抛 OSError→下方 except 干净收尾,不永久占线程(600s 远超正常 SSE 间隔,claude-code 自身 idle 超时 300s)
         except urllib.error.HTTPError as e:
             resp = e
         except Exception as e:
@@ -1530,7 +1697,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if ct:
             req.add_header("Content-Type", ct)
         try:
-            resp = _LOCAL.open(req, timeout=1800)
+            resp = _LOCAL.open(req, timeout=600)   # socket 超时对后续 read 也生效:上游中途卡死时 read1 于 600s 抛 OSError→下方 except 干净收尾,不永久占线程(600s 远超正常 SSE 间隔,claude-code 自身 idle 超时 300s)
         except urllib.error.HTTPError as e:
             resp = e
         except Exception as e:
@@ -1708,8 +1875,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 m = json.load(open(os.path.join(WEB, "manifest.webmanifest")))
             except Exception:
                 m = {"name": "CodeWhale", "short_name": "CodeWhale", "start_url": "/", "display": "standalone"}
-            if TOKEN:
-                m["start_url"] = "/?token=" + TOKEN   # 注入 token,iOS 主屏启动也带得上
+            # 不把 token 注入公开 manifest。PWA 首次用带 token 的 URL 打开时,前端会把 token 存进 localStorage;
+            # 后续 start_url="/" 仍可从 localStorage 取 token,同时避免 LAN 下未鉴权读取 manifest 泄露 token。
+            m["start_url"] = "/"
             b = json.dumps(m).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/manifest+json")
@@ -1946,7 +2114,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         raise ValueError("文件过大(>50MB)")
                     raw = self.rfile.read(length) if length else b""
                     fn = urllib.parse.unquote(self.headers.get("X-Filename", "file"))
-                    out = save_upload(raw, fn)
+                    out = save_upload(raw, fn, self.headers.get("X-Upload-Scope", ""))
                 else:
                     data = json.loads(self.rfile.read(length) or b"{}")
                     if p == "/api/mcp":
@@ -1977,6 +2145,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         name = (data.get("name") or "").strip()
         if not name:
             return {"error": "name required"}
+        if not re.match(r'^[A-Za-z0-9_.-]{1,80}$', name):
+            return {"error": "name 只能包含英文/数字/._-"}
         if action == "toggle":
             sv = cfg["servers"].get(name)
             if not sv:
@@ -1987,8 +2157,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif action == "add":
             if name in cfg["servers"]:
                 return {"error": "已存在同名 server"}
-            cfg["servers"][name] = {"command": data.get("command", ""), "args": data.get("args", []),
-                                    "env": data.get("env", {}), "url": data.get("url"),
+            command = _mcp_safe_command(data.get("command", ""))
+            server_url = _mcp_safe_url(data.get("url"))
+            if not command and not server_url:
+                return {"error": "command 或 localhost url 必填"}
+            cfg["servers"][name] = {"command": command, "args": _mcp_safe_args(data.get("args", [])),
+                                    "env": _mcp_safe_env(data.get("env", {})), "url": server_url,
                                     "disabled": False, "enabled": True, "required": False,
                                     "enabled_tools": [], "disabled_tools": []}
         elif action == "remove":
@@ -2001,6 +2175,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         name = re.sub(r"[^A-Za-z0-9._-]", "-", (data.get("name") or "").strip())
         if not name:
             return {"error": "name required"}
+        # 允许字符集含 '.',故 "."/".." 会原样通过 → 拒绝,防写到 ~/.codewhale(父目录)
+        if name.startswith(".") or name in (".", ".."):
+            return {"error": "invalid name"}
         d = os.path.expanduser(f"~/.codewhale/skills/{name}")
         if os.path.exists(d):
             return {"error": "已存在同名 skill"}

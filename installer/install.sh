@@ -50,7 +50,7 @@ CFG
 else
   echo "→ 检测到已有配置,保留不动。"
 fi
-echo "  ✓ 已配置 $PNAME(key 仅存本机 ~/.codewhale/config.toml,不外传)"
+echo "  ✓ key 仅存本机 ~/.codewhale/config.toml,不外传"
 
 # ── 4. GUI 文件 ──
 echo "→ 部署 GUI 到 ~/codewhale-gui…"
@@ -69,48 +69,20 @@ chmod 600 "$HOME/.codewhale-gui/token"
 # 更新验签需要 cryptography(失败也不阻断安装,只是自动更新会暂时禁用)
 "$PY" -m pip install --user cryptography >/dev/null 2>&1 || "$PY" -m pip install --break-system-packages cryptography >/dev/null 2>&1 || echo "  (cryptography 没装上:在线更新会暂时禁用,不影响其他功能)"
 
-# ── 5.7 Claude 订阅引擎(claude-code 补丁二进制 → 跑「Claude (订阅)」/ Opus)──
-# 官方 codewhale 不识别 claude-code provider;前端用这俩补丁二进制起独立后端,委派官方 `claude -p` 走你的 Claude 订阅。
-if [ -d "$HERE/bin" ] && [ -f "$HERE/bin/codewhale-claude" ] && [ -f "$HERE/bin/codewhale-tui" ]; then
-  echo "→ 安装 Claude 订阅引擎(Opus)…"
-  mkdir -p "$HOME/.codewhale-gui/bin"
-  cp "$HERE/bin/codewhale-claude" "$HOME/.codewhale-gui/bin/codewhale-claude"
-  cp "$HERE/bin/codewhale-tui"    "$HOME/.codewhale-gui/bin/codewhale-tui"
-  xattr -dr com.apple.quarantine  "$HOME/.codewhale-gui/bin" 2>/dev/null || true   # 去隔离,免 Gatekeeper 拦下载来的二进制
-  chmod +x "$HOME/.codewhale-gui/bin/codewhale-claude" "$HOME/.codewhale-gui/bin/codewhale-tui"
-  codesign -s - --force "$HOME/.codewhale-gui/bin/codewhale-claude" >/dev/null 2>&1 || true   # 本机重新 ad-hoc 签名,确保可运行(arm64 必须有签名)
-  codesign -s - --force "$HOME/.codewhale-gui/bin/codewhale-tui"    >/dev/null 2>&1 || true
-  if command -v claude >/dev/null 2>&1; then
-    echo "  ✓ Claude 订阅引擎就绪(已检测到官方 claude CLI)"
-  else
-    echo "  ⚠ 还没装官方 claude CLI ——「Claude (订阅)」要靠它跑。装 + 登录你的订阅:"
-    echo "       npm install -g @anthropic-ai/claude-code   然后   claude   (按提示登录)"
-  fi
-  echo "  用法:app 里左下「🧠 模型」→ 选「Claude (订阅 · Claude Code)」→ 设为新对话模型 → 新对话即 Opus 4.8"
-fi
-
-# ── 5.6 CA 证书包(修代理 TLS 解密 / python.org 版 Python 空 CA 包导致的余额、联网校验失败)──
-# 合并:钥匙串里的系统根 + System/login 钥匙串(含用户本机代理 TLS 解密用的自签根)+ certifi(若有)。
-# 让前端 server.py 的 HTTPS 校验既认公网证书、也认本机代理重签的证书;每台机器按各自钥匙串生成。
-echo "→ 生成 CA 证书包(兼容 TLS 解密代理)…"
-CABUNDLE="$HOME/.codewhale-gui/ca-bundle.pem"
-: > "$CABUNDLE"
-security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain >> "$CABUNDLE" 2>/dev/null || true
-security find-certificate -a -p /Library/Keychains/System.keychain          >> "$CABUNDLE" 2>/dev/null || true
-security find-certificate -a -p "$HOME/Library/Keychains/login.keychain-db"  >> "$CABUNDLE" 2>/dev/null || true
-CERTIFI="$("$PY" -c 'import certifi;print(certifi.where())' 2>/dev/null || true)"
-[ -n "$CERTIFI" ] && [ -f "$CERTIFI" ] && cat "$CERTIFI" >> "$CABUNDLE" 2>/dev/null || true
-if [ -s "$CABUNDLE" ]; then
-  chmod 600 "$CABUNDLE"; echo "  ✓ CA 包就绪($(grep -c 'BEGIN CERTIFICATE' "$CABUNDLE") 张证书)"
-else
-  echo "  ⚠ CA 包为空(余额/联网在 TLS 解密代理下可能仍失败)"; CABUNDLE=""
-fi
-
 # ── 5.5 联网工具(MCP: fetch 读网页 + playwright 浏览器)──
 echo "→ 配置联网工具(MCP)… 这步会下载组件(含浏览器 ~150MB),可能几分钟,请耐心"
 if ! command -v uvx >/dev/null 2>&1; then
   echo "  安装 uv(给 fetch 用)…"
-  curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 || echo "  ⚠ uv 装失败,fetch 可能不可用(playwright 不受影响)"
+  # 优先用有完整性保障的包管理器;curl|sh 只作最后兜底(供应链/中间人风险最高)
+  if command -v brew >/dev/null 2>&1; then
+    brew install uv >/dev/null 2>&1 || true
+  elif command -v pip3 >/dev/null 2>&1; then
+    pip3 install --user uv >/dev/null 2>&1 || true
+  fi
+  if ! command -v uv >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/uv" ]; then
+    echo "  (brew/pip 都没装上 uv,回退官方安装脚本)"
+    curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 || echo "  ⚠ uv 装失败,fetch 可能不可用(playwright 不受影响)"
+  fi
   export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 fi
 UVX="$(command -v uvx || echo "$HOME/.local/bin/uvx")"
@@ -148,9 +120,6 @@ echo "  ✓ 联网工具就绪"
 echo "→ 配置开机自启…"
 LA="$HOME/Library/LaunchAgents"; mkdir -p "$LA"
 PLPATH="$NODEDIR:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-# 让前端 server.py 用上面生成的 CA 包(空则不注入,行为同旧版)
-CERTENV=""
-[ -n "$CABUNDLE" ] && CERTENV="<key>SSL_CERT_FILE</key><string>$CABUNDLE</string>"
 cat > "$LA/com.codewhale.appserver.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -175,7 +144,7 @@ cat > "$LA/com.codewhale.frontend.plist" <<PLIST
   <key>Label</key><string>com.codewhale.frontend</string>
   <key>ProgramArguments</key><array><string>$PY</string><string>$HOME/codewhale-gui/server.py</string></array>
   <key>WorkingDirectory</key><string>$HOME/codewhale-gui</string>
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$PLPATH</string>$CERTENV</dict>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$PLPATH</string></dict>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>
   <key>StandardOutPath</key><string>$HOME/codewhale-gui/webserver.log</string>
   <key>StandardErrorPath</key><string>$HOME/codewhale-gui/webserver.log</string>
