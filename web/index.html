@@ -1491,12 +1491,12 @@ let _dfModel=""; // DeerFlow 选择的模型
 const DF_MODEL_PROV={deepseek:"deepseek",zai:"glm",moonshot:"kimi","openai-codex":"openai",custom:"hunyuan","claude-code":"claude"};
 const DF_MODEL_NAME={deepseek:"DeepSeek",glm:"GLM",kimi:"Kimi",openai:"ChatGPT",hunyuan:"混元",claude:"Claude"};
 const DF_AVAILABLE=new Set(["kimi","deepseek","glm","hunyuan"]); // DeerFlow config.yaml 已配置的模型(跟随窗口当前 provider);ChatGPT/Claude 是 OAuth 订阅、DeerFlow 用不了 key → 回退 kimi
-function getDeerFlowModel(){
+function getDeerFlowModel(){   // DeerFlow 直接用聊天窗口当前模型:会话有 provider 用它,否则用窗口默认(新对话)provider
   const t=state.threads.find(x=>x.id===state.activeId);
-  const prov=t?.provider||"";
+  const prov=(t&&t.provider)||window._newchatProv||"";
   const dm=DF_MODEL_PROV[prov]||"";
   if(dm&&DF_AVAILABLE.has(dm)) return dm;
-  return "kimi"; // 回退默认
+  return "kimi"; // 该 provider DeerFlow 没配(如 ChatGPT/Claude OAuth)→ 回退 kimi
 }
 async function submitDeerFlow(model){
   const prompt=$("#dfprompt").value.trim();
@@ -1580,20 +1580,11 @@ document.addEventListener("click",function(e){
   }
   if(!drop.contains(e.target)) drop.classList.remove("show");
 });
-function updateDeerFlowDropdown(){
+function updateDeerFlowDropdown(){   // 不再出现模型选择:DeerFlow 直接用窗口当前模型。只在主条目副标题被动显示用的是哪个。
   const dm=getDeerFlowModel(), dn=DF_MODEL_NAME[dm]||dm;
-  const prov=t=>state.threads.find(x=>x.id===state.activeId)?.provider;
-  const curProv=prov();
-  const curName=curProv?(PROV_SHORT[curProv]||curProv):"默认";
-  // 更新主条目副标题
   const main=$("#plugindrop .plugini.df .short");
-  if(main) main.textContent=DF_AVAILABLE.has(dm)?dn:dn+" ⚠";
-  // 更新模型选择区
-  const sel=$("#plugindrop .df-models");
-  if(!sel) return;
-  const avail=[...DF_AVAILABLE];
-  sel.innerHTML=(avail.length?`<div style="padding:4px 16px;font-size:10px;color:var(--faint)">当前对话: ${curName} → ${dn}${DF_AVAILABLE.has(dm)?' ✅':dm==='kimi'?' (回退 Kimi)':' ⚠ 未配置'}</div>`:'')+
-    avail.map(m=>`<div class="plugini ${m===dm?' active':''}" onclick="_dfModel='${m}';openDeerFlow()"><span class="emo">${m===dm?'✅':'🟠'}</span><span class="lb">${DF_MODEL_NAME[m]||m}</span><span class="short">${m===dm?'当前':''}</span></div>`).join('');
+  if(main){ main.textContent=dn; main.title=DF_AVAILABLE.has(dm)?("DeerFlow 将用当前窗口模型:"+dn):("当前窗口模型 DeerFlow 未配置,回退 "+dn); }
+  const sel=$("#plugindrop .df-models"); if(sel) sel.innerHTML="";   // 去掉模型选择列表
 }
 // Close dfmodal on backdrop click
 document.addEventListener("click",function(e){
