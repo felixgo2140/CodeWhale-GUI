@@ -1,0 +1,20 @@
+diff --git a/backend/app/gateway/services.py b/backend/app/gateway/services.py
+index b93dee0..17efab0 100644
+--- a/backend/app/gateway/services.py
++++ b/backend/app/gateway/services.py
+@@ -210,7 +210,14 @@ def resolve_agent_factory(assistant_id: str | None):
+ # call), enabling runaway API cost / DoS. ``_DEFAULT_RECURSION_LIMIT`` is the
+ # server default when the client sends nothing; the hard ceiling any client
+ # value is clamped to is configurable via ``AppConfig.max_recursion_limit``.
+-_DEFAULT_RECURSION_LIMIT = 100
++# 默认值从 config 读取，如果 config 加载失败才用 100
++def _get_default_recursion_limit():
++    try:
++        return get_app_config().max_recursion_limit
++    except Exception:
++        return 1000  # 配置加载失败时的默认值
++
++_DEFAULT_RECURSION_LIMIT = _get_default_recursion_limit()
+ _DEFAULT_MAX_RECURSION_LIMIT = 1000
+ 
+ 

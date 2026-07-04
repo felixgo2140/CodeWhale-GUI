@@ -1,0 +1,219 @@
+agents_api:
+  enabled: false
+config_version: 16
+database:
+  backend: sqlite
+  sqlite_dir: .deer-flow/data
+default_model: kimi
+log_level: info
+loop_detection:
+  enabled: true
+  hard_limit: 5
+  max_tracked_threads: 100
+  # 深度研究被"同工具调 50 次强制停"卡浅(个股深挖轻松 60-80 次搜索)→ 全局抬高,搜索/爬取再单独放宽
+  tool_freq_hard_limit: 150
+  tool_freq_warn: 100
+  tool_freq_overrides:
+    web_search:
+      warn: 150
+      hard_limit: 250
+    web_fetch:
+      warn: 120
+      hard_limit: 200
+  warn_threshold: 3
+  window_size: 20
+max_recursion_limit: 1000
+memory:
+  debounce_seconds: 30
+  enabled: true
+  fact_confidence_threshold: 0.7
+  guaranteed_categories:
+  - correction
+  guaranteed_token_budget: 500
+  injection_enabled: true
+  max_facts: 100
+  max_injection_tokens: 2000
+  model_name: null
+  storage_path: memory.json
+  token_counting: tiktoken
+models:
+# ── 模型列表（所有 OpenAI 兼容的 API key 都配在这里）──
+# default_model 指定默认使用的模型名称
+
+- api_key: ${KIMI_API_KEY}
+  base_url: https://api.kimi.com/coding/v1
+  display_name: Kimi (moonshot-v1-128k)
+  max_retries: 2
+  model: moonshot-v1-128k
+  name: kimi
+  supports_thinking: true
+  supports_reasoning_effort: true
+  timeout: 600.0
+  use: langchain_openai.chat_models:ChatOpenAI
+
+- api_key: ${DEEPSEEK_API_KEY}
+  base_url: https://api.deepseek.com/v1
+  display_name: DeepSeek V4 Pro
+  max_retries: 2
+  model: deepseek-v4-pro
+  name: deepseek
+  supports_thinking: true
+  supports_reasoning_effort: true
+  timeout: 600.0
+  use: langchain_openai.chat_models:ChatOpenAI
+
+- api_key: ${ZHIPU_API_KEY}
+  base_url: https://api.z.ai/api/paas/v4
+  display_name: GLM-5.2
+  max_retries: 2
+  model: glm-5.2
+  name: glm
+  supports_thinking: true
+  supports_reasoning_effort: true
+  timeout: 600.0
+  use: langchain_openai.chat_models:ChatOpenAI
+
+- api_key: ${HUNYUAN_API_KEY}
+  base_url: https://tokenhub.tencentmaas.com/v1
+  display_name: 混元 hy3
+  max_retries: 2
+  model: hy3-preview
+  name: hunyuan
+  supports_thinking: true
+  supports_reasoning_effort: true
+  timeout: 600.0
+  use: langchain_openai.chat_models:ChatOpenAI
+
+# 以下模型需要有效的 API key 才能启用。复制此模板并填写 api_key + 模型名即可:
+#
+# Z.ai / 智谱 GLM（OpenAI 兼容）:
+# - api_key: your-z-ai-key
+#   base_url: https://api.z.ai/api/paas/v4
+#   display_name: GLM-5.2 Turbo
+#   max_retries: 2
+#   model: glm-5.2
+#   name: glm
+#   timeout: 600.0
+#   use: langchain_openai.chat_models:ChatOpenAI
+#
+# Claude (via Anthropic API):
+# - api_key: sk-ant-...
+#   display_name: Claude Sonnet 4
+#   max_retries: 2
+#   model: claude-sonnet-4-20250514
+#   name: claude
+#   timeout: 600.0
+#   use: langchain_anthropic:ChatAnthropic
+#   (需要 uv add langchain-anthropic) 
+run_events:
+  backend: memory
+  max_trace_content: 10240
+  track_token_usage: true
+safety_finish_reason:
+  enabled: true
+sandbox:
+  allow_host_bash: false
+  bash_command_timeout: 600
+  bash_output_max_chars: 20000
+  ls_output_max_chars: 20000
+  read_file_output_max_chars: 50000
+  use: deerflow.sandbox.local:LocalSandboxProvider
+skill_evolution:
+  enabled: false
+  moderation_model_name: null
+skills:
+  container_path: /mnt/skills
+suggestions:
+  enabled: true
+summarization:
+  enabled: true
+  keep:
+    type: messages
+    value: 10
+  model_name: null
+  skill_file_read_tool_names:
+  - read_file
+  - read
+  - view
+  - cat
+  summary_prompt: null
+  trigger:
+  - type: tokens
+    value: 32000
+  trim_tokens_to_summarize: 15564
+title:
+  enabled: true
+  max_chars: 60
+  max_words: 6
+  model_name: null
+token_budget:
+  enabled: false
+  hard_stop_threshold: 1.0
+  max_input_tokens: null
+  max_output_tokens: null
+  max_tokens: 200000
+  warn_threshold: 0.8
+token_usage:
+  enabled: true
+tool_groups:
+- name: web
+- name: file:read
+- name: file:write
+- name: bash
+tool_output:
+  enabled: true
+  exempt_tools:
+  - read_file
+  - read_file_tool
+  externalize_min_chars: 12000
+  fallback_head_chars: 8000
+  fallback_max_chars: 30000
+  fallback_tail_chars: 3000
+  preview_head_chars: 2000
+  preview_tail_chars: 1000
+  storage_subdir: .tool-results
+tool_search:
+  enabled: false
+tools:
+- group: web
+  max_results: 10
+  name: web_search
+  api_key: ${TAVILY_API_KEY}
+  use: deerflow.community.tavily.tools:web_search_tool
+- group: web
+  name: web_fetch
+  timeout: 30
+  use: deerflow.community.jina_ai.tools:web_fetch_tool
+- group: web
+  max_results: 5
+  name: image_search
+  use: deerflow.community.image_search.tools:image_search_tool
+- group: file:read
+  name: ls
+  use: deerflow.sandbox.tools:ls_tool
+- group: file:read
+  name: read_file
+  use: deerflow.sandbox.tools:read_file_tool
+- group: file:read
+  max_results: 200
+  name: glob
+  use: deerflow.sandbox.tools:glob_tool
+- group: file:read
+  max_results: 100
+  name: grep
+  use: deerflow.sandbox.tools:grep_tool
+- group: file:write
+  name: write_file
+  use: deerflow.sandbox.tools:write_file_tool
+- group: file:write
+  name: str_replace
+  use: deerflow.sandbox.tools:str_replace_tool
+- group: bash
+  name: bash
+  use: deerflow.sandbox.tools:bash_tool
+uploads:
+  auto_convert_documents: false
+  max_file_size: 52428800
+  max_files: 10
+  max_total_size: 104857600
+  pdf_converter: auto

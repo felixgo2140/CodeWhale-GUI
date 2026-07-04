@@ -20,3 +20,8 @@ dist/
 .DS_Store
 __pycache__/
 *.pyc
+
+# 研究 harness:密钥与私有研究 skill 绝不入库
+harness.env
+harness/harness.env
+harness/skills-custom/
