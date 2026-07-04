@@ -1369,6 +1369,83 @@ def _refresh_native_app():
         print(f"[native-app] 刷新失败: {e}", flush=True)
     finally:
         _app_refresh_lock.release()
+
+# ── 研究 harness 版本感知刷新 + 条件自动安装 ──
+# harness.tar.gz(安装器+桥接+配置模板,零密钥)作为签名 release 资产:启动时比对 manifest 的 harness SHA,
+# 变了就验签下载解包到 <GUI目录>/harness/。之后若本机已放密钥(~/agent-harnesses/harness.env)且研究引擎
+# 桥接缺失 → 后台自动跑安装器(felix:"升级就把缺的都装上")。没放密钥则只留提示,绝不空跑。
+_HARNESS_DEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "harness")
+_HARNESS_SHA_MARKER = os.path.expanduser("~/.codewhale-gui/.harnesssha")
+_HARNESS_ENVF = os.path.expanduser("~/agent-harnesses/harness.env")
+_harness_refresh_lock = threading.Lock()
+def _validate_harness_tar_members(members):
+    for mem in members:
+        name = mem.name.lstrip("./")
+        if mem.issym() or mem.islnk():
+            raise ValueError("含链接,拒绝")
+        if name.startswith("/") or ".." in name.split("/"):
+            raise ValueError("路径穿越,拒绝")
+        if not (name == "harness" or name.startswith("harness/")):
+            raise ValueError("非法成员:" + name)
+def _harness_bridges_missing():
+    need = ["gptr_client.py", "odr_client.py", "storm_client.py", "deerflow_client.py"]
+    return [b for b in need if not os.path.exists(os.path.expanduser("~/scripts/" + b))]
+def _maybe_autoinstall_harness():
+    missing = _harness_bridges_missing()
+    inst = os.path.join(_HARNESS_DEST, "install_harnesses.sh")
+    if not missing or not os.path.exists(inst):
+        return
+    if not os.path.exists(_HARNESS_ENVF):
+        print("[harness] 研究引擎未安装;把 harness.env(密钥)放到 ~/agent-harnesses/ 后重启即自动安装,或手动: bash "
+              + inst, flush=True)
+        return
+    log = os.path.expanduser("~/codewhale-gui/harness-setup.log")
+    print(f"[harness] 检测到密钥且缺 {len(missing)} 个桥接 → 后台自动安装,日志 {log}", flush=True)
+    subprocess.Popen(["/bin/bash", inst], start_new_session=True,
+                     stdout=open(log, "a"), stderr=subprocess.STDOUT,
+                     env={**os.environ, "PATH": _PATH})
+def _refresh_research_harness():
+    cfg = _update_cfg()
+    if not (cfg.get("repo") or cfg.get("base_url")) or not _HAVE_CRYPTO:
+        return
+    if not _harness_refresh_lock.acquire(blocking=False):
+        return
+    try:
+        man = _get_manifest(cfg)
+        h = man.get("harness")
+        if h and h.get("name") and h.get("sha256"):
+            sha = h["sha256"]
+            try: marker = open(_HARNESS_SHA_MARKER).read().strip()
+            except Exception: marker = ""
+            if not (marker == sha and os.path.isdir(_HARNESS_DEST)):
+                tmpf = os.path.join(tempfile.gettempdir(), "cw-harness.tar.gz")
+                _download_verified(_release_url(cfg, h["name"]), tmpf, sha, int(h.get("size") or 0))
+                tmpd = tempfile.mkdtemp(prefix="cw-harness-")
+                try:
+                    with tarfile.open(tmpf, "r:gz") as tf:
+                        _validate_harness_tar_members(tf.getmembers())
+                        tf.extractall(tmpd)
+                    newh = os.path.join(tmpd, "harness")
+                    if not os.path.isdir(newh): raise ValueError("包内无 harness/")
+                    bak = _HARNESS_DEST + ".bak"; shutil.rmtree(bak, ignore_errors=True)
+                    if os.path.exists(_HARNESS_DEST): shutil.move(_HARNESS_DEST, bak)
+                    try:
+                        shutil.move(newh, _HARNESS_DEST)
+                        open(_HARNESS_SHA_MARKER, "w").write(sha)
+                        shutil.rmtree(bak, ignore_errors=True)
+                        print("[harness] 安装器已更新 → " + _HARNESS_DEST, flush=True)
+                    except Exception:
+                        if os.path.exists(bak) and not os.path.exists(_HARNESS_DEST): shutil.move(bak, _HARNESS_DEST)
+                        raise
+                finally:
+                    shutil.rmtree(tmpd, ignore_errors=True)
+                    try: os.remove(tmpf)
+                    except Exception: pass
+        _maybe_autoinstall_harness()   # 与 SHA 无关也要跑:用户后放 harness.env 重启即触发安装
+    except Exception as e:
+        print(f"[harness] 刷新失败: {e}", flush=True)
+    finally:
+        _harness_refresh_lock.release()
 def _cmp_safe(prov):
     return re.sub(r'[^a-zA-Z0-9_-]', '_', prov)
 def _kill_gracefully(pid, timeout=3):
@@ -2847,6 +2924,7 @@ if __name__ == "__main__":
     # 后台检查补丁二进制 + 原生 App:缺则下载,SHA 变了则刷新(OCR/二进制/原生壳 升级经此自动传播);不阻塞启动
     threading.Thread(target=lambda: _ensure_patched_binaries(block=False, refresh=True), daemon=True).start()
     threading.Thread(target=_refresh_native_app, daemon=True).start()
+    threading.Thread(target=_refresh_research_harness, daemon=True).start()   # harness 安装器刷新 + 有密钥即自动装引擎
     threading.Thread(target=_fetch_threads_now, daemon=True).start()   # 启动即后台预热线程列表缓存(落盘)→ 首个请求秒命中,不阻塞启动
     _seed_cmp_from_tprov()   # 一次性回溯:把历史对比对话登记进侧栏分组
     print(f"CodeWhale GUI server on {BIND}:{PORT}  (token {'ENABLED' if TOKEN else 'off'})")
