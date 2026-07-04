@@ -88,6 +88,14 @@ MCP_ALLOWED_BINS = {"npx", "node", "uvx", "python", "python3", "bun", "deno"}
 MCP_SAFE_DIRS = tuple(os.path.realpath(os.path.expanduser(p)) for p in (
     "~/codewhale-gui", "~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"))
 
+# ── 外部研究 harness 注册表:桥接脚本与 deerflow_client 同契约(submit/progress/result 输出 JSON),
+#    /api/harness/<name>/research|poll|file 三端点通用。新装 harness → 写桥接脚本 + 这里加一条即可。──
+_HARNESS = {
+    "gptr": {"client": os.path.expanduser("~/scripts/gptr_client.py"), "outdir": os.path.expanduser("~/harness-output/gptr")},
+    "odr": {"client": os.path.expanduser("~/scripts/odr_client.py"), "outdir": os.path.expanduser("~/harness-output/odr")},
+    "storm": {"client": os.path.expanduser("~/scripts/storm_client.py"), "outdir": os.path.expanduser("~/harness-output/storm")},
+}
+
 # ── 安全在线更新(签名验证)──
 # 内嵌发布公钥(Ed25519,验签锚点)。私钥仅发布者持有,绝不随包分发。
 # 安全保证:更新清单必须用对应私钥签名,本端用此公钥验签 + 校验 SHA-256 后才应用;
@@ -673,6 +681,40 @@ def write_plugins(plugins):
     os.replace(tmp, PLUGINS_FILE)
     return plugins
 
+# 深度研究面板「我的方法论」引擎里可多选的研究 skill 注册表。种子=当前已装的研究方法 skill;
+# 用户后续新增独特研究方法 skill → 用 Claude Code 往这个 json 加一条即可,面板自动出现(不改界面代码)。
+RESEARCH_SKILLS_FILE = os.path.expanduser("~/.codewhale-gui/research_skills.json")
+_RESEARCH_SKILLS_SEED = [
+    {"skill": "felix-framework", "emoji": "🧭", "label": "板块优先雷达", "desc": "Stage1 宏观/板块 → 2 子行业 → 3 个股 dossier,含反方 + Obsidian 归档"},
+    {"skill": "investment-research", "emoji": "📈", "label": "投资研究", "desc": "通用深度投资研究框架"},
+    {"skill": "value-investment-master", "emoji": "💎", "label": "价值投资大师", "desc": "大师 persona 多视角评估"},
+    {"skill": "chokepoint-atlas", "emoji": "🔗", "label": "瓶颈图谱", "desc": "AI/半导体/国防/能源供应链瓶颈深研"},
+]
+def _valid_rskill(s):
+    return isinstance(s, dict) and isinstance(s.get("skill"), str) and s.get("skill")
+def read_research_skills():
+    try:
+        d = json.load(open(RESEARCH_SKILLS_FILE))
+        if isinstance(d, list):
+            v = [s for s in d if _valid_rskill(s)]
+            if v:
+                return v
+    except Exception:
+        pass
+    try:   # 首次:落盘种子,给用户一个可编辑的文件
+        os.makedirs(os.path.dirname(RESEARCH_SKILLS_FILE), exist_ok=True)
+        _atomic_write_json(RESEARCH_SKILLS_FILE, _RESEARCH_SKILLS_SEED)
+    except Exception:
+        pass
+    return list(_RESEARCH_SKILLS_SEED)
+def write_research_skills(items):
+    items = [{"skill": str(s["skill"])[:60], "emoji": str(s.get("emoji") or "🧭")[:8],
+              "label": str(s.get("label") or s["skill"])[:40], "desc": str(s.get("desc") or "")[:200]}
+             for s in items if _valid_rskill(s)][:60]
+    os.makedirs(os.path.dirname(RESEARCH_SKILLS_FILE), exist_ok=True)
+    _atomic_write_json(RESEARCH_SKILLS_FILE, items)
+    return items
+
 def read_cmp_threads():   # 对比 thread 注册表(服务端共享一份,所有窗口/设备一致分组)
     try:
         d = json.load(open(CMP_THREADS_FILE))
@@ -921,6 +963,10 @@ def provider_key_status():   # 哪些 provider 已有凭证(含 OAuth)
             keyed[parts[0]] = ("set" in parts[1:4]) or ("oauth" in line.lower())
     if _provider_key("custom"):                    # custom 不在 codewhale auth 列表里(auth status 不报它)→ 直接看 config.toml 有没有 key
         keyed["custom"] = True
+    if _provider_key("volcengine"):                 # 兼容手写 [providers.volcengine].api_key 的配置
+        keyed["volcengine"] = True
+    if _provider_key("longcat"):
+        keyed["longcat"] = True
     return keyed
 def _restart_appserver():
     _run(["/bin/launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.codewhale.appserver"], timeout=30)
@@ -958,6 +1004,70 @@ def _set_custom_api_key(key):
             lines.insert(start + 1, newln)
     _atomic_write(CFG, "\n".join(lines), secret=True)   # 含 api_key → tmp 先 0600
 
+def _set_provider_table_values(prov, values):
+    prov = (prov or "").strip()
+    if not re.match(r'^[a-zA-Z0-9_-]+$', prov):
+        raise ValueError("非法 provider")
+    clean = {}
+    for key, value in values.items():
+        if not re.match(r'^[a-zA-Z0-9_-]+$', key or ""):
+            raise ValueError("非法配置键")
+        if isinstance(value, int):
+            clean[key] = str(value)
+            continue
+        value = (value or "").strip()
+        if not value or '"' in value or "\n" in value or "\\" in value:
+            raise ValueError(f"{key} 含非法字符")
+        clean[key] = f'"{value}"'
+    lines = open(CFG, encoding="utf-8").read().split("\n")
+    header = f"[providers.{prov}]"
+    start = next((i for i, l in enumerate(lines) if l.strip() == header), None)
+    if start is None:
+        lines += ["", header]
+        start = len(lines) - 1
+        end = len(lines)
+    else:
+        end = len(lines)
+        for j in range(start + 1, len(lines)):
+            if re.match(r'^\s*\[', lines[j]):
+                end = j; break
+    insert_at = start + 1
+    for key, value in clean.items():
+        newline = f"{key} = {value}"
+        idx = next((j for j in range(start + 1, end)
+                    if re.match(r'^\s*#?\s*' + re.escape(key) + r'\s*=', lines[j])), None)
+        if idx is not None:
+            lines[idx] = newline
+        else:
+            lines.insert(insert_at, newline)
+            insert_at += 1
+            end += 1
+    _atomic_write(CFG, "\n".join(lines), secret=True)
+
+def _set_root_config_values(values):
+    clean = {}
+    for key, value in values.items():
+        if not re.match(r'^[a-zA-Z0-9_-]+$', key or ""):
+            raise ValueError("非法配置键")
+        value = (value or "").strip()
+        if not value or '"' in value or "\n" in value or "\\" in value:
+            raise ValueError(f"{key} 含非法字符")
+        clean[key] = f'"{value}"'
+    lines = open(CFG, encoding="utf-8").read().split("\n")
+    end = next((i for i, l in enumerate(lines) if re.match(r'^\s*\[', l)), len(lines))
+    insert_at = end
+    for key, value in clean.items():
+        newline = f"{key} = {value}"
+        idx = next((j for j in range(0, end)
+                    if re.match(r'^\s*#?\s*' + re.escape(key) + r'\s*=', lines[j])), None)
+        if idx is not None:
+            lines[idx] = newline
+        else:
+            lines.insert(insert_at, newline)
+            insert_at += 1
+            end += 1
+    _atomic_write(CFG, "\n".join(lines), secret=True)
+
 def set_model(provider, model, api_key):
     provider = (provider or "").strip()
     if not provider:
@@ -986,6 +1096,26 @@ def set_model(provider, model, api_key):
         if warn:
             out["warning"] = warn
         return out
+    if provider == "longcat":
+        model = model if model and model != "auto" else _LONGCAT_DEFAULT_MODEL
+        try:
+            values = {
+                "kind": "openai-compatible",
+                "base_url": _LONGCAT_BASE_URL,
+                "model": model,
+                "context_window": _LONGCAT_CONTEXT_WINDOW,
+            }
+            if api_key:
+                values["api_key"] = api_key
+            elif not _provider_key("longcat"):
+                return {"error": "美团 LongCat API key 未配置,请先在模型面板保存 LongCat key"}
+            _set_provider_table_values("longcat", values)
+            _set_model_pref("longcat", model)
+            _cmp_reset("longcat")
+        except Exception as e:
+            return {"error": "写入美团 LongCat 配置失败: " + str(e)[:150]}
+        return {"ok": True, "provider": "longcat", "model": model,
+                "newchatCapable": True, "restarted": False, "note": "LongCat key 已保存"}
     prev_p = _cfg_get("provider") or "deepseek"          # 记下当前可用配置,失败回退用
     prev_m = _cfg_get("default_text_model") or "deepseek-v4-pro"
     if api_key:
@@ -995,6 +1125,16 @@ def set_model(provider, model, api_key):
                            env={**os.environ, "PATH": _PATH})
         except Exception as e:
             return {"error": "存 key 失败: " + str(e)[:150]}
+    if provider == "volcengine":
+        model = model if model and model != "auto" else _VOLCENGINE_DEFAULT_MODEL
+        try:
+            _set_provider_table_values("volcengine", {
+                "base_url": _VOLCENGINE_BASE_URL,
+                "model": model,
+            })
+            _cmp_reset("volcengine")
+        except Exception as e:
+            return {"error": "写入火山 Ark 配置失败: " + str(e)[:150]}
     _run([CODEWHALE, "config", "set", "provider", provider], timeout=15)
     if model:
         _run([CODEWHALE, "config", "set", "default_text_model", model], timeout=15)
@@ -1019,13 +1159,18 @@ def _cmp_model(prov):
     return "deepseek-v4-pro" if prov == "deepseek" else "auto"   # 顶层 default_text_model 只认 "auto" 或 DeepSeek 模型 id;非 deepseek 一律 auto
 # 非 deepseek 的 default_text_model="auto" 会让 CodeWhale 自动路由、在轮次间乱选模型(GLM 栏一会儿答 GLM 一会儿答 deepseek)。
 # 真正定模型的是 [providers.<prov>].model。这里固定到各 provider 的具体 model(只放已验证的 id,避免乱填崩溃;按需扩展)。
-_CMP_PIN_MODEL = {"zai": "GLM-5.2", "custom": "hy3-preview"}
+_VOLCENGINE_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+_VOLCENGINE_DEFAULT_MODEL = "doubao-seed-2-1-pro-260628"
+_LONGCAT_BASE_URL = "https://api.longcat.chat/openai"
+_LONGCAT_DEFAULT_MODEL = "LongCat-2.0"
+_LONGCAT_CONTEXT_WINDOW = 1048576
+_CMP_PIN_MODEL = {"zai": "GLM-5.2", "custom": "hy3-preview", "volcengine": _VOLCENGINE_DEFAULT_MODEL, "longcat": _LONGCAT_DEFAULT_MODEL}
 # 真正生效的是「建线程时把 model 钉到 thread 级」——default_text_model="auto" 的自动路由会按 prompt 乱选模型、
 # 无视 provider 与 [providers].model;只有 thread.model 是具体 id 才压得住。建会话/对比建线程时注入这个。
 # claude-code 必须钉 thread.model="sonnet" 做**确定性路由**:default_text_model="auto" 会让 CodeWhale 逐轮自动路由、
 # 时不时把 claude 栏答成 deepseek。"sonnet" 是 claude-code 已注册的合法 wire model(钉它不会 400;钉 "opus" 这种未注册名才会被 deepseek 校验拒)。
 # 它只是"路由键",真正传给 `claude -p` 的模型由 _CLAUDE_CODE_MODEL 经 env 覆盖(见下)——所以钉 sonnet 路由、实际跑 opus 不矛盾。
-_CMP_FORCE_MODEL = {"deepseek": "deepseek-v4-pro", "zai": "GLM-5.2", "openai-codex": "gpt-5.5", "claude-code": "sonnet", "moonshot": "kimi-for-coding", "custom": "hy3-preview"}   # kimi-for-coding = Kimi Code 平台唯一/最新编码模型;custom 槽=腾讯混元(TokenHub OpenAI 兼容)
+_CMP_FORCE_MODEL = {"deepseek": "deepseek-v4-pro", "zai": "GLM-5.2", "openai-codex": "gpt-5.5", "claude-code": "sonnet", "moonshot": "kimi-for-coding", "custom": "hy3-preview", "volcengine": _VOLCENGINE_DEFAULT_MODEL, "longcat": _LONGCAT_DEFAULT_MODEL}   # kimi-for-coding = Kimi Code 平台唯一/最新编码模型;custom 槽=腾讯混元(TokenHub OpenAI 兼容);volcengine=普通 Ark API 豆包模型;longcat=美团 LongCat OpenAI 兼容模型
 _CLAUDE_CODE_MODEL = "opus"   # claude 订阅列实际调用的模型(显式钉 Opus 4.8;也可填 opus/sonnet/haiku 别名)。绕开注册表直传官方 CLI
 # claude -p 委派的模型常因训练截止误报旧版本(实测 claude-opus-4-8 自报 "Opus 4.6" 甚至否认 4.8 存在),
 # 注入一句权威身份纠正它。切模型时**同时**改这两行保持一致。
@@ -1262,6 +1407,10 @@ def _cmp_reset(prov):
 def _provider_config_error(prov):
     if prov == "custom" and not _provider_key("custom"):
         return "腾讯混元 API key 未配置:点击左下「🧠 模型」→「腾讯混元」→ 粘贴 TokenHub api_key →「保存并设为新对话模型」"
+    if prov == "volcengine" and not _provider_key("volcengine"):
+        return "火山 Ark API key 未配置:点击左下「🧠 模型」→「火山 Ark」→ 粘贴火山 Ark API key →「切换并应用到当前对话」"
+    if prov == "longcat" and not _provider_key("longcat"):
+        return "美团 LongCat API key 未配置:点击左下「🧠 模型」→「美团 LongCat」→ 粘贴 LongCat API key →「切换并应用到当前对话」"
     return None
 _COMPARE_SKILL_MD = """---
 name: compare-research
@@ -1314,23 +1463,70 @@ def _strip_mcp(s):
         if not skip:
             out.append(ln)
     return "".join(out)
+
+def _toml_literal(value):
+    if isinstance(value, int):
+        return str(value)
+    value = (value or "").strip()
+    if not value or '"' in value or "\n" in value or "\\" in value:
+        raise ValueError("配置值含非法字符")
+    return f'"{value}"'
+
+def _toml_set_table_values(s, table, values):
+    header = f"[{table}]"
+    lines = s.split("\n")
+    start = next((i for i, l in enumerate(lines) if l.strip() == header), None)
+    if start is None:
+        lines += ["", header]
+        start = len(lines) - 1
+        end = len(lines)
+    else:
+        end = len(lines)
+        for j in range(start + 1, len(lines)):
+            if re.match(r'^\s*\[', lines[j]):
+                end = j; break
+    insert_at = start + 1
+    for key, value in values.items():
+        if not re.match(r'^[a-zA-Z0-9_-]+$', key or ""):
+            raise ValueError("非法配置键")
+        newline = f"{key} = {_toml_literal(value)}"
+        idx = next((j for j in range(start + 1, end)
+                    if re.match(r'^\s*#?\s*' + re.escape(key) + r'\s*=', lines[j])), None)
+        if idx is not None:
+            lines[idx] = newline
+        else:
+            lines.insert(insert_at, newline)
+            insert_at += 1
+            end += 1
+    return "\n".join(lines)
+
 def _cmp_write_config(prov):
     os.makedirs(CMP_DIR, exist_ok=True)
     _ensure_compare_skill()                                      # 保证高效取数 skill 存在,供 always_load 加载
     s = open(CFG, encoding="utf-8").read()                       # 从主配置派生,带上所有 provider 的 key + 全部 MCP(对比要跟单窗口完全同能力:工具/MCP/skill 都在)。app-server /health 不阻塞 MCP(实测带 8 MCP 仍 1.6s 起),MCP 后台起;3 后端不再一次性并发(openCompare 预热 + 串行 /health 门控)避开早前并发起 24 个 MCP 的资源尖峰
     if prov == "claude-code":
         s = _strip_mcp(s)                                        # claude-code 把整个 turn 委派给 `claude -p`(claude 自带全套工具),完全不用 CodeWhale 的 MCP → 剥掉,免去 npx/pip 启动开销与资源争抢(当初"启动超时"的根因)
+    runtime_prov = "openai" if prov == "longcat" else prov
     if re.search(r'(?m)^provider\s*=', s):
-        s = re.sub(r'(?m)^provider\s*=.*$', f'provider = "{prov}"', s, count=1)
+        s = re.sub(r'(?m)^provider\s*=.*$', f'provider = "{runtime_prov}"', s, count=1)
     else:
-        s = f'provider = "{prov}"\n' + s
+        s = f'provider = "{runtime_prov}"\n' + s
+    default_model = _model_pref("longcat") if prov == "longcat" else _cmp_model(prov)
     if re.search(r'(?m)^default_text_model\s*=', s):
-        s = re.sub(r'(?m)^default_text_model\s*=.*$', f'default_text_model = "{_cmp_model(prov)}"', s, count=1)
+        s = re.sub(r'(?m)^default_text_model\s*=.*$', f'default_text_model = "{default_model}"', s, count=1)
     else:
-        s = f'default_text_model = "{_cmp_model(prov)}"\n' + s
-    pin = _model_pref(prov) if prov in _CMP_PIN_MODEL else None  # 固定 [providers.<prov>].model → 该栏稳定用用户选择的模型,不再被 auto 路由带跑
+        s = f'default_text_model = "{default_model}"\n' + s
+    if prov == "longcat":
+        lc = _load_config().get("providers", {}).get("longcat", {})
+        s = _toml_set_table_values(s, "providers.openai", {
+            "api_key": lc.get("api_key") or "",
+            "base_url": lc.get("base_url") or _LONGCAT_BASE_URL,
+            "model": _model_pref("longcat") or lc.get("model") or _LONGCAT_DEFAULT_MODEL,
+            "context_window": int(lc.get("context_window") or _LONGCAT_CONTEXT_WINDOW),
+        })
+    pin = None if prov == "longcat" else (_model_pref(prov) if prov in _CMP_PIN_MODEL else None)  # 固定 [providers.<prov>].model → 该栏稳定用用户选择的模型,不再被 auto 路由带跑
     if pin:
-        hdr = f"[providers.{prov}]"
+        hdr = f"[providers.{runtime_prov}]"
         if re.search(r'(?m)^' + re.escape(hdr) + r'\s*$', s):
             # 替换该段紧跟 header 的 model 行;没有就插入(header 后通常是 api_key,不会误吞)
             s = re.sub(r'(?m)^' + re.escape(hdr) + r'[ \t]*\n([ \t]*model[ \t]*=.*\n)?',
@@ -1391,7 +1587,8 @@ def ensure_provider_server(prov):
                 _cmp_launching[prov] = True
                 launched_here = True
                 cfg = _cmp_write_config(prov)
-                env = {**_proxy_env(), **os.environ, "PATH": _PATH, "CODEWHALE_PROVIDER": prov}
+                runtime_prov = "openai" if prov == "longcat" else prov
+                env = {**_proxy_env(), **os.environ, "PATH": _PATH, "CODEWHALE_PROVIDER": runtime_prov}
                 for _v in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"):
                     env.pop(_v, None)                                # claude-code 列会 spawn `claude -p`,带 CLAUDECODE 会被官方 CLI 拒绝嵌套;清掉(对其它 provider 无害)
                 if _CW_PATCHED_TUI:
@@ -1448,7 +1645,15 @@ def _mark_single_thread(tid):
         json.dump(ids, f)
     os.replace(tmp, SINGLE_THREADS_FILE)
 NEWCHAT_FILE = os.path.expanduser("~/.codewhale-gui/newchat.json")
-_NEWCHAT_REQUIRES_KEY = {"custom"}   # custom=腾讯混元 OpenAI 兼容槽,可做单窗口新对话,但必须先有 api_key
+_NEWCHAT_REQUIRES_KEY = {"custom", "volcengine", "longcat"}   # custom=腾讯混元 OpenAI 兼容槽;volcengine=火山 Ark;longcat=美团 LongCat;三者可做单窗口新对话,但必须先有 api_key
+def _missing_key_message(prov):
+    if prov == "custom":
+        return "腾讯混元 API key 未配置,请先在模型面板保存混元 key"
+    if prov == "volcengine":
+        return "火山 Ark API key 未配置,请先在模型面板保存火山 Ark key"
+    if prov == "longcat":
+        return "美团 LongCat API key 未配置,请先在模型面板保存 LongCat key"
+    return f"{prov} API key 未配置,请先在模型面板保存 key"
 def _newchat_provider():
     default = _cfg_get("provider") or "deepseek"
     if default in _NEWCHAT_REQUIRES_KEY and not _provider_key(default):
@@ -1465,19 +1670,25 @@ def _newchat_provider():
     return default
 def _set_newchat_provider(prov):
     if prov in _NEWCHAT_REQUIRES_KEY and not _provider_key(prov):
-        raise ValueError("腾讯混元 API key 未配置,请先在模型面板保存混元 key")
+        raise ValueError(_missing_key_message(prov))
     _atomic_write_json(NEWCHAT_FILE, {"provider": prov})
+class _ProviderBackendDown(RuntimeError):
+    """对话锁定了非默认 provider,但它的专属后端起不来。绝不能回退到 :7878(DeepSeek)——
+    那会把该 provider 的模型名(如 gpt-5.5)发给 DeepSeek 后端,得到误导性的
+    'supported API model names are deepseek-...' 400。每个模型平行独立,无兜底。"""
 def _route_base(path):       # /v1/threads/<tid>/* 路由到该对话锁定的 provider 后端;未锁定或锁定=当前默认→:7878
     m = re.match(r'^/v1/threads/(thr_[a-zA-Z0-9_-]+)', path or "")
     if m:
         prov = _tprov.get(m.group(1))
         if prov and prov != (_cfg_get("provider") or "deepseek"):
-            try: return f"http://127.0.0.1:{ensure_provider_server(prov)}"
-            except Exception: pass
+            try:
+                return f"http://127.0.0.1:{ensure_provider_server(prov)}"
+            except Exception as e:
+                raise _ProviderBackendDown(f"{prov} 后端未就绪: {str(e)[:160]}")
     return UPSTREAM
 def _switch_single_thread_provider(tid, prov, model=None):
     if prov in _NEWCHAT_REQUIRES_KEY and not _provider_key(prov):
-        raise RuntimeError("腾讯混元 API key 未配置,请先在模型面板保存混元 key")
+        raise RuntimeError(_missing_key_message(prov))
     if model:
         _set_model_pref(prov, model)
     default_prov = _cfg_get("provider") or "deepseek"
@@ -1494,6 +1705,8 @@ def _model_to_provider(model):   # 从会话真实 model 反推 provider(thread.
     m = (model or "").lower()
     if not m or m == "auto":
         return None
+    if "longcat" in m: return "longcat"
+    if "doubao" in m or "volcengine" in m: return "volcengine"
     if "deepseek" in m: return "deepseek"
     if "glm" in m:      return "zai"
     if "gpt" in m:      return "openai-codex"
@@ -1787,7 +2000,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if body is None:
             length = int(self.headers.get("Content-Length", 0) or 0)
             body = self.rfile.read(length) if length else None
-        req = urllib.request.Request(_route_base(self.path) + self.path, data=body, method=method)
+        try:
+            base = _route_base(self.path)
+        except _ProviderBackendDown as e:   # 锁定的 provider 后端起不来 → 明确报错,绝不回退 DeepSeek 乱答
+            self.send_response(502)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}, ensure_ascii=False).encode())
+            return 502
+        req = urllib.request.Request(base + self.path, data=body, method=method)
         ct = self.headers.get("Content-Type")
         if ct:
             req.add_header("Content-Type", ct)
@@ -1824,9 +2045,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if p == "/api/reload":
             if not self._authed():
                 return self._deny()
-            self._json({"ok": True, "msg": "reloading"})
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            also_backend = (q.get("backend", [""])[0] == "1")   # backend=1 → 连 :7878 app-server 一起重启
+            self._json({"ok": True, "msg": "reloading", "backend": also_backend})
             def _exit():
                 time.sleep(0.5)
+                if also_backend:
+                    # 先重启后端 app-server(launchd KeepAlive 托管),再自退让 launchd 拉起前端
+                    try: _run(["/bin/launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.codewhale.appserver"], timeout=30)
+                    except Exception: pass
                 os._exit(0)
             threading.Thread(target=_exit, daemon=True).start()
             return
@@ -1938,6 +2165,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p == "/api/research-skills":   # 深度研究「我的方法论」引擎可多选的研究 skill 注册表
+            if not self._authed():
+                return self._deny()
+            try:
+                out = read_research_skills()
+            except Exception:
+                out = []
+            b = json.dumps(out, ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+            return
         if p == "/api/cmp-threads":   # 对比 thread 注册表(侧栏分组用)
             if not self._authed():
                 return self._deny()
@@ -2009,12 +2251,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
-        if p == "/api/deerflow/file":   # 下载 DeerFlow 报告(仅 ~/deerflow-output 下的 .md,basename 防穿越)
+        m_hf = re.match(r'^/api/harness/([a-z0-9_-]+)/file$', p)
+        if p == "/api/deerflow/file" or (m_hf and m_hf.group(1) in _HARNESS):   # 下载研究报告(仅各自输出目录下的 .md,basename 防穿越)
             if not self._authed():
                 return self._deny()
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             name = os.path.basename((q.get("name", [""])[0] or ""))
-            odir = os.path.expanduser("~/deerflow-output")
+            odir = os.path.expanduser("~/deerflow-output") if p == "/api/deerflow/file" else _HARNESS[m_hf.group(1)]["outdir"]
             fp = os.path.join(odir, name)
             if not name.endswith(".md") or not os.path.isfile(fp):
                 return self.send_error(404)
@@ -2093,7 +2336,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not re.match(r'^[a-zA-Z0-9_-]+$', prov):
                 return self._json({"error": "非法 provider"}, 400)
             if prov in _NEWCHAT_REQUIRES_KEY and not _provider_key(prov):
-                return self._json({"error": "腾讯混元 API key 未配置,请先在模型面板保存混元 key"}, 400)
+                return self._json({"error": _missing_key_message(prov)}, 400)
             _set_newchat_provider(prov)
             return self._json({"ok": True, "provider": prov})
         if p == "/api/thread-provider":   # 单窗口:把当前已有对话切到指定 provider/model,下一条消息立即生效(不新建 thread/窗口)
@@ -2176,6 +2419,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if d.get("id") and prov != default_prov:
                     _pin_thread(d["id"], prov)                       # 默认 provider 不 pin(本就走 UPSTREAM,pin 反而触发跨后端不一致)
                     _mark_single_thread(d["id"])
+                # ★ 新 thread 立刻插进聚合缓存 → 所有窗口 4s 轮询即刻可见,不等 ~43s/120s 的 summary 刷新。
+                #   否则首轮没跑完就切走/刷新,新对话会从侧栏消失几分钟(felix 反复撞到);真实 summary 刷新后同 id 自然覆盖。
+                try:
+                    cur = _threads_cache["v"]
+                    tid = d.get("id")
+                    if tid and isinstance(cur, list) and not any(isinstance(x, dict) and x.get("id") == tid for x in cur):
+                        stub = {"id": tid, "title": d.get("title") or "New Thread", "preview": "",
+                                "provider": prov, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime()),
+                                "latest_turn_status": ""}
+                        _threads_cache["v"] = [stub] + cur
+                        try: _atomic_write_json(_THREADS_CACHE_FILE, _threads_cache["v"])
+                        except Exception: pass
+                except Exception:
+                    pass
             except Exception as e:
                 return self._json({"error": str(e)[:200]}, 502)
             return self._json(d)
@@ -2267,6 +2524,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p == "/api/research-skills":   # 保存研究 skill 注册表(传入列表直接替换)
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                raw = self.rfile.read(length) if length else b"[]"
+                data = json.loads(raw or b"[]")
+                items = data.get("skills", []) if isinstance(data, dict) else data
+                out = write_research_skills(items if isinstance(items, list) else [])
+            except Exception as e:
+                out = {"error": str(e)[:200]}
+            b = json.dumps(out, ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+            return
         if p == "/api/cmp-threads":   # 前端登记对比建的 thread id:传入列表直接替换(文件中残留但传入已不存在的视为已删除)
             if not self._authed():
                 return self._deny()
@@ -2333,6 +2608,43 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        m_h = re.match(r'^/api/harness/([a-z0-9_-]+)/(research|poll)$', p)
+        if m_h and m_h.group(1) in _HARNESS:   # 通用研究 harness:research=提交,poll=进度(默认)/full=1 取报告
+            if not self._authed():
+                return self._deny()
+            client = _HARNESS[m_h.group(1)]["client"]
+            try:
+                import subprocess
+                if m_h.group(2) == "research":
+                    length = int(self.headers.get("Content-Length", 0) or 0)
+                    data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                    prompt = (data.get("prompt") or "").strip()
+                    if not prompt or len(prompt) > 8000:
+                        out = {"ok": False, "error": "prompt 不能为空且不超过8000字符"}
+                    else:
+                        # odr 的 submit 可能要先拉起 langgraph dev(~90s),放宽超时
+                        r = subprocess.run(["python3", client, "submit", prompt], capture_output=True, text=True, timeout=150)
+                        try:
+                            out = json.loads((r.stdout or "").strip().splitlines()[-1])
+                        except Exception:
+                            out = {"ok": False, "error": (r.stderr or r.stdout or "提交无输出")[:300]}
+                else:
+                    q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                    tid = (q.get("thread_id", [""])[0] or "").strip()
+                    full = (q.get("full", [""])[0] == "1")
+                    if not tid or not re.match(r'^[a-zA-Z0-9_-]+$', tid):
+                        out = {"error": "thread_id required"}
+                    else:
+                        r = subprocess.run(["python3", client, ("result" if full else "progress"), tid],
+                                           capture_output=True, text=True, timeout=90)
+                        try:
+                            parsed = json.loads((r.stdout or "").strip().splitlines()[-1])
+                            out = parsed if parsed.get("ok") is False else {"ok": True, **parsed}
+                        except Exception:
+                            out = {"ok": False, "error": (r.stderr or r.stdout or "无输出")[:300]}
+            except Exception as e:
+                out = {"ok": False, "error": str(e)[:300]}
+            return self._json(out)
         if p == "/api/deerflow/research":
             if not self._authed():
                 return self._deny()
@@ -2379,8 +2691,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 tid = (q.get("thread_id", [""])[0] or "").strip()
                 full = (q.get("full", [""])[0] == "1")   # full=1 → 取完整报告(跑 result,才有正文+存 .md),否则只 poll 状态
+                prog = (q.get("progress", [""])[0] == "1")   # progress=1 → 一次性进度快照(状态+tokens+最新中间消息,即回不阻塞)
                 if not tid:
                     out = {"error": "thread_id required"}
+                elif prog:
+                    import subprocess
+                    r = subprocess.run(["python3", os.path.expanduser("~/scripts/deerflow_client.py"), "progress", tid],
+                                       capture_output=True, text=True, timeout=30)
+                    try:
+                        out = {"ok": True, **json.loads((r.stdout or "").strip().splitlines()[-1])}
+                    except Exception:
+                        out = {"ok": False, "error": (r.stderr or r.stdout or "progress 无输出")[:300]}
                 else:
                     import subprocess
                     cmd = ["python3", os.path.expanduser("~/scripts/deerflow_client.py")]
@@ -2466,16 +2787,34 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if p.startswith("/v1/"):
             body = None
             arch_tid = None
+            new_title = None
             m = re.match(r'^/v1/threads/(thr_[a-zA-Z0-9_-]+)$', p)
             if m:
                 length = int(self.headers.get("Content-Length", 0) or 0)
                 body = self.rfile.read(length) if length else b"{}"
                 try:
-                    if json.loads(body).get("archived") is True:
+                    bd = json.loads(body)
+                    av = bd.get("archived")
+                    if av is True:
                         arch_tid = m.group(1)
+                    elif av is False:
+                        _ARCHIVED_TOMBSTONES.discard(m.group(1))   # 取消归档 → 撤墓碑,恢复的对话不能再被过滤
+                    if isinstance(bd.get("title"), str) and bd.get("title"):
+                        new_title = bd["title"]
                 except Exception:
                     pass
             st = self._proxy("PATCH", body=body)
+            # 改标题成功 → 同步聚合缓存里的条目(首条消息锁名/手动重命名立刻反映到所有窗口侧栏,不等 summary 刷新)
+            if m and new_title and isinstance(st, int) and st < 400:
+                cur = _threads_cache["v"]
+                if isinstance(cur, list):
+                    hit = False
+                    for x in cur:
+                        if isinstance(x, dict) and x.get("id") == m.group(1):
+                            x["title"] = new_title; hit = True
+                    if hit:
+                        try: _atomic_write_json(_THREADS_CACHE_FILE, cur)
+                        except Exception: pass
             # 归档:必须先转发、确认上游成功,再登记墓碑 + 从缓存外科摘除。不清空缓存(清了下个请求会同步抓 ~43s 的 summary)。
             # 旧实现"先清缓存、起后台刷新、后转发"有竞态:刷新赶在归档生效前把旧列表写回 → 对话在侧栏复活(点了删不掉的根因)。
             if arch_tid and isinstance(st, int) and st < 400:

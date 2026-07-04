@@ -1,5 +1,22 @@
 # 更新日志
 
+## v2.6.0 — 深度研究引擎选择器(5 引擎)+ 一批稳定性根治
+
+### 新增
+- **深度研究面板全面改版**:引擎选择器(DeerFlow / GPT Researcher / Open Deep Research / STORM / 我的方法论),研究框架可多选(个股深研/行业格局/多空对决/事件影响,提交时合并展开),精修默认全开可点关,输入框只写研究对象。
+- **研究方法 skill 注册表**(`research_skills.json`):「我的方法论」引擎可多选研究 skill,新增 skill 加一条 json 即可出现在面板。
+- **外部研究 harness 通用接入**(`/api/harness/<name>/research|poll|file` + `_HARNESS` 注册表):新 harness 只需同契约桥接脚本 + 注册表一条。注:GPT Researcher/ODR/STORM 的桥接与运行环境在本机 `~/scripts` 与 `~/agent-harnesses`,不随本包分发,他机需自行安装。
+- **「⟳ 重启」按钮升级**:前端 + 后端(:7878)一起重启(`/api/reload?backend=1`)。
+- **「＋」插件菜单**:由 `plugins.json` 驱动的可扩展插件位;移除重复的「快速 DeerFlow」入口。
+- **对比会话行支持重命名 + 置顶**;删除对话/对比会话时同步清空打开着的对比列。
+
+### 修复
+- **删除对话不再复活**(归档墓碑 + 先转发后摘缓存;取消归档撤墓碑)。
+- **新建对话即时可见**:POST 建线程即插聚合缓存,首轮未完就切走/刷新不再丢;乐观列表持久化 localStorage;改标题即时同步侧栏。
+- **单聊新对话不再被误归对比组**(服务端 compare 标记权威,CMP_ONLY_PROV 仅兜底无标记数据)。
+- **provider 无兜底路由**:锁定 provider 的后端未就绪时返回明确 502,不再回退 DeepSeek 产生"gpt-5.5 passed to deepseek"误导错误。
+- **DeerFlow 报告提取修复**:优先取沙箱真报告,不再把记忆检查点内务消息拼成报告;全研究引擎强制中文输出;DeerFlow 过程推理进展实时可见(progress 快照)。
+
 ## v2.5.36 — 删除修复 + 重启按钮 + 引导并入发送 + 会话管理增强
 
 ### 修复

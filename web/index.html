@@ -323,9 +323,24 @@
   .plugini .lb{flex:1}
   .plugini .short{font-size:10px;color:var(--faint);margin-left:auto}
   .plugini.df{color:var(--accent)}
-  .plugini .plx{display:none;font-size:11px;font-weight:400;color:var(--faint);padding:0 2px;cursor:pointer}
-  .plugini:hover .plx{display:inline}
-  .plugini .plx:hover{color:#c0392b}
+  #dftpls{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px}
+  .dftpl{border:1px solid var(--line);background:var(--panel);color:var(--txt);border-radius:14px;padding:4px 11px;font-size:12px;cursor:pointer;user-select:none}
+  .dftpl:hover{border-color:var(--accent)}
+  .dftpl.on{border-color:var(--accent);color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+  #dfEngines{display:flex;gap:8px;margin:0 0 12px}
+  .dfeng{flex:1;border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:9px 12px;cursor:pointer;text-align:left}
+  .dfeng:hover{border-color:var(--accent)}
+  .dfeng.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+  .dfeng .en{font-size:13px;font-weight:600;color:var(--txt)}
+  .dfeng.on .en{color:var(--accent)}
+  .dfeng .ed{font-size:11px;color:var(--faint);margin-top:2px;line-height:1.35}
+  .dfsecl{font-size:11px;color:var(--faint);margin:0 0 5px}
+  #dfRefine{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 10px}
+  .dfref{border:1px solid var(--line);background:var(--panel);color:var(--txt);border-radius:14px;padding:4px 11px;font-size:12px;cursor:pointer;user-select:none}
+  .dfref:hover{border-color:var(--accent)}
+  .dfref.on{border-color:var(--accent);color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+  .df-progtt{font-size:11px;color:var(--faint);margin-bottom:4px}
+  .df-prog{max-height:240px;overflow:auto;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:0}
   /* DeerFlow result block */
   .df-result{margin:8px 0;border:1px solid var(--accent);border-radius:10px;overflow:hidden;background:var(--panel)}
   .df-hdr{background:var(--accent);color:#fff;padding:8px 13px;font-size:12px;font-weight:600;display:flex;align-items:center;gap:8px}
@@ -404,7 +419,7 @@ if(location.search.indexOf("compare=1")>=0)document.documentElement.className+="
         <button id="modelchip" title="当前模型 — 点击切换">🧠 <span id="modelname">…</span></button>
         <span id="balance" title="当前 provider 账户余额">余额 …</span>
       </div>
-      <div id="connrow"><span id="conn"><span class="cd"></span><span id="connt">连接中…</span></span><button id="guirestart" title="重启 GUI 服务(launchd 自动拉起,约 5 秒;正在跑的模型在各自后端继续,不受影响)">⟳ 重启</button></div>
+      <div id="connrow"><span id="conn"><span class="cd"></span><span id="connt">连接中…</span></span><button id="guirestart" title="重启前端 + 后端服务(launchd 自动拉起,约 5-10 秒;会中断正在跑的对话,回来后自动刷新页面)">⟳ 重启</button></div>
     </div>
   </div>
   <div id="sideresize" title="拖拽调整侧栏宽度"></div>
@@ -436,14 +451,10 @@ if(location.search.indexOf("compare=1")>=0)document.documentElement.className+="
       <div id="cwrap">
         <button id="pluginbtn" title="插件/工具">+</button>
         <div id="plugindrop">
-          <div class="plugini df" onclick="openDeerFlow()" title="自动多轮搜索+全文爬取+结构化报告(也可直接在输入框打 /df 问题 发送)">
-            <span class="emo">🔬</span><span class="lb">DeerFlow 深度研究</span><span class="short">Kimi</span>
+          <div class="plugini df" onclick="openDeerFlow()" title="自动多轮搜索+全文爬取+结构化报告(也可直接在输入框打 /df 问题 发送);模型用 DeerFlow config.yaml 的 default_model">
+            <span class="emo">🔬</span><span class="lb">DeerFlow 深度研究</span>
           </div>
-          <div id="plugincustom"><!-- 自定义插件,renderPlugins() 从服务端 plugins.json 填充 --></div>
-          <div style="border-top:1px solid var(--line);margin:4px 0"></div>
-          <div class="plugini" onclick="addPlugin()">
-            <span class="emo">＋</span><span class="lb">添加插件</span><span class="short">指令/提示词模板</span>
-          </div>
+          <div id="plugincustom"><!-- 插件由 ~/.codewhale-gui/plugins.json 定义(用 Claude Code 安装/编辑),renderPlugins() 填充 --></div>
         </div>
         <button id="attachbtn" title="上传文件(文本/代码,agent 会读取;图片会显示预览)"></button>
         <input type="file" id="fileinput" multiple style="display:none">
@@ -457,12 +468,21 @@ if(location.search.indexOf("compare=1")>=0)document.documentElement.className+="
   <!-- DeerFlow deep research modal -->
   <div id="dfmodal">
     <div class="dfpanel">
-      <h3>🔬 DeerFlow 深度研究</h3>
-      <p style="font-size:12px;color:var(--dim);margin:0 0 8px">自动多轮搜索 + 全文爬取 + 结构化报告。可能需要 2-5 分钟。</p>
-      <textarea id="dfprompt" rows="4" wrap="soft" placeholder="输入研究问题，例如：深度分析 NVIDIA 在 AI 芯片市场面临的主要竞争风险"></textarea>
+      <h3 id="dfTitle">🔬 深度研究</h3>
+      <div id="dfEngines"><!-- 引擎选择器:DeerFlow web报告 / 我的方法论,由 renderDfEngines() 填充 --></div>
+      <p id="dfHint" style="font-size:12px;color:var(--dim);margin:0 0 8px"></p>
+      <div id="dfSkillWrap" hidden>
+        <div class="dfsecl">研究方法(可多选,来自 <code>research_skills.json</code>,用 Claude Code 增删)</div>
+        <div id="dfSkillPick"><!-- 研究 skill 多选片,由 renderDfSkills() 填充 --></div>
+      </div>
+      <div class="dfsecl">① 研究框架(可多选,提交时合并展开)</div>
+      <div id="dftpls"><!-- 框架维度多选片,由 DF_TEMPLATES 渲染 --></div>
+      <div class="dfsecl">② 精修(默认全开,点击可关)</div>
+      <div id="dfRefine"><!-- 精修多选片,由 DF_REFINE 渲染 --></div>
+      <textarea id="dfprompt" rows="5" wrap="soft" placeholder="输入研究对象/问题,例:「赣锋锂业:锂价周期位置、成本曲线排位、2026 产能释放节奏」——框架和精修会自动附上,这里只写对象和你特别关心的点"></textarea>
       <div class="dfbtns">
         <button onclick="closeDeerFlow()">取消</button>
-        <button class="primary" onclick="submitDeerFlow()">开始深度研究</button>
+        <button class="primary" id="dfSubmitBtn" onclick="submitResearch()">开始深度研究</button>
       </div>
     </div>
   </div>
@@ -512,7 +532,11 @@ const state = { threads:[], activeId:null, es:null, items:new Map(), seen:new Se
   cmpThreads:new Set(JSON.parse(localStorage.getItem("cw_cmp")||"[]")),                 // 多模型对比建的 thread → 侧栏单独归一组
   cmpSessions:JSON.parse(localStorage.getItem("cw_cmp_sessions")||"[]"),                // 对比会话:[{id,topic,ts,threads:{prov:tid}}] → 侧栏每会话一行,点击回到当时对比
   grpCollapsed:new Set(JSON.parse(localStorage.getItem("cw_grpcollapsed")||"[]")),      // 折叠的分组(置顶/对比/对话)
+  // 乐观新建、还没进服务端慢缓存(summary 刷新最长 2-3 分钟)的新对话:持久化到 localStorage——
+  // 否则这窗口刷新页面就丢(felix 撞过两次"新对话找不到"),留 48h 兜底,真出现在列表后由 loadThreads 清掉
+  pendingNew:(JSON.parse(localStorage.getItem("cw_pendingnew")||"[]")).filter(p=>p&&p.id&&(Date.now()-new Date(p.updated_at||0).getTime())<48*3600*1000),
   autoApprove:false, allowShell:false, queue:[], attachments:[], stopTurnId:null, stopRequestedAt:0, runUI:null };  // 按会话,不再全局持久
+function savePendingNew(){ try{ localStorage.setItem("cw_pendingnew",JSON.stringify((state.pendingNew||[]).slice(0,20))); }catch(e){} }
 const preview={url:localStorage.getItem("cw_preview_url")||"", scanT:null, lastKey:"", autoOpen:localStorage.getItem("cw_pv_auto_open")!=="0", autoRefresh:localStorage.getItem("cw_pv_auto_refresh")!=="0", size:localStorage.getItem("cw_pv_size")||"desktop", sandboxMode:localStorage.getItem("cw_pv_sandbox")||"auto", confirmedExternal:new Set()};
 
 function errorBodyText(body){
@@ -785,7 +809,8 @@ async function loadThreads(){
     setConn(true);
     if(state.pendingNew && state.pendingNew.length){   // 乐观新建、尚未进慢 SWR 缓存的新对话:保留在列表里,直到它真出现(否则后台刷新会把它冲掉 → 新对话闪一下就没了)
       const ids=new Set(t.map(x=>x.id));
-      state.pendingNew=state.pendingNew.filter(p=>!ids.has(p.id));   // 已出现在真实列表 → 不再 pending
+      const kept=state.pendingNew.filter(p=>!ids.has(p.id));   // 已出现在真实列表 → 不再 pending
+      if(kept.length!==state.pendingNew.length){ state.pendingNew=kept; savePendingNew(); } else state.pendingNew=kept;
       state.threads=[...state.pendingNew, ...t];
     } else state.threads=t;
     const at=state.threads.find(x=>x.id===state.activeId);   // 兜底:SSE 漏收 turn.completed 时,靠轮询发现活动会话已结束 → 收尾 + 发队列
@@ -855,6 +880,7 @@ async function deleteCmpSession(id,topic){
   saveCmp(); if(pinChanged) savePins();
   state.cmpSessions=state.cmpSessions.filter(x=>x.id!==id);   // 删会话本身
   saveCmpSessions(); state._sig=null; renderThreads();
+  if(typeof CMP!=="undefined" && CMP.sessionId===id) cmpClearAllCols();   // 删的正是打开着的这场对比 → 各列一并清空,不留旧内容
 }
 function renderThreads(){
   if(document.querySelector(".cwdlg-ov")) return;   // 确认对话框打开时跳过重建,避免轮询吞掉用户点击
@@ -863,8 +889,10 @@ function renderThreads(){
   const sessionTids=new Set();                            // 已被某对比会话收编的 thread → 不再单独显示(由会话行代表)
   for(const s of state.cmpSessions) for(const tid of Object.values(s.threads||{})) sessionTids.add(tid);
   // 对比归组判定:① 服务端权威标记 t.compare(取后端 cmp_threads 注册表,每次刷新,不依赖前端本地是否同步——根治"对比对话散落进单聊");
-  // ② 前端本地登记(即时,新建对比当下就归组);③ gpt/glm/kimi 这些 provider 单窗口从不用 → 兜底
-  const isCmp=t=>t.compare||state.cmpThreads.has(t.id)||CMP_ONLY_PROV.has(t.provider);
+  // ② 前端本地登记(即时,新建对比当下就归组);③ CMP_ONLY_PROV 兜底只在服务端没给 compare 字段时用——
+  //   newchat 现在可以是 ChatGPT/GLM/Kimi,单聊建的这些 provider 对话服务端标 compare:false,兜底不得覆盖,
+  //   否则直接在输入框开聊的新对话被误塞进对比组(felix 撞到的"切走就再也找不到")。
+  const isCmp=t=>t.compare===true||state.cmpThreads.has(t.id)||(t.compare===undefined&&CMP_ONLY_PROV.has(t.provider));
   const pinG=[], cmpLeftover=[], normG=[];               // 置顶 / 对比散条(无会话的历史) / 普通对话
   for(const t of state.threads){
     if(state.pinned.has(t.id)){ pinG.push(t); continue; }  // 置顶优先
@@ -963,6 +991,10 @@ async function deleteThread(id,title){
     state.threads=state.threads.filter(t=>t.id!==id);
     if(state.pinned.delete(id)) savePins();
     if(state.activeId===id){ closeStream(); runStatusReset(false); state.activeId=null; $("#mwrap").innerHTML='<div class="empty">已删除。左侧选择或新建对话</div>'; $("#ttitle").textContent="CodeWhale"; $("#tmeta").innerHTML=""; setRunning(false); state.autoApprove=false; state.allowShell=false; renderAuto(); renderShell(); }
+    if(typeof CMP!=="undefined") Object.keys(CMP.threads||{}).forEach(p=>{   // 删的对话正是对比视图的某一列 → 清那列,不留旧内容
+      if(CMP.threads[p]===id){ delete CMP.threads[p]; CMP.seq[p]=0; delete CMP.turn[p]; delete CMP.running[p];
+        const b=$("#cmpb-"+CSS.escape(p)); if(b) b.innerHTML=""; const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent="对话已删除"; cmpSyncSendUI(); }
+    });
     renderThreads();
   }catch(e){ alert("删除失败: "+e.message); }
 }
@@ -1492,88 +1524,230 @@ function setRunning(r){
 }
 function refreshActiveMeta(){ loadThreads(); }
 
-/* ---------- DeerFlow plugin ---------- */
-function openDeerFlow(){ 
-  _dfModel=getDeerFlowModel(); // 自动跟随当前对话模型
-  $("#plugindrop").classList.remove("show"); $("#dfmodal").classList.add("show"); setTimeout(()=>$("#dfprompt").focus(),100); 
+/* ---------- 深度研究入口:引擎选择器 + 轻量引导 ---------- */
+// 两套引擎并列,不是兜底关系:
+//  · deerflow = 外部 DeerFlow harness,吃纯文本 prompt,多轮联网搜索+爬全文→带来源报告(它跑不了你的 skill)
+//  · skill    = 你的方法论,在 CodeWhale 当前对话里跑 felix-framework(板块优先 Stage1→2→3+反方+Obsidian),带 specialist/persona
+// 模板 + 精修多选负责把"对象+问题+结构"填实(两套引擎共用);引擎只决定组装好的 prompt 发去哪。
+let _dfEngine="deerflow";
+const DF_ENGINES=[
+ {k:"deerflow",emo:"🔬",name:"DeerFlow",ed:"多轮联网搜索+爬全文→带来源报告,可挂研究skill",
+  title:"🔬 DeerFlow 深度研究",btn:"开始深度研究",api:"/api/deerflow",skills:true,
+  hint:"自动多轮搜索 + 全文爬取 + 结构化报告。<b>好问题 = 研究对象 + 要回答的问题 + 期望产出结构</b>——问得越具体,越不像泛泛的百科。"},
+ {k:"gptr",emo:"📑",name:"GPT Researcher",ed:"规划→并行搜索→带引用报告(deepseek+Tavily)",
+  title:"📑 GPT Researcher 深度研究",btn:"开始研究",api:"/api/harness/gptr",skills:false,
+  hint:"<b>GPT Researcher</b>:规划者拆问题 → 并行搜索多来源 → 严格引用的结构化报告。LLM=DeepSeek,搜索=Tavily,引用最规整。"},
+ {k:"odr",emo:"🕸️",name:"Open Deep Research",ed:"LangGraph 监督者+子研究员,分解式深挖(deepseek)",
+  title:"🕸️ Open Deep Research",btn:"开始深研",api:"/api/harness/odr",skills:false,
+  hint:"<b>LangChain Open Deep Research</b>:监督者把课题分解给多个子研究员并行深挖再综合。多 agent 分解式,擅长宽课题。首次启动多等 ~1 分钟。"},
+ {k:"storm",emo:"🌪️",name:"STORM",ed:"斯坦福:多视角提问→大纲→维基级长文(deepseek)",
+  title:"🌪️ STORM 长文综述",btn:"生成长文",api:"/api/harness/storm",skills:false,
+  hint:"<b>STORM(斯坦福)</b>:模拟多个视角的专家互相提问 → 生成大纲 → 维基百科级长文带全引用。适合行业综述/背景研究,产出风格和其他家完全不同。较慢(5-10 分钟)。"},
+ {k:"skill",emo:"🧭",name:"我的方法论",ed:"所选研究 skill,在当前对话模型里跑",
+  title:"🧭 方法论研究",btn:"用方法论研究",skills:true,
+  hint:"用你自己的<b>研究方法 skill</b>(板块优先/大师panel/瓶颈图谱…)在当前对话模型里跑,含反方观点、具体数字、Obsidian 归档,可继续追问 specialist/persona。"}];
+const DF_REFINE=[
+ {k:"bull_bear",lb:"⚔️ 多空对决",line:"多空各 3 条最强论据,每条带数据;最后给净结论与置信度(0-10)。"},
+ {k:"numbers",lb:"🔢 数字+来源",line:"每个论点带具体数字,标注数据时间点与来源。"},
+ {k:"catalyst",lb:"📅 催化剂时间表",line:"列未来 6-12 个月关键催化剂与风险的时间表(尽量给具体日期/节点)。"},
+ {k:"compete",lb:"🏭 竞争格局",line:"和主要对手逐项对比,给市占率与相对优劣。"},
+ {k:"contrarian",lb:"🔄 反共识",line:"明确指出市场共识、当前价格已计入什么,以及市场最可能错在哪里。"},
+ {k:"risk",lb:"⚠️ 风险清单",line:"单列风险清单,标注每条的触发条件与可观察的证伪信号。"}];
+let _dfRefine=new Set(DF_REFINE.map(r=>r.k));   // 精修默认**全开**(felix:默认多点没事,不用去选;点击可关)
+// 研究 skill 多选:来自服务端 research_skills.json(用 Claude Code 增删,面板自动出现)。
+// 两个引擎都可用——这 4 个 skill 也已装进 DeerFlow 的 skills/custom/,DeerFlow 引擎会在 prompt 里指名加载。
+let RESEARCH_SKILLS=[], _dfSkills=new Set();
+async function loadResearchSkills(){ try{ const r=await api("/api/research-skills"); if(Array.isArray(r)){ RESEARCH_SKILLS=r; if(!_dfSkills.size && r[0]) _dfSkills.add(r[0].skill); renderDfSkills(); } }catch(e){} }
+function renderDfSkills(){
+  const box=$("#dfSkillPick"); if(!box) return; box.innerHTML="";
+  RESEARCH_SKILLS.forEach(s=>{
+    const b=document.createElement("button"); b.className="dfref"+(_dfSkills.has(s.skill)?" on":""); b.title=s.desc||s.skill;
+    b.innerHTML=`${esc(s.emoji||"🧭")} ${esc(s.label||s.skill)}`;
+    b.onclick=()=>{ _dfSkills.has(s.skill)?_dfSkills.delete(s.skill):_dfSkills.add(s.skill); b.classList.toggle("on",_dfSkills.has(s.skill)); };
+    box.appendChild(b);
+  });
+}
+function openDeerFlow(){
+  renderDfEngines(); renderDfTemplates(); renderDfRefine(); renderDfSkills(); applyDfEngine();
+  $("#plugindrop").classList.remove("show"); $("#dfmodal").classList.add("show"); setTimeout(()=>$("#dfprompt").focus(),100);
+}
+function renderDfEngines(){
+  const box=$("#dfEngines"); if(!box||box.childElementCount) return;
+  DF_ENGINES.forEach(e=>{
+    const d=document.createElement("div"); d.className="dfeng"+(e.k===_dfEngine?" on":""); d.dataset.k=e.k;
+    d.innerHTML=`<div class="en">${e.emo} ${esc(e.name)}</div><div class="ed">${esc(e.ed)}</div>`;
+    d.onclick=()=>{ _dfEngine=e.k; box.querySelectorAll(".dfeng").forEach(x=>x.classList.toggle("on",x.dataset.k===e.k)); applyDfEngine(); };
+    box.appendChild(d);
+  });
+}
+function applyDfEngine(){   // 引擎切换 → 同步标题/说明/按钮文案 + 研究方法多选区只在「我的方法论」显示
+  const e=DF_ENGINES.find(x=>x.k===_dfEngine)||DF_ENGINES[0];
+  const T=$("#dfTitle"); if(T) T.textContent=e.title;
+  const H=$("#dfHint"); if(H) H.innerHTML=e.hint;
+  const B=$("#dfSubmitBtn"); if(B) B.textContent=e.btn;
+  const W=$("#dfSkillWrap"); if(W) W.hidden=!e.skills;   // 研究方法仅 deerflow(已装同套 skill)和"我的方法论"可挂;gptr/odr 是独立 harness 没有这些 skill
+}
+function renderDfRefine(){
+  const box=$("#dfRefine"); if(!box||box.childElementCount) return;
+  DF_REFINE.forEach(r=>{
+    const b=document.createElement("button"); b.className="dfref"+(_dfRefine.has(r.k)?" on":""); b.textContent=r.lb;
+    b.onclick=()=>{ _dfRefine.has(r.k)?_dfRefine.delete(r.k):_dfRefine.add(r.k); b.classList.toggle("on",_dfRefine.has(r.k)); };
+    box.appendChild(b);
+  });
+}
+// 研究框架维度:**可多选**(felix:一次研究常同时要个股深研+事件影响,维度宽,值得并做)。
+// 不再往输入框填模板——输入框只写"研究对象/问题",选中的框架在提交时合并成"按以下框架维度展开"。
+const DF_TEMPLATES=[
+ {k:"stock",t:"📊 个股深研",tpl:`1) 生意本质与收入结构(最新季度具体数字);
+2) 行业地位与竞争格局(市占率,和主要对手逐项对比);
+3) 增长驱动与瓶颈(未来 2-3 年,尽量量化);
+4) 财务质量(毛利率/自由现金流/负债 三年趋势);
+5) 估值与市场预期(当前倍数 vs 历史区间 vs 同行,当前价格已计入什么预期);
+6) 未来 6-12 个月关键催化剂与风险时间表。`},
+ {k:"sector",t:"🏭 行业格局",tpl:`1) 上中下游环节拆解,各环节价值量占比;
+2) 每个环节的瓶颈与定价权(谁最稀缺、谁在挤压谁);
+3) 竞争格局:各环节 Top3 玩家 + 市占率数字;
+4) 当前周期位置(供需缺口/库存/资本开支趋势,用数据判断);
+5) 未来 2-3 年最大变量与颠覆风险;
+6) 受益顺序:哪些环节和公司最先受益,给出传导逻辑。`},
+ {k:"bullbear",t:"⚔️ 多空对决",tpl:`- 多方 3 条最强论据,每条带最新数据/证据;
+- 空方 3 条最强论据,每条带最新数据/证据;
+- 当前市场共识是什么,价格大概已计入多少;
+- 胜负手:未来 6 个月哪个可观察信号能证伪其中一方;
+- 两边论据强度对等不偏袒,最后给净结论与置信度(0-10)。`},
+ {k:"event",t:"📅 事件影响",tpl:`1) 事件事实梳理(时间线 + 关键数字);
+2) 直接受益/受损标的清单与传导逻辑;
+3) 市场已有的定价反应 vs 合理影响幅度(过度还是不足);
+4) 二阶效应:被忽视的间接影响;
+5) 后续跟踪节点与验证信号(具体日期/数据口径)。`}];
+let _dfTpls=new Set(["stock"]);   // 默认选个股深研
+function renderDfTemplates(){
+  const box=$("#dftpls"); if(!box||box.childElementCount) return;   // 只渲染一次
+  DF_TEMPLATES.forEach(x=>{
+    const b=document.createElement("button"); b.className="dftpl"+(_dfTpls.has(x.k)?" on":""); b.textContent=x.t;
+    b.onclick=()=>{ _dfTpls.has(x.k)?_dfTpls.delete(x.k):_dfTpls.add(x.k); b.classList.toggle("on",_dfTpls.has(x.k)); };
+    box.appendChild(b);
+  });
 }
 function closeDeerFlow(){ $("#dfmodal").classList.remove("show"); }
 // (原「⚡ 快速 DeerFlow」菜单项已删——和「深度研究」是同一后端,只是往输入框填 /df 前缀;/df 手打仍然可用)
-/* ---------- 自定义插件:+ 菜单可扩展 ---------- */
-let PLUGINS=[];   // [{emoji,label,short,insert}] 存服务端 ~/.codewhale-gui/plugins.json,所有窗口/设备共享
+/* ---------- 插件位:+ 菜单从 ~/.codewhale-gui/plugins.json 渲染 ----------
+   安装/删除插件不走界面,用 Claude Code 编辑该 JSON(条目 {emoji,label,short,insert}),
+   或 POST /api/plugins。insert=点击后填进输入框的内容(斜杠指令/提示词模板)。 */
+let PLUGINS=[];
 async function loadPlugins(){ try{ const r=await api("/api/plugins"); if(Array.isArray(r)){ PLUGINS=r; renderPlugins(); } }catch(e){} }
-function savePlugins(){ api("/api/plugins",{method:"POST",body:JSON.stringify({plugins:PLUGINS})}).catch(()=>{}); }
 function renderPlugins(){
   const box=$("#plugincustom"); if(!box) return; box.innerHTML="";
-  PLUGINS.forEach((pl,i)=>{
+  PLUGINS.forEach(pl=>{
     const d=document.createElement("div"); d.className="plugini custom";
-    d.innerHTML=`<span class="emo">${esc(pl.emoji||"🧩")}</span><span class="lb">${esc(pl.label||"插件")}</span><span class="short">${esc(pl.short||"")}</span><b class="plx" title="删除此插件">✕</b>`;
-    d.onclick=()=>{   // 点插件 = 把配置的内容填进输入框(斜杠指令/提示词模板都行),用户补完问题再发
+    d.innerHTML=`<span class="emo">${esc(pl.emoji||"🧩")}</span><span class="lb">${esc(pl.label||"插件")}</span><span class="short">${esc(pl.short||"")}</span>`;
+    d.onclick=()=>{   // 点插件 = 把配置的内容填进输入框,用户补完问题再发
       $("#plugindrop").classList.remove("show");
       const inp=$("#input"); inp.value=pl.insert||""; inp.dispatchEvent(new Event("input")); inp.focus();
       try{ inp.setSelectionRange(inp.value.length,inp.value.length); }catch(e){}
     };
-    d.querySelector(".plx").onclick=async(e)=>{ e.stopPropagation();
-      if(!(await cwConfirm(`删除插件「${pl.label||"插件"}」?`))) return;
-      PLUGINS.splice(i,1); savePlugins(); renderPlugins(); };
     box.appendChild(d);
   });
 }
-async function addPlugin(){
-  $("#plugindrop").classList.remove("show");
-  const label=(prompt("插件名称(显示在 + 菜单里):")||"").trim(); if(!label) return;
-  const emoji=(prompt("图标 emoji(默认 🧩):","🧩")||"🧩").trim()||"🧩";
-  const insert=prompt("点击后插入输入框的内容(如 /df 、一段提示词模板):",""); if(insert===null) return;
-  PLUGINS.push({emoji,label:label.slice(0,20),short:"自定义",insert});
-  savePlugins(); renderPlugins(); cwToast("✅ 已添加「"+label+"」,在 + 菜单里");
+// DeerFlow 模型不在 GUI 指定(felix 2026-07-04):不传 model,由 DeerFlow config.yaml 的 default_model 决定。
+// (之前"跟随窗口模型"的映射在 ChatGPT/Claude 这类 OAuth provider 下只能回退 kimi,窗口显 ChatGPT 菜单显 Kimi 徒增困惑;要换默认改 config.yaml)
+function _dfAssembled(){   // 研究对象 + 勾选的框架维度(可多选合并) + 精修项 → 最终 prompt(两套引擎共用)
+  const topic=($("#dfprompt").value||"").trim();
+  if(!topic) return "";
+  let p="深度研究:"+topic;
+  const tpls=DF_TEMPLATES.filter(x=>_dfTpls.has(x.k));
+  if(tpls.length) p+="\n\n按以下框架维度展开:\n"+tpls.map(x=>"【"+x.t.replace(/^\S+\s*/,"")+"】\n"+x.tpl).join("\n");
+  const lines=DF_REFINE.filter(r=>_dfRefine.has(r.k)).map(r=>"- "+r.line);
+  if(lines.length) p+="\n\n补充要求:\n"+lines.join("\n");
+  p+="\n\n(全文用中文撰写)";   // felix 治理要求:所有研究引擎中文输出,不可关
+  return p;
 }
-let _dfModel=""; // DeerFlow 选择的模型
-// CodeWhale provider → DeerFlow 模型映射（从当前对话自动检测）
-const DF_MODEL_PROV={deepseek:"deepseek",zai:"glm",moonshot:"kimi","openai-codex":"openai",custom:"hunyuan","claude-code":"claude"};
-const DF_MODEL_NAME={deepseek:"DeepSeek",glm:"GLM",kimi:"Kimi",openai:"ChatGPT",hunyuan:"混元",claude:"Claude"};
-const DF_AVAILABLE=new Set(["kimi","deepseek","glm","hunyuan"]); // DeerFlow config.yaml 已配置的模型(跟随窗口当前 provider);ChatGPT/Claude 是 OAuth 订阅、DeerFlow 用不了 key → 回退 kimi
-function getDeerFlowModel(){   // DeerFlow 直接用聊天窗口当前模型:会话有 provider 用它,否则用窗口默认(新对话)provider
+function _dfSkillLine(){   // 选中的研究方法 skill → 指名加载的一句话(两引擎共用;DeerFlow 侧这些 skill 已装进 skills/custom)
+  const picked=[..._dfSkills];
+  if(!picked.length) return "";
+  const names=picked.map(k=>{ const m=RESEARCH_SKILLS.find(x=>x.skill===k); return m?`${m.skill}(${m.label})`:k; }).join("、");
+  return `请优先加载并遵循以下研究方法 skill,按其定义的流程执行:${names}。`;
+}
+async function submitResearch(){   // 引擎分流:skill → CodeWhale 当前对话;其余 → 各自 harness API(同一套 research/poll 契约)
+  const prompt=_dfAssembled();
+  if(!prompt){ cwToast("先输入研究对象/问题"); return; }
+  if(_dfEngine==="skill") return submitSkillResearch(prompt);
+  const eng=DF_ENGINES.find(x=>x.k===_dfEngine)||DF_ENGINES[0];
+  const sk=eng.skills?_dfSkillLine():"";   // 只有装了这些 skill 的引擎才指名(deerflow)
+  return submitDeerFlow(sk?sk+"\n\n"+prompt:prompt, eng);
+}
+// 我的方法论路径:新建一个 CodeWhale 对话,首条消息指示模型运用所选研究 skill(用当前对话模型)。
+async function submitSkillResearch(prompt){
+  if(!_dfSkills.size){ cwToast("先选至少一个研究方法"); return; }
+  closeDeerFlow();
+  const msg=`${_dfSkillLine()}要求:中文输出、结论先行、每个论点带具体数字并标注数据时间点、必须包含反方观点(counter-view);若所选 skill 定义了阶段流程或归档(如板块优先 Stage1→2→3、Obsidian 归档)请照做。\n\n${prompt}`;
+  try{
+    const t=await createThread();
+    _addOptimisticThread(t.id, prompt.replace(/\s+/g," ").trim().slice(0,40));
+    await openThread(t.id);        // 完整建好 SSE 再发,避免漏首批事件
+    await send(msg);
+    loadThreads();
+  }catch(e){ cwToast("启动方法论研究失败: "+(e.message||e)); }
+}
+// DeerFlow 模型跟随当前对话模型(felix 2026-07-04 定论:不要钉 kimi,跟着对话默认模型走,有问题他手动改):
+// 有 DeerFlow 对应的 provider 直接映射;ChatGPT/Claude 等 OAuth 的 DeerFlow 用不了 key → 不传,落到 config 默认。
+const DF_MODEL_PROV={deepseek:"deepseek",zai:"glm",moonshot:"kimi",custom:"hunyuan"};
+function dfModelForCurrent(){
   const t=state.threads.find(x=>x.id===state.activeId);
   const prov=(t&&t.provider)||window._newchatProv||"";
-  const dm=DF_MODEL_PROV[prov]||"";
-  if(dm&&DF_AVAILABLE.has(dm)) return dm;
-  return "kimi"; // 该 provider DeerFlow 没配(如 ChatGPT/Claude OAuth)→ 回退 kimi
+  return DF_MODEL_PROV[prov]||"";
 }
-async function submitDeerFlow(model){
-  const prompt=$("#dfprompt").value.trim();
+async function submitDeerFlow(promptArg,eng){   // eng=DF_ENGINES 条目;默认 DeerFlow。所有 harness 共用同一套 research/poll/file 契约
+  eng=eng||DF_ENGINES[0];
+  const API=eng.api||"/api/deerflow";
+  const prompt=(promptArg||$("#dfprompt").value||"").trim();
   if(!prompt) return;
-  const m=model||_dfModel||"";
   closeDeerFlow();
+  const m=(eng.k==="deerflow")?dfModelForCurrent():"";   // 只有 DeerFlow 跟随对话模型;gptr/odr 各自桥接配置定
   // 在聊天区添加用户消息
-  const label=m?`🔬 DeerFlow [${m}]: `:"🔬 DeerFlow 深度研究: ";
+  const label=m?`${eng.emo} ${eng.name} [${m}] 深度研究: `:`${eng.emo} ${eng.name} 深度研究: `;
   const oel=row("user","你"); oel.querySelector(".content").innerHTML=md(label+prompt); $("#mwrap").appendChild(oel); scrollDown(true);
-  // 添加 DeerFlow 结果容器
+  // 添加结果容器
   const dfel=document.createElement("div"); dfel.className="df-result"; dfel.id="df-"+Date.now();
-  dfel.innerHTML='<div class="df-hdr running"><div class="spinner"></div> DeerFlow 深度研究中…</div><div class="df-body">正在提交研究任务…</div><div class="df-stats"></div>';
+  dfel.innerHTML=`<div class="df-hdr running"><div class="spinner"></div> ${esc(eng.name)} 深度研究中…</div><div class="df-body">正在提交研究任务…</div><div class="df-stats"></div>`;
   $("#mwrap").appendChild(dfel); scrollDown(true);
   const hdr=dfel.querySelector(".df-hdr"); const body=dfel.querySelector(".df-body"); const stats=dfel.querySelector(".df-stats");
   try{
     // 提交研究任务(注意:不要用 body 当变量名,会盖掉上面的 .df-body DOM 元素)
-    const reqBody={prompt}; if(m) reqBody.model=m;
-    const r=await fetch("/api/deerflow/research",{method:"POST",headers:{...auth,"Content-Type":"application/json"},body:JSON.stringify(reqBody)});
+    const reqBody={prompt}; if(m) reqBody.model=m;   // 跟随当前对话模型;无对应(OAuth 类)不传→config 默认
+    const r=await fetch(API+"/research",{method:"POST",headers:{...auth,"Content-Type":"application/json"},body:JSON.stringify(reqBody)});
     if(!r.ok){ throw new Error("提交请求失败 HTTP "+r.status+"(后端可能未起或未更新,试试退出重开 CodeWhale)"); }
     const d=await r.json();
-    if(!d.ok){ body.textContent="提交失败: "+(d.error||"未知错误"); hdr.classList.remove("running"); hdr.textContent="❌ DeerFlow 提交失败"; return; }
+    if(!d.ok){ body.textContent="提交失败: "+(d.error||"未知错误"); hdr.classList.remove("running"); hdr.textContent="❌ "+eng.name+" 提交失败"; return; }
     body.textContent="任务已提交 (Thread: "+d.thread_id.slice(0,8)+"…)\n等待结果中…";
     stats.textContent="Thread: "+d.thread_id.slice(0,12)+"…";
-    // 轮询结果
-    const maxPolls=60, interval=8000;
+    // 轮询进度快照(progress=1 即回不阻塞):状态 + tokens + LLM 调用数 + 最新中间消息 → 过程可见
+    const maxPolls=150, interval=8000;   // 20 分钟上限(odr 多agent深挖可能 >8 分钟)
+    let failStreak=0, out="";
     for(let i=0;i<maxPolls;i++){
       await new Promise(res=>setTimeout(res,interval));
-      const pr=await fetch("/api/deerflow/poll?thread_id="+encodeURIComponent(d.thread_id),{method:"POST",headers:{...auth}});   // poll 端点在 do_POST,必须用 POST(GET 会 404)
+      const pr=await fetch(API+"/poll?thread_id="+encodeURIComponent(d.thread_id)+"&progress=1",{method:"POST",headers:{...auth}});   // poll 端点在 do_POST,必须用 POST(GET 会 404)
       if(!pr.ok){ throw new Error("轮询请求失败 HTTP "+pr.status); }
       const pd=await pr.json();
-      if(pd.error){ body.textContent="轮询失败: "+pd.error; hdr.classList.remove("running"); hdr.textContent="❌ DeerFlow 错误"; return; }
-      const out=pd.output||"";
-      if(out.includes("success")||out.includes("研究完成")||out.includes("Status: success")){
-        hdr.classList.remove("running"); hdr.textContent="✅ DeerFlow 深度研究完成";
+      if(pd.ok===false||pd.error){ if(++failStreak>=3){ body.textContent="轮询失败: "+(pd.error||"未知错误"); hdr.classList.remove("running"); hdr.textContent="❌ "+eng.name+" 错误"; return; } continue; }   // 偶发失败容忍 2 次
+      failStreak=0;
+      const st=pd.status||"unknown"; out=st;
+      if(st!=="success"){   // 运行中:状态行 + 最新中间消息尾部(planner/researcher 阶段产出,边跑边更新)
+        const secs=Math.round((i+1)*interval/1000);
+        const stat=`⏱ ${secs}s · 状态 ${st} · LLM 调用 ${pd.llm_calls||0} 次 · tokens ${pd.in_tokens||0} in / ${pd.out_tokens||0} out · 中间消息 ${pd.msg_count||0} 条`;
+        stats.textContent=stat;
+        if(pd.tail){
+          let pg=body.querySelector(".df-prog");
+          if(!pg){ body.innerHTML='<div class="df-progtt">当前推理进展(最新中间产出):</div><pre class="df-prog"></pre>'; pg=body.querySelector(".df-prog"); }
+          if(pg.textContent!==pd.tail){ pg.textContent=pd.tail; pg.scrollTop=pg.scrollHeight; }
+        } else body.textContent="研究中… ("+secs+"s) 计划生成阶段,暂无中间产出";
+        if(["error","failed","cancelled"].includes(st)){ hdr.classList.remove("running"); hdr.textContent="❌ "+eng.name+" 研究"+(st==="cancelled"?"被取消":"失败"); return; }
+        continue;
+      }
+      if(st==="success"){
+        hdr.classList.remove("running"); hdr.textContent="✅ "+eng.name+" 深度研究完成";
         // 获取完整结果
-        const rr=await fetch("/api/deerflow/poll?thread_id="+encodeURIComponent(d.thread_id)+"&full=1",{method:"POST",headers:{...auth}});   // 同上:POST + 带鉴权(原来漏了)
+        const rr=await fetch(API+"/poll?thread_id="+encodeURIComponent(d.thread_id)+"&full=1",{method:"POST",headers:{...auth}});   // 同上:POST + 带鉴权(原来漏了)
         const rd=await rr.json();
         const final=rd.output||out;
         // 清理输出:去掉状态行(状态: / [running] tokens / 缩进状态行)只留报告正文
@@ -1582,8 +1756,8 @@ async function submitDeerFlow(model){
         // 报告文件:下载 / 在预览打开 / 本地路径(解决"没地方下载或打开")
         if(rd.file){
           const tk=encodeURIComponent(TOKEN||""), nm=encodeURIComponent(rd.file);
-          const durl=`/api/deerflow/file?name=${nm}&token=${tk}`;          // 下载
-          const hurl=`/api/deerflow/file?name=${nm}&html=1&token=${tk}`;   // 渲染成 HTML,供预览面板打开
+          const durl=`${API}/file?name=${nm}&token=${tk}`;          // 下载
+          const hurl=`${API}/file?name=${nm}&html=1&token=${tk}`;   // 渲染成 HTML,供预览面板打开
           const fb=document.createElement("div"); fb.className="df-file";
           fb.innerHTML=`📄 <a class="df-prev">在预览面板打开</a> · `+
                        `<a href="${durl}" download="${esc(rd.file)}">下载报告</a> · `+
@@ -1599,33 +1773,23 @@ async function submitDeerFlow(model){
         else stats.textContent="完成";
         return;
       }
-      if(out.includes("error")||out.includes("失败")){ hdr.classList.remove("running"); hdr.textContent="❌ DeerFlow 研究失败"; body.textContent=out.slice(0,3000); return; }
-      if(out.includes("running")){ body.textContent="研究中… ("+Math.round((i+1)*interval/1000)+"s)"; }
-      else { body.textContent=out.slice(0,1000); }
     }
-    hdr.classList.remove("running"); hdr.textContent="⏳ DeerFlow 超时";
-    body.textContent="研究超过 8 分钟仍在进行。可稍后在终端运行:\npython3 ~/scripts/deerflow_client.py result "+d.thread_id;
-  }catch(e){ hdr.classList.remove("running"); hdr.textContent="❌ DeerFlow 异常"; body.textContent=e.message; }
+    hdr.classList.remove("running"); hdr.textContent="⏳ "+eng.name+" 超时";
+    body.textContent="研究超过 20 分钟仍在进行,任务未丢;稍后可在报告目录找产出(thread: "+d.thread_id+")";
+  }catch(e){ hdr.classList.remove("running"); hdr.textContent="❌ "+eng.name+" 异常"; body.textContent=e.message; }
 }
 async function submitDeerFlowFromInput(prompt){
-  if(!_dfModel) _dfModel=getDeerFlowModel(); // /df 命令时自动检测
   $("#dfprompt").value=prompt; await submitDeerFlow();
 }
-// toggle plugin dropdown — 展开时刷新 DeerFlow 模型信息
+// toggle plugin dropdown
 document.addEventListener("click",function(e){
   const btn=$("#pluginbtn"); const drop=$("#plugindrop");
   if(!btn||!drop) return;
-  if(btn.contains(e.target)){ 
-    updateDeerFlowDropdown(); // 展开前刷新
-    drop.classList.toggle("show"); e.stopPropagation(); return; 
+  if(btn.contains(e.target)){
+    drop.classList.toggle("show"); e.stopPropagation(); return;
   }
   if(!drop.contains(e.target)) drop.classList.remove("show");
 });
-function updateDeerFlowDropdown(){   // 不再出现模型选择:DeerFlow 直接用窗口当前模型。只在主条目副标题被动显示用的是哪个。
-  const dm=getDeerFlowModel(), dn=DF_MODEL_NAME[dm]||dm;
-  const main=$("#plugindrop .plugini.df .short");
-  if(main){ main.textContent=dn; main.title=DF_AVAILABLE.has(dm)?("DeerFlow 将用当前窗口模型:"+dn):("当前窗口模型 DeerFlow 未配置,回退 "+dn); }
-}
 // Close dfmodal on backdrop click
 document.addEventListener("click",function(e){
   const modal=$("#dfmodal");
@@ -1716,7 +1880,7 @@ function _addOptimisticThread(tid, title){
   const prov=window._newchatProv||"deepseek";
   const opt={id:tid, title:title||"新对话", preview:"", provider:prov, compare:false, updated_at:new Date().toISOString(), latest_turn_status:""};
   state.pendingNew=state.pendingNew||[];
-  if(!state.pendingNew.find(x=>x.id===tid)) state.pendingNew.unshift(opt);
+  if(!state.pendingNew.find(x=>x.id===tid)){ state.pendingNew.unshift(opt); savePendingNew(); }
   if(!state.threads.find(x=>x.id===tid)) state.threads.unshift(opt);
   state._sig=null; renderThreads();
 }
@@ -1852,13 +2016,15 @@ async function openConnectors(){
 /* ---------- 切换模型 / Provider ---------- */
 const PROVIDERS=[   // 非 DeepSeek 的 provider 模型填 auto:app-server 把 default_text_model 当 DeepSeek 字段校验,填具体名(如 glm-4.6)会启动失败;auto=由该 provider 自选默认模型
   {id:"deepseek",name:"DeepSeek V4",model:"deepseek-v4-pro"},
+  {id:"volcengine",name:"火山 Ark",model:"doubao-seed-2-1-pro-260628"},
+  {id:"longcat",name:"美团 LongCat",model:"LongCat-2.0",sidecar:true},
   {id:"zai",name:"GLM (智谱 / Z.ai)",model:"auto"},
   {id:"moonshot",name:"Kimi (月之暗面)",model:"auto"},
   {id:"openai-codex",name:"ChatGPT(OAuth 登录)",model:"auto",oauth:true},
   {id:"custom",name:"腾讯混元",model:"hy3-preview",cmpKeyOnly:true,freeModel:true},   // OpenAI 兼容槽(TokenHub)。官方语言模型做成下拉;freeModel 保留手填新 ID 的逃生口
   {id:"claude-code",name:"Claude (订阅)",model:"auto",oauth:true,newchatOnly:true},   // 委派官方 claude -p 走订阅(免 API key,真正能用的那条);单窗口可选但只能当"新对话 provider"(走独立后端 :7900),不能当 launchd 主后端(官方二进制不识别)。已合并掉原 anthropic(API Key)条:它对订阅令牌走 x-api-key 必 401,且会误显"已配置"
 ];   // 已删 OpenRouter / DeepInfra(felix 不用、未配置只显 ⚠)
-const PROV_SHORT={deepseek:"DeepSeek",zai:"GLM",moonshot:"Kimi","openai-codex":"ChatGPT",custom:"混元","claude-code":"Claude"};
+const PROV_SHORT={deepseek:"DeepSeek",volcengine:"火山",longcat:"LongCat",zai:"GLM",moonshot:"Kimi","openai-codex":"ChatGPT",custom:"混元","claude-code":"Claude"};
 async function switchActiveThreadProvider(provider, model){
   if(!state.activeId) return null;
   const body={tid:state.activeId,provider}; if(model) body.model=model;
@@ -1918,7 +2084,7 @@ async function openModelSwitch(preselect){
     else $("#meffortrow").style.display="none";
     $("#mkeyrow").style.display=p.oauth?"none":"flex";
     $("#mkey").placeholder=p.oauth?"OAuth 登录,无需 key":(keyed[p.id]?"已配置,留空=不改":(p.cmpKeyOnly?"必填:TokenHub 模型调用 api_key(sk- 开头)":"必填:该 provider 的 API key"));
-    const sw=$("#mswitch"); if(sw) sw.textContent=p.cmpKeyOnly?"保存并应用到当前对话":(p.newchatOnly?"应用到当前对话":"切换并应用到当前对话"); };   // custom/claude-code 不切主后端,但可 pin 当前 thread
+    const sw=$("#mswitch"); if(sw) sw.textContent=p.cmpKeyOnly?"保存并应用到当前对话":(p.newchatOnly||p.sidecar?"应用到当前对话":"切换并应用到当前对话"); };   // custom/claude-code/sidecar 不切主后端,但可 pin 当前 thread
   sel.onchange=sync; sync();
   $("#mswitch").onclick=async()=>{
     const provider=sel.value, api_key=$("#mkey").value;
@@ -1926,18 +2092,19 @@ async function openModelSwitch(preselect){
     const vars=MODEL_VARIANTS[provider]||[];
     const variant = vars.length ? (p.freeModel ? ($("#mmodel").value.trim() || $("#mvariant").value) : $("#mvariant").value) : $("#mmodel").value.trim();   // 所选模型变体/手填模型 ID
     if(!p.oauth && !keyed[provider] && !api_key){ alert("该 provider 还没配置 key —— 请先填 API key"); return; }
-    const b=$("#mswitch"); b.textContent=p.cmpKeyOnly?"校验中…":(p.newchatOnly?"切换中…":"切换中,重启后端…"); b.disabled=true;
+    const b=$("#mswitch"); b.textContent=p.cmpKeyOnly?"校验中…":(p.newchatOnly||p.sidecar?"切换中…":"切换中,重启后端…"); b.disabled=true;
     try{
-      if(p.cmpKeyOnly){
-        // 腾讯混元:auth CLI 不认 custom,所以 /api/model 只负责写 [providers.custom].api_key;
-        // 单窗口新对话再通过 /api/newchat-provider 路由到独立 custom 后端,主 :7878 保持 deepseek 不动。
+      if(p.cmpKeyOnly||p.sidecar){
+        // 腾讯混元/LongCat:不切主后端。/api/model 只保存对应 provider key+模型;
+        // 单窗口新对话再通过 /api/newchat-provider 路由到独立 provider 后端,主 :7878 保持当前默认不动。
         const d=await api("/api/model",{method:"POST",body:JSON.stringify({provider,model:variant||p.model||"hy3-preview",api_key})});
-        if(d.error){ alert("保存失败: "+d.error); b.textContent="保存并应用到当前对话"; b.disabled=false; return; }
+        if(d.error){ alert("保存失败: "+d.error); b.textContent=p.cmpKeyOnly?"保存并应用到当前对话":"应用到当前对话"; b.disabled=false; return; }
         if(d.warning){ b.title=d.warning; cwToast("⚠ "+d.warning); }
         if(variant){ try{ await api("/api/model-pref",{method:"POST",body:JSON.stringify({provider,model:variant})}); }catch(e){} }
         await api("/api/newchat-provider",{method:"POST",body:JSON.stringify({provider})});
         if(state.activeId) await switchActiveThreadProvider(provider, variant||p.model||"hy3-preview");
-        b.textContent=state.activeId?"✓ 当前对话下一条用混元":"✓ 已设为混元默认";
+        const label=PROV_SHORT[provider]||provider;
+        b.textContent=state.activeId?("✓ 当前对话下一条用"+label):("✓ 已设为"+label+"默认");
         setTimeout(()=>{ closeModal(); loadModelLabel(); loadThreads(); }, 700);
         return;
       }
@@ -1946,8 +2113,8 @@ async function openModelSwitch(preselect){
         // 新对话走它的独立后端 :7900,主后端 :7878 保持原默认(deepseek)不动、不重启。
         await api("/api/newchat-provider",{method:"POST",body:JSON.stringify({provider})});
       } else {
-        // set_model 用安全 model:deepseek 可填具体 id,其它非 deepseek 必须 auto(否则 default_text_model 被当 deepseek 字段校验、启动失败);变体走 pref
-        const sm = (provider==="deepseek") ? (variant||p.model||"auto") : (p.model||"auto");
+        // set_model 用安全 model:deepseek/volcengine/longcat 可填具体 id;其它非 deepseek 用 auto,变体走 pref
+        const sm = (provider==="deepseek" || provider==="volcengine" || provider==="longcat") ? (variant||p.model||"auto") : (p.model||"auto");
         const d=await api("/api/model",{method:"POST",body:JSON.stringify({provider,model:sm,api_key})});
         if(d.error){ alert("切换失败: "+d.error); b.textContent="切换并重启后端"; b.disabled=false; return; }
         try{ await api("/api/newchat-provider",{method:"POST",body:JSON.stringify({provider})}); }catch(e){}   // 新对话锁定此 provider(每对话锁模型)
@@ -2019,12 +2186,12 @@ async function guiUpdateWithProgress(box){
 }
 
 /* ---------- wire up ---------- */
-// 重启 GUI 服务:/api/reload 让 server.py 自退,launchd KeepAlive 秒拉起;轮询等回来后自动刷新页面。
-// 模型对话跑在 :7878/:79xx 各 provider 后端,不受影响(SSE 断了,刷新后重连)。
+// 重启前端 + 后端:/api/reload?backend=1 让后端 app-server(:7878)先 kickstart,再让 server.py 自退,
+// 两者都由 launchd KeepAlive 秒拉起;轮询等前端回来后自动刷新页面(后端重连要多等几秒,SSE 断了刷新后自然重连)。
 async function restartGui(){
   const b=$("#guirestart"); if(b){ b.disabled=true; b.textContent="重启中…"; }
-  cwToast("🔄 正在重启 GUI 服务,回来后自动刷新页面…");
-  try{ await api("/api/reload"); }catch(e){}   // 服务退出瞬间请求可能中断,属预期
+  cwToast("🔄 正在重启前端 + 后端,回来后自动刷新页面…");
+  try{ await api("/api/reload?backend=1"); }catch(e){}   // 服务退出瞬间请求可能中断,属预期
   const t0=Date.now();
   setTimeout(function poll(){
     api("/api/netenv").then(()=>location.reload())
@@ -2198,7 +2365,7 @@ renderAuto(); renderShell();
 if(location.search.indexOf("compare=1")>=0){
   loadCmpSessions();   // 独立对比窗口:主 UI 被对比层盖住,只需会话数据(?session 还原);跳过 loadThreads(慢~4.5s)/balance/pins/cmp/model/checkSetup,显著加快
 }else{
-  loadThreads(); loadBalance(); loadPins(); loadCmp(); loadCmpSessions(); loadModelLabel(); checkSetup(); loadPlugins();   // loadPins:服务端拉置顶;loadCmp:对比 thread 分组;loadCmpSessions:对比会话归集;loadModelLabel:侧栏显当前模型;checkSetup:免 key 安装后引导配置
+  loadThreads(); loadBalance(); loadPins(); loadCmp(); loadCmpSessions(); loadModelLabel(); checkSetup(); loadPlugins(); loadResearchSkills();   // loadPins:服务端拉置顶;loadCmp:对比 thread 分组;loadCmpSessions:对比会话归集;loadModelLabel:侧栏显当前模型;checkSetup:免 key 安装后引导配置
 }
 // 原生 App 后台刷新(在线更新带来的新壳):下载替换需几秒,延迟轮询几次,更新了就提示退出重开
 setTimeout(async()=>{ for(let i=0;i<5;i++){ try{ const s=await api("/api/app-refresh-status"); if(s&&s.updated){ cwToast("✅ CodeWhale 原生 App 已更新 — 退出(⌘Q)再打开即生效"); break; } }catch(e){} await new Promise(r=>setTimeout(r,4000)); } }, 5000);
@@ -2216,11 +2383,13 @@ checkGuiUpdate(); setInterval(checkGuiUpdate, 3600000);            // GUI 界面
 /* ---------- 多模型并排对比 ---------- */
 const CMP={ sel:new Set(), threads:{}, seq:{}, keyed:{}, maxed:null, autoApprove:true, allowShell:false, fakeip:false, turn:{}, running:{}, busy:false, sendQ:[], provQ:{}, dispatching:{}, cancelled:{}, attachments:[], sessionId:null };  // sessionId:当前对比会话(null=未开始,首次发送时建);provQ=按模型拆开的待发送队列
 // 建对比线程时直接把 model 钉到 thread 级,绕过 default_text_model="auto" 的自动路由(它会按 prompt 内容乱选、常落 deepseek,导致 GLM/GPT 栏答错)。
-const CMP_FORCE_MODEL={ deepseek:"deepseek-v4-pro", zai:"GLM-5.2", "openai-codex":"gpt-5.5", "claude-code":"opus", moonshot:"kimi-for-coding", custom:"hy3-preview" };   // 各 provider 默认模型(徽章/下拉的默认选中);实际由 server.py model_prefs 决定
+const CMP_FORCE_MODEL={ deepseek:"deepseek-v4-pro", volcengine:"doubao-seed-2-1-pro-260628", longcat:"LongCat-2.0", zai:"GLM-5.2", "openai-codex":"gpt-5.5", "claude-code":"opus", moonshot:"kimi-for-coding", custom:"hy3-preview" };   // 各 provider 默认模型(徽章/下拉的默认选中);实际由 server.py model_prefs 决定
 // 每 provider 可选模型变体(下拉)。claude-code 用别名(opus/sonnet/haiku),server 端 env 传给 claude -p + 身份串跟着走。
 const MODEL_VARIANTS={
   "claude-code":[{id:"opus",name:"Opus 4.8"},{id:"sonnet",name:"Sonnet 4.6"},{id:"haiku",name:"Haiku 4.5"}],
   deepseek:[{id:"deepseek-v4-pro",name:"V4 Pro"},{id:"deepseek-v4-flash",name:"V4 Flash"}],
+  volcengine:[{id:"doubao-seed-2-1-pro-260628",name:"Seed 2.1 Pro"},{id:"doubao-seed-2-1-turbo-260628",name:"Seed 2.1 Turbo"},{id:"doubao-seed-evolving",name:"Seed Evolving(需手动开通)"},{id:"doubao-seed-1-6-251015",name:"Seed 1.6"}],
+  longcat:[{id:"LongCat-2.0",name:"LongCat-2.0"}],
   custom:[{id:"hy3-preview",name:"Hy3 Preview"},{id:"hy-mt2-pro",name:"Hy-MT2 Pro"},{id:"hy-mt2-plus",name:"Hy-MT2 Plus"},{id:"hy-mt2-lite",name:"Hy-MT2 Lite"},{id:"hunyuan-role-latest",name:"Hunyuan Role Latest"},{id:"hy-role",name:"Hunyuan Role"},{id:"hunyuan-2.0-thinking-20251109",name:"HY 2.0 Think (旧)"},{id:"hunyuan-2.0-instruct-20251111",name:"HY 2.0 Instruct (旧)"}],
   zai:[{id:"GLM-5.2",name:"GLM-5.2"},{id:"GLM-4.6",name:"GLM-4.6"}],
   "openai-codex":[{id:"gpt-5.5",name:"GPT-5.5"}],
@@ -2467,21 +2636,22 @@ async function cmpRunOne(prov){   // 只追问这一个模型(单独继续该栏
     await cmpRun(prov,text,ensured[prov]);
   } finally { CMP.dispatching[prov]=false; cmpMaybeFlush(); }   // 该栏结束→若有排队的全栏发送在等,顺手 flush
 }
+function cmpClearAllCols(){   // 清空对比视图所有列(线程/消息/状态/队列/附件)+ 会话边界。开新一轮/重启后端/删掉正打开的会话 共用
+  CMP.sessionId=null;
+  CMP.threads={}; CMP.seq={}; CMP.turn={}; CMP.running={}; CMP.busy=false; CMP.sendQ=[]; CMP.provQ={}; CMP.dispatching={}; CMP.cancelled={}; clearAttachmentList(CMP.attachments); Object.keys(CMP.colAttach||{}).forEach(pv=>{clearAttachmentList(CMP.colAttach[pv]); cmpColRenderAttach(pv);}); cmpSyncSendUI(); cmpRenderAttach();
+  [...CMP.sel].forEach(p=>{ const b=$("#cmpb-"+CSS.escape(p)); if(b) b.innerHTML=""; const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent=""; const stop=$("#cmpstop-"+CSS.escape(p)); if(stop) stop.hidden=true; cmpClearProgress(p); const cs=$("#cmpcsend-"+CSS.escape(p)); if(cs) cs.disabled=false; });
+}
 async function cmpResetBackends(){   // 重启所有对比后端(残留后端连不上各自端点→回退 DeepSeek 时用):杀掉旧后端 + 清历史,下次发送用最新配置/key 冷启
   if(!(await cwConfirm("重启所有对比后端?会清空各栏当前历史,并用最新配置 / key 重新连接各模型(几秒)。\n用于:某个模型栏回答的不是它本人(回退成了 DeepSeek)。"))) return;
   const btn=$("#cmpResetBtn"); if(btn){ btn.disabled=true; btn.textContent="↻ 重启中…"; }
   try{ await api("/api/compare/reset",{method:"POST",body:"{}"}); }catch(e){}
-  CMP.sessionId=null;   // 重启后端=清历史→开新会话边界
-  CMP.threads={}; CMP.seq={}; CMP.turn={}; CMP.running={}; CMP.busy=false; CMP.sendQ=[]; CMP.provQ={}; CMP.dispatching={}; CMP.cancelled={}; clearAttachmentList(CMP.attachments); Object.keys(CMP.colAttach||{}).forEach(pv=>{clearAttachmentList(CMP.colAttach[pv]); cmpColRenderAttach(pv);}); cmpSyncSendUI(); cmpRenderAttach();
-  [...CMP.sel].forEach(p=>{ const b=$("#cmpb-"+CSS.escape(p)); if(b) b.innerHTML=""; const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent=""; const stop=$("#cmpstop-"+CSS.escape(p)); if(stop) stop.hidden=true; cmpClearProgress(p); const cs=$("#cmpcsend-"+CSS.escape(p)); if(cs) cs.disabled=false; });
+  cmpClearAllCols();
   if(btn){ btn.disabled=false; btn.textContent="↻ 重启后端"; }
   const i=$("#cmpInput"); if(i) i.focus();
 }
 async function cmpNewChat(){   // 新对话:清空所有栏历史 + 重建会话(学单一窗口的「新建对话」)
   if(Object.keys(CMP.threads).length && !(await cwConfirm("在这个窗口开新一轮对比?\n当前这轮已自动存进侧栏「多模型对比」会话,随时点回、不会丢。"))) return;
-  CMP.sessionId=null;   // 开新对比会话 → 下次发送建新主题(旧会话已存,侧栏可点回)
-  CMP.threads={}; CMP.seq={}; CMP.turn={}; CMP.running={}; CMP.busy=false; CMP.sendQ=[]; CMP.provQ={}; CMP.dispatching={}; CMP.cancelled={}; clearAttachmentList(CMP.attachments); Object.keys(CMP.colAttach||{}).forEach(pv=>{clearAttachmentList(CMP.colAttach[pv]); cmpColRenderAttach(pv);}); cmpSyncSendUI(); cmpRenderAttach();
-  [...CMP.sel].forEach(p=>{ const b=$("#cmpb-"+CSS.escape(p)); if(b) b.innerHTML=""; const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent=""; const stop=$("#cmpstop-"+CSS.escape(p)); if(stop) stop.hidden=true; cmpClearProgress(p); const cs=$("#cmpcsend-"+CSS.escape(p)); if(cs) cs.disabled=false; });
+  cmpClearAllCols();   // 开新对比会话 → 下次发送建新主题(旧会话已存,侧栏可点回)
   const i=$("#cmpInput"); if(i) i.focus();
 }
 function toggleMax(p){
