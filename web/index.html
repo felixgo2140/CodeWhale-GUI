@@ -86,6 +86,10 @@
   .thread .meta{font-size:10.5px;color:var(--faint);margin:3px 0 0 14px;display:flex;gap:8px}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
   #sidefoot{padding:8px 12px;border-top:1px solid var(--line);font-size:11px;color:var(--faint);display:flex;flex-direction:column;gap:6px}
+  #connrow{display:flex;align-items:center;justify-content:space-between;gap:6px}
+  #guirestart{border:none;background:transparent;color:var(--faint);font-size:11px;cursor:pointer;padding:2px 6px;border-radius:6px;opacity:.55}
+  #guirestart:hover{opacity:1;background:var(--hover,rgba(0,0,0,.06));color:var(--fg,inherit)}
+  #guirestart:disabled{opacity:.4;cursor:default}
   #statusrow{display:flex;justify-content:space-between;align-items:center;gap:8px}
   #modelchip{border:1px solid var(--line);background:var(--panel);color:var(--dim);border-radius:7px;padding:3px 9px;font-size:11px;cursor:pointer;max-width:64%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #modelchip:hover{color:var(--accent);border-color:var(--accent)}
@@ -229,10 +233,10 @@
   ::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-thumb{background:var(--line);border-radius:6px}
   /* thread row actions (pin/delete) */
   .thread .t1{align-items:center}
-  .thread .actions{display:none;gap:1px;margin-left:auto;flex:0 0 auto}
-  .thread:hover .actions{display:flex}
-  .thread .act{background:transparent;border:none;cursor:pointer;font-size:12px;line-height:1;padding:2px 3px;border-radius:5px;opacity:.65;color:var(--dim);display:inline-flex;align-items:center;justify-content:center}
-  .thread .act .ico{width:13px;height:13px}
+  .thread .actions{display:flex;gap:1px;margin-left:auto;flex:0 0 auto;opacity:.3;transition:opacity .12s}
+  .thread:hover .actions{opacity:1}
+  .thread .act{background:transparent;border:none;cursor:pointer;font-size:12px;line-height:1;padding:4px 6px;border-radius:5px;opacity:.7;color:var(--dim);display:inline-flex;align-items:center;justify-content:center}
+  .thread .act .ico{width:14px;height:14px}
   .thread .act:hover{opacity:1;background:var(--panel)}
   /* balance + auto toggle */
   #balance{color:var(--dim);font-size:12px;font-weight:600;white-space:nowrap}
@@ -319,6 +323,9 @@
   .plugini .lb{flex:1}
   .plugini .short{font-size:10px;color:var(--faint);margin-left:auto}
   .plugini.df{color:var(--accent)}
+  .plugini .plx{display:none;font-size:11px;font-weight:400;color:var(--faint);padding:0 2px;cursor:pointer}
+  .plugini:hover .plx{display:inline}
+  .plugini .plx:hover{color:#c0392b}
   /* DeerFlow result block */
   .df-result{margin:8px 0;border:1px solid var(--accent);border-radius:10px;overflow:hidden;background:var(--panel)}
   .df-hdr{background:var(--accent);color:#fff;padding:8px 13px;font-size:12px;font-weight:600;display:flex;align-items:center;gap:8px}
@@ -397,7 +404,7 @@ if(location.search.indexOf("compare=1")>=0)document.documentElement.className+="
         <button id="modelchip" title="当前模型 — 点击切换">🧠 <span id="modelname">…</span></button>
         <span id="balance" title="当前 provider 账户余额">余额 …</span>
       </div>
-      <span id="conn"><span class="cd"></span><span id="connt">连接中…</span></span>
+      <div id="connrow"><span id="conn"><span class="cd"></span><span id="connt">连接中…</span></span><button id="guirestart" title="重启 GUI 服务(launchd 自动拉起,约 5 秒;正在跑的模型在各自后端继续,不受影响)">⟳ 重启</button></div>
     </div>
   </div>
   <div id="sideresize" title="拖拽调整侧栏宽度"></div>
@@ -429,15 +436,13 @@ if(location.search.indexOf("compare=1")>=0)document.documentElement.className+="
       <div id="cwrap">
         <button id="pluginbtn" title="插件/工具">+</button>
         <div id="plugindrop">
-          <div class="plugini df" onclick="openDeerFlow()">
+          <div class="plugini df" onclick="openDeerFlow()" title="自动多轮搜索+全文爬取+结构化报告(也可直接在输入框打 /df 问题 发送)">
             <span class="emo">🔬</span><span class="lb">DeerFlow 深度研究</span><span class="short">Kimi</span>
           </div>
-          <div class="plugini" onclick="quickDeerFlow()">
-            <span class="emo">⚡</span><span class="lb">快速 DeerFlow</span><span class="short">输入框模式</span>
-          </div>
+          <div id="plugincustom"><!-- 自定义插件,renderPlugins() 从服务端 plugins.json 填充 --></div>
           <div style="border-top:1px solid var(--line);margin:4px 0"></div>
-          <div class="df-models">
-            <!-- 动态填充：展开时由 updateDeerFlowDropdown() 根据当前对话模型自动生成 -->
+          <div class="plugini" onclick="addPlugin()">
+            <span class="emo">＋</span><span class="lb">添加插件</span><span class="short">指令/提示词模板</span>
           </div>
         </div>
         <button id="attachbtn" title="上传文件(文本/代码,agent 会读取;图片会显示预览)"></button>
@@ -743,7 +748,6 @@ function hydrateIcons(){
   setButtonIcon("#pvClose","x");
   setButtonIcon("#cmpAttachBtn","paperclip");
   setButtonIcon("#cmpSendBtn","send","发送");
-  setButtonIcon("#cmpSteerBtn","arrowRight","引导");
   setButtonIcon("#cmpStopAllBtn","stop","停止全部");
   setButtonIcon("#cmpNewBtn","plus","新对话");
   setButtonIcon("#cmpResetBtn","refresh","重启后端");
@@ -786,7 +790,7 @@ async function loadThreads(){
     } else state.threads=t;
     const at=state.threads.find(x=>x.id===state.activeId);   // 兜底:SSE 漏收 turn.completed 时,靠轮询发现活动会话已结束 → 收尾 + 发队列
     if(at && state.running && isTurnDone(at.latest_turn_status)){ setRunning(false); processQueue(); }
-    const sig=JSON.stringify(state.threads.map(x=>[x.id,x.title,x.latest_turn_status,x.updated_at,x.provider]))+"|"+[...state.pinned].sort().join(",")+"|"+[...state.cmpThreads].sort().join(",")+"|"+state.cmpSessions.map(s=>s.id+":"+Object.keys(s.threads||{}).length).join(",")+"|"+[...state.grpCollapsed].sort().join(",")+"|"+state.activeId;   // 从合并后列表算(含 pending):含 provider/对比集/会话/折叠态,任一变都重渲染
+    const sig=JSON.stringify(state.threads.map(x=>[x.id,x.title,x.latest_turn_status,x.updated_at,x.provider]))+"|"+[...state.pinned].sort().join(",")+"|"+[...state.cmpThreads].sort().join(",")+"|"+state.cmpSessions.map(s=>s.id+":"+(s.topic||"")+":"+Object.keys(s.threads||{}).length).join(",")+"|"+[...state.grpCollapsed].sort().join(",")+"|"+state.activeId;   // 从合并后列表算(含 pending):含 provider/对比集/会话/折叠态,任一变都重渲染
     if(sig!==state._sig){ state._sig=sig; renderThreads(); }   // 仅当列表真变化才重建 DOM,避免轮询吞掉点击
   }catch(e){ setConn(false); console.warn(e); }
   finally{ state._loadingThreads=false; }
@@ -820,15 +824,26 @@ function threadEl(t){   // 单条对话 DOM
 }
 function cmpSessionEl(s){   // 对比会话行:点=回到当时整场对比
   const provs=Object.keys(s.threads||{});
+  const pinned=state.pinned.has(s.id);
   const d=document.createElement("div"); d.className="thread cmpsess"+(s.id===CMP.sessionId&&!$("#cmpView")?.hidden?" active":"");
   const names=provs.map(p=>PROV_SHORT[p]||p).join(" · ");
-  d.innerHTML=`<div class="t1"><span class="dot ok" title="对比会话(点击回到当时对比)"></span><span class="title">${icon("layout")}${esc(s.topic||"对比")}</span>`+
-    `<span class="actions"><button class="act del" title="从列表删除此对比会话">${icon("trash")}</button></span></div>`+
+  d.innerHTML=`<div class="t1"><span class="dot ok" title="对比会话(点击回到当时对比)"></span><span class="title">${pinned?icon("pin"):""}${icon("layout")}${esc(s.topic||"对比")}</span>`+
+    `<span class="actions"><button class="act rename" title="重命名">${icon("edit")}</button><button class="act pin" title="${pinned?"取消置顶":"置顶"}">${icon("pin")}</button><button class="act del" title="从列表删除此对比会话">${icon("trash")}</button></span></div>`+
     `<div class="meta"><span>${provs.length} 模型 · ${esc(names)}</span><span>${relTime(s.ts||0)}</span></div>`;
   d.onclick=()=>openCompareWindow(s.id);   // 点会话 → 新开一个独立窗口还原那场对比(主窗口不受影响)
   keyboardButton(d,()=>openCompareWindow(s.id),`打开对比会话: ${s.topic||"对比"}`);
+  d.querySelector(".rename").onclick=(e)=>{e.stopPropagation();renameCmpSession(s.id,s.topic);};
+  d.querySelector(".pin").onclick=(e)=>{e.stopPropagation();togglePin(s.id);};
   d.querySelector(".del").onclick=(e)=>{e.stopPropagation();deleteCmpSession(s.id,s.topic);};
   return d;
+}
+function renameCmpSession(id,cur){   // topic_ts=重命名时间戳,合并平局时新者胜(否则别的窗口旧副本会把名字盖回去)
+  const t=prompt("重命名对比会话:",cur||"");
+  if(t===null) return;
+  const name=t.trim(); if(!name) return;
+  const s=state.cmpSessions.find(x=>x.id===id); if(!s) return;
+  s.topic=name; s.topic_ts=Date.now();
+  saveCmpSessions(); state._sig=null; renderThreads();
 }
 async function deleteCmpSession(id,topic){
   const s=state.cmpSessions.find(x=>x.id===id);
@@ -842,6 +857,7 @@ async function deleteCmpSession(id,topic){
   saveCmpSessions(); state._sig=null; renderThreads();
 }
 function renderThreads(){
+  if(document.querySelector(".cwdlg-ov")) return;   // 确认对话框打开时跳过重建,避免轮询吞掉用户点击
   const box=$("#threads"); box.innerHTML="";
   const byTime=(a,b)=>new Date(b.updated_at||0)-new Date(a.updated_at||0);
   const sessionTids=new Set();                            // 已被某对比会话收编的 thread → 不再单独显示(由会话行代表)
@@ -857,10 +873,12 @@ function renderThreads(){
     normG.push(t);
   }
   pinG.sort(byTime); cmpLeftover.sort(byTime); normG.sort(byTime);
-  const sessions=[...state.cmpSessions].sort((a,b)=>(b.ts||0)-(a.ts||0));
+  const sessionsAll=[...state.cmpSessions].sort((a,b)=>(b.ts||0)-(a.ts||0));
+  const pinS=sessionsAll.filter(s=>state.pinned.has(s.id));       // 置顶的对比会话进置顶组
+  const sessions=sessionsAll.filter(s=>!state.pinned.has(s.id));
   const cmpCount=sessions.length+cmpLeftover.length;
   const groups=[];
-  if(pinG.length)  groups.push({key:"pin", label:"📌 置顶", count:pinG.length, render:b=>pinG.forEach(t=>b.appendChild(threadEl(t)))});
+  if(pinG.length||pinS.length)  groups.push({key:"pin", label:"📌 置顶", count:pinG.length+pinS.length, render:b=>{ pinS.forEach(s=>b.appendChild(cmpSessionEl(s))); pinG.forEach(t=>b.appendChild(threadEl(t))); }});
   if(cmpCount)     groups.push({key:"cmp", label:"⊞ 多模型对比", count:cmpCount, render:b=>{ sessions.forEach(s=>b.appendChild(cmpSessionEl(s))); cmpLeftover.forEach(t=>b.appendChild(threadEl(t))); }});
   if(normG.length) groups.push({key:"norm",label:"💬 对话", count:normG.length, render:b=>normG.forEach(t=>b.appendChild(threadEl(t)))});
   if(!groups.length){ box.innerHTML='<div style="padding:14px;color:var(--faint);font-size:12px">还没有对话,点上方新建</div>'; return; }
@@ -917,9 +935,11 @@ function cmpSessionRecordThread(prov,tid){   // cmpRun 建好某栏 thread → �
 }
 async function loadCmpSessions(){ try{ const r=await api("/api/cmp-sessions"); if(!Array.isArray(r)) return;
     const byId=new Map(state.cmpSessions.map(s=>[s.id,s]));
-    for(const s of r){ const cur=byId.get(s.id);   // 服务端 ∪ 本地:同 id 取 thread 更全的那份
-      if(!cur || Object.keys(s.threads||{}).length>=Object.keys(cur.threads||{}).length) byId.set(s.id,s); }
-    const sigOf=a=>a.map(s=>s.id+":"+(s.ts||0)+":"+Object.keys(s.threads||{}).sort().map(p=>p+"="+s.threads[p]).join(",")).join("|");
+    for(const s of r){ const cur=byId.get(s.id);   // 服务端 ∪ 本地:thread 更全者胜;平局比 topic_ts(重命名新者胜,防旧副本盖回名字)
+      if(!cur){ byId.set(s.id,s); continue; }
+      const ns=Object.keys(s.threads||{}).length, nc=Object.keys(cur.threads||{}).length;
+      if(ns>nc || (ns===nc && (s.topic_ts||0)>=(cur.topic_ts||0))) byId.set(s.id,s); }
+    const sigOf=a=>a.map(s=>s.id+":"+(s.ts||0)+":"+(s.topic||"")+":"+Object.keys(s.threads||{}).sort().map(p=>p+"="+s.threads[p]).join(",")).join("|");
     const before=sigOf(state.cmpSessions);
     const merged=[...byId.values()].sort((a,b)=>(b.ts||0)-(a.ts||0));
     const changed=sigOf(merged)!==before;
@@ -1478,13 +1498,34 @@ function openDeerFlow(){
   $("#plugindrop").classList.remove("show"); $("#dfmodal").classList.add("show"); setTimeout(()=>$("#dfprompt").focus(),100); 
 }
 function closeDeerFlow(){ $("#dfmodal").classList.remove("show"); }
-function quickDeerFlow(){
-  _dfModel=getDeerFlowModel(); // 自动跟随当前对话模型
+// (原「⚡ 快速 DeerFlow」菜单项已删——和「深度研究」是同一后端,只是往输入框填 /df 前缀;/df 手打仍然可用)
+/* ---------- 自定义插件:+ 菜单可扩展 ---------- */
+let PLUGINS=[];   // [{emoji,label,short,insert}] 存服务端 ~/.codewhale-gui/plugins.json,所有窗口/设备共享
+async function loadPlugins(){ try{ const r=await api("/api/plugins"); if(Array.isArray(r)){ PLUGINS=r; renderPlugins(); } }catch(e){} }
+function savePlugins(){ api("/api/plugins",{method:"POST",body:JSON.stringify({plugins:PLUGINS})}).catch(()=>{}); }
+function renderPlugins(){
+  const box=$("#plugincustom"); if(!box) return; box.innerHTML="";
+  PLUGINS.forEach((pl,i)=>{
+    const d=document.createElement("div"); d.className="plugini custom";
+    d.innerHTML=`<span class="emo">${esc(pl.emoji||"🧩")}</span><span class="lb">${esc(pl.label||"插件")}</span><span class="short">${esc(pl.short||"")}</span><b class="plx" title="删除此插件">✕</b>`;
+    d.onclick=()=>{   // 点插件 = 把配置的内容填进输入框(斜杠指令/提示词模板都行),用户补完问题再发
+      $("#plugindrop").classList.remove("show");
+      const inp=$("#input"); inp.value=pl.insert||""; inp.dispatchEvent(new Event("input")); inp.focus();
+      try{ inp.setSelectionRange(inp.value.length,inp.value.length); }catch(e){}
+    };
+    d.querySelector(".plx").onclick=async(e)=>{ e.stopPropagation();
+      if(!(await cwConfirm(`删除插件「${pl.label||"插件"}」?`))) return;
+      PLUGINS.splice(i,1); savePlugins(); renderPlugins(); };
+    box.appendChild(d);
+  });
+}
+async function addPlugin(){
   $("#plugindrop").classList.remove("show");
-  const inp=$("#input"); inp.value="/df "; inp.focus();
-  try{inp.setSelectionRange(4,4);}catch{}
-  const dm=_dfModel, dn=DF_MODEL_NAME[dm]||dm;
-  $("#hint").innerHTML=`<span style="color:var(--accent)">🔬 DeerFlow [${dn}]：输入研究问题后按 Enter 发送</span>`;
+  const label=(prompt("插件名称(显示在 + 菜单里):")||"").trim(); if(!label) return;
+  const emoji=(prompt("图标 emoji(默认 🧩):","🧩")||"🧩").trim()||"🧩";
+  const insert=prompt("点击后插入输入框的内容(如 /df 、一段提示词模板):",""); if(insert===null) return;
+  PLUGINS.push({emoji,label:label.slice(0,20),short:"自定义",insert});
+  savePlugins(); renderPlugins(); cwToast("✅ 已添加「"+label+"」,在 + 菜单里");
 }
 let _dfModel=""; // DeerFlow 选择的模型
 // CodeWhale provider → DeerFlow 模型映射（从当前对话自动检测）
@@ -1584,7 +1625,6 @@ function updateDeerFlowDropdown(){   // 不再出现模型选择:DeerFlow 直接
   const dm=getDeerFlowModel(), dn=DF_MODEL_NAME[dm]||dm;
   const main=$("#plugindrop .plugini.df .short");
   if(main){ main.textContent=dn; main.title=DF_AVAILABLE.has(dm)?("DeerFlow 将用当前窗口模型:"+dn):("当前窗口模型 DeerFlow 未配置,回退 "+dn); }
-  const sel=$("#plugindrop .df-models"); if(sel) sel.innerHTML="";   // 去掉模型选择列表
 }
 // Close dfmodal on backdrop click
 document.addEventListener("click",function(e){
@@ -1979,8 +2019,22 @@ async function guiUpdateWithProgress(box){
 }
 
 /* ---------- wire up ---------- */
+// 重启 GUI 服务:/api/reload 让 server.py 自退,launchd KeepAlive 秒拉起;轮询等回来后自动刷新页面。
+// 模型对话跑在 :7878/:79xx 各 provider 后端,不受影响(SSE 断了,刷新后重连)。
+async function restartGui(){
+  const b=$("#guirestart"); if(b){ b.disabled=true; b.textContent="重启中…"; }
+  cwToast("🔄 正在重启 GUI 服务,回来后自动刷新页面…");
+  try{ await api("/api/reload"); }catch(e){}   // 服务退出瞬间请求可能中断,属预期
+  const t0=Date.now();
+  setTimeout(function poll(){
+    api("/api/netenv").then(()=>location.reload())
+      .catch(()=>{ if(Date.now()-t0<60000) setTimeout(poll,1000);
+        else { if(b){ b.disabled=false; b.textContent="⟳ 重启"; } cwToast("⚠ 60 秒内服务没回来,请手动刷新或查 webserver.log"); } });
+  },1500);
+}
 hydrateIcons();
 $("#newbtn").onclick=newThread;
+$("#guirestart").onclick=restartGui;
 $("#skillsbtn").onclick=openSkills;
 $("#mcpbtn").onclick=openConnectors;
 $("#updatebtn").onclick=openUpdate;
@@ -2144,7 +2198,7 @@ renderAuto(); renderShell();
 if(location.search.indexOf("compare=1")>=0){
   loadCmpSessions();   // 独立对比窗口:主 UI 被对比层盖住,只需会话数据(?session 还原);跳过 loadThreads(慢~4.5s)/balance/pins/cmp/model/checkSetup,显著加快
 }else{
-  loadThreads(); loadBalance(); loadPins(); loadCmp(); loadCmpSessions(); loadModelLabel(); checkSetup();   // loadPins:服务端拉置顶;loadCmp:对比 thread 分组;loadCmpSessions:对比会话归集;loadModelLabel:侧栏显当前模型;checkSetup:免 key 安装后引导配置
+  loadThreads(); loadBalance(); loadPins(); loadCmp(); loadCmpSessions(); loadModelLabel(); checkSetup(); loadPlugins();   // loadPins:服务端拉置顶;loadCmp:对比 thread 分组;loadCmpSessions:对比会话归集;loadModelLabel:侧栏显当前模型;checkSetup:免 key 安装后引导配置
 }
 // 原生 App 后台刷新(在线更新带来的新壳):下载替换需几秒,延迟轮询几次,更新了就提示退出重开
 setTimeout(async()=>{ for(let i=0;i<5;i++){ try{ const s=await api("/api/app-refresh-status"); if(s&&s.updated){ cwToast("✅ CodeWhale 原生 App 已更新 — 退出(⌘Q)再打开即生效"); break; } }catch(e){} await new Promise(r=>setTimeout(r,4000)); } }, 5000);
@@ -2378,7 +2432,7 @@ function cmpSetRunning(prov,on){
   const stop=$("#cmpstop-"+CSS.escape(prov)); if(stop) stop.hidden=!on;
   const cs=$("#cmpcsend-"+CSS.escape(prov)); if(cs) cs.disabled=on;
   if(on) cmpSetProgress(prov,"启动中"); else cmpClearProgress(prov);
-  cmpSyncSendUI();   // 刷新「引导」按钮显隐(列停了就收起)
+  cmpSyncSendUI();   // 刷新发送按钮状态(列停了就从「引导」变回「发送」)
   if(CMP.maxed) renderCmpTabs();   // 放大态:标签上的运行小圆点跟随
 }
 async function cmpStop(prov){   // 暂停单个对话:中断该栏当前 turn(中断后 SSE 会发 completed/interrupted → finish 收尾)
@@ -2471,8 +2525,12 @@ function cmpMakeItem(sent,disp){ return {id:"cmpq_"+Date.now()+"_"+(++_cmpItemSe
 // 同步发送区 UI:任一栏在跑时按钮显「发送中…/排队 N」,但按钮不禁用(点/Enter 都能继续排队到忙的列)
 function cmpSyncSendUI(){
   const btn=$("#cmpSendBtn"), ta=$("#cmpInput"), groups=cmpQueuedGroups(), q=groups.length, active=cmpAnyBusy();
-  if(btn) btn.textContent=active?(q?("发送中·排队"+q):"发送中…"):(q?("排队"+q):"发送");
-  if(ta) ta.placeholder=active?"完成的模型会先发;忙的模型自动排队…":"输入一个问题,同时发给所有选中的模型…（Enter 发送 · Shift+Enter 换行）";
+  const steer=[...CMP.sel].some(p=>CMP.running[p]&&CMP.turn[p]);   // 有正在跑(且有活动 turn)的列→发送即引导
+  if(btn){
+    btn.textContent=steer?(q?("⤵ 引导·排队"+q):"⤵ 引导"):(active?(q?("发送中·排队"+q):"发送中…"):(q?("排队"+q):"发送"));
+    btn.title=steer?"正在跑的列:这句话实时插进当前回合(引导);空闲列:正常发送。带附件时改为排队":"";
+  }
+  if(ta) ta.placeholder=steer?"输入直接引导正在跑的模型,实时改变输出方向…（Enter 引导 · Shift+Enter 换行）":(active?"完成的模型会先发;忙的模型自动排队…":"输入一个问题,同时发给所有选中的模型…（Enter 发送 · Shift+Enter 换行）");
   const qb=$("#cmpQueue");   // 队列条:把排队中的问题原文显示出来,每条可单独 ✕ 撤销
   if(qb){
     if(!q){ qb.hidden=true; qb.innerHTML=""; }
@@ -2483,36 +2541,32 @@ function cmpSyncSendUI(){
       qb.querySelectorAll(".cmpqchip b").forEach(x=>x.onclick=()=>cmpCancelQueued(x.dataset.id));
     }
   }
-  const sb=$("#cmpSteerBtn"); if(sb) sb.hidden=![...CMP.sel].some(p=>CMP.running[p]&&CMP.turn[p]);   // 有正在跑(且有活动 turn)的列才显「引导」
   const stopAll=$("#cmpStopAllBtn");
   if(stopAll){ stopAll.hidden=!(active||q); stopAll.textContent=active?"停止全部":"清排队"; }
 }
-// 引导:把输入插进所有正在跑的列的当前 turn(steering),实时改变它们的输出。全模型支持(实测 deepseek/gpt 都被引导停)。
-async function cmpSteer(){
-  const ta=$("#cmpInput"); const text=(ta.value||"").trim();
-  if(!text) return;
-  const running=[...CMP.sel].filter(p=>CMP.running[p] && CMP.threads[p] && CMP.turn[p]);   // 正在跑且有活动 turn 的列
-  if(!running.length){ cwToast("没有正在运行的对话可引导;直接「发送」即可"); return; }
-  ta.value=""; ta.style.height="auto";
-  running.forEach(p=>cmpAddMsg(p,"u steer",'⤵ 引导:'+esc(text)));   // 显示引导气泡
-  await Promise.allSettled(running.map(p=>
-    fetch(url(`/cmp/${p}/v1/threads/${CMP.threads[p]}/turns/${CMP.turn[p]}/steer`),
-      {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:text})})
-      .then(r=>{ if(!r.ok) return r.text().then(t=>{throw new Error(t.slice(0,80))}); })
-      .catch(e=>cmpAddMsg(p,"a err","✗ 引导失败:"+esc(String(e&&e.message||e))))
-  ));
-}
+// 发送 = 智能分流:正在跑的列 → steer 注入当前 turn 实时改输出(全模型支持,实测 deepseek/gpt 都被引导停);
+// 空闲列 → 正常发新一轮;还在启动没 turn 的列 → 排队。带附件时 steer 走不了(steer 只带文本),整条回退排队语义。
 async function cmpSend(){
   const ta=$("#cmpInput"); const raw=(ta.value||"").trim();
   if(!raw && !CMP.attachments.length) return;   // 有字或有附件就能发
   ta.value=""; ta.style.height="auto";
   const atts=CMP.attachments.slice(); CMP.attachments=[]; cmpRenderAttach();   // 取走本轮附件并清空附件栏
   atts.forEach(revokeAttachmentPreview);
+  const steerable=(atts.length||!raw)?[]:[...CMP.sel].filter(p=>CMP.running[p] && CMP.threads[p] && CMP.turn[p]);   // 正在跑且有活动 turn 的列
+  if(steerable.length){
+    steerable.forEach(p=>cmpAddMsg(p,"u steer",'⤵ 引导:'+esc(raw)));   // 显示引导气泡
+    Promise.allSettled(steerable.map(p=>
+      fetch(url(`/cmp/${p}/v1/threads/${CMP.threads[p]}/turns/${CMP.turn[p]}/steer`),
+        {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:raw})})
+        .then(r=>{ if(!r.ok) return r.text().then(t=>{throw new Error(t.slice(0,80))}); })
+        .catch(e=>cmpAddMsg(p,"a err","✗ 引导失败:"+esc(String(e&&e.message||e))))
+    ));
+  }
   // sent=发给模型(折入文件路径,让各栏 read_file 读);disp=气泡显示(原文 + 附件名)
   const sent=atts.length ? `我上传了以下文件,请先用 read_file 读取再回答:\n${atts.map(a=>"- "+a.path).join("\n")}\n\n${raw}`.trim() : raw;
   const disp=raw+(atts.length?("  📎 "+atts.map(a=>a.name).join(", ")):"");
   const item=cmpMakeItem(sent,disp);
-  const provs=cmpValidProviders([...CMP.sel]);
+  const provs=cmpValidProviders([...CMP.sel]).filter(p=>!steerable.includes(p));   // 已被引导的列不再收同内容新消息
   if(!provs.length){ cmpSyncSendUI(); return; }
   cmpEnsureSession(item,provs);
   const ready=[], queued=[];
@@ -2689,7 +2743,6 @@ window.addEventListener("DOMContentLoaded",()=>{
   const cn=$("#cmpNewBtn"); if(cn) cn.onclick=cmpNewChat;
   const cr=$("#cmpResetBtn"); if(cr) cr.onclick=cmpResetBackends;
   const cs=$("#cmpSendBtn"); if(cs) cs.onclick=cmpSend;
-  const csb=$("#cmpSteerBtn"); if(csb) csb.onclick=cmpSteer;
   const cstop=$("#cmpStopAllBtn"); if(cstop) cstop.onclick=cmpStopAll;
   const ca=$("#cmpAutoTgl"); if(ca) ca.onclick=cmpToggleAuto;
   const csh=$("#cmpShellTgl"); if(csh) csh.onclick=cmpToggleShell;
@@ -2745,8 +2798,6 @@ window.addEventListener("DOMContentLoaded",()=>{
 #cmpClose{border:1px solid var(--line);background:var(--bg);border-radius:7px;padding:4px 10px;font-size:12px;cursor:pointer;color:var(--dim);display:inline-flex;align-items:center;gap:4px}
 #cmpInputRow{display:flex;gap:8px}
 #cmpInput{flex:1;min-height:44px;max-height:130px;resize:vertical;border:1px solid var(--line);border-radius:8px;padding:9px 11px;font:inherit;font-size:13px;background:var(--bg);color:var(--txt)}
-#cmpSteerBtn{border:1px solid var(--accent);background:transparent;color:var(--accent);border-radius:8px;padding:0 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:5px}
-#cmpSteerBtn:hover{background:var(--accent);color:#fff}
 #cmpStopAllBtn{border:1px solid var(--err);background:transparent;color:var(--err);border-radius:8px;padding:0 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:5px}
 #cmpStopAllBtn:hover{background:var(--err);color:#fff}
 #cmpSendBtn{border:none;background:var(--accent);color:#fff;border-radius:8px;padding:0 18px;font-size:13px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px}
@@ -2848,7 +2899,7 @@ input.cmpmodelinput:focus{border-color:var(--accent);background:var(--bg)}
   <div id="cmpTop">
     <div id="cmpHead"><b>⚖️ 多模型对比</b><div id="cmpChips"></div><div id="cmpShellTgl" class="tgl" title="开 = 允许 exec_shell 跑命令(跳出沙箱)。注:MCP / web_search / 读取等工具跟单窗口一样一直可用,此开关只额外控制 shell 命令"><span class="sw"></span>💻 Shell</div><div id="cmpAutoTgl" class="tgl" title="工具调用自动批准(对比无逐栏审批 UI,开 Shell 时建议开)"><span class="sw"></span>⚡ 自动批准</div><div id="cmpLayout" title="排列方式:横列 / 竖列 / 田字格(点某一栏的 ⤢ 或标题即可放大它、其余收进上方标签条)"><button class="laybtn" data-l="row">横</button><button class="laybtn" data-l="col">竖</button><button class="laybtn" data-l="grid">田</button></div><div id="cmpFswrap" title="对比文字大小(独立于主窗口)"><button class="fsbtn" onclick="bumpCmpFs(-1)" title="字小一点">A−</button><button class="fsbtn" onclick="bumpCmpFs(1)" title="字大一点">A+</button></div><button id="cmpNewBtn" title="在当前窗口开新一轮对比(上一轮已自动存进侧栏「多模型对比」会话,随时点回,不会丢)">＋ 新对话</button><button id="cmpResetBtn" title="某栏回答的不是它本人(回退成了 DeepSeek)?点这里用最新配置/key 重启所有对比后端">↻ 重启后端</button><button id="cmpClose" title="关闭这个对比窗口">✕ 退出</button></div>
     <div id="cmpAttachBar" hidden></div>
-    <div id="cmpInputRow"><button id="cmpAttachBtn" title="上传文件(文本/代码,各模型会 read_file 读取;也可直接粘贴/拖拽。图片会显示预览)">📎</button><textarea id="cmpInput" wrap="soft" placeholder="输入一个问题,同时发给所有选中的模型…（Enter 发送 · Shift+Enter 换行 · 可粘贴/拖拽文件）"></textarea><button id="cmpSteerBtn" hidden title="把这句插进正在运行的对话,实时引导它们(全模型支持);「发送」则是排队、等当前轮完再发">⤵ 引导</button><button id="cmpStopAllBtn" hidden title="停止所有正在运行的模型,并清空还没发出去的排队消息">停止全部</button><button id="cmpSendBtn">发送</button></div>
+    <div id="cmpInputRow"><button id="cmpAttachBtn" title="上传文件(文本/代码,各模型会 read_file 读取;也可直接粘贴/拖拽。图片会显示预览)">📎</button><textarea id="cmpInput" wrap="soft" placeholder="输入一个问题,同时发给所有选中的模型…（Enter 发送 · Shift+Enter 换行 · 可粘贴/拖拽文件）"></textarea><button id="cmpStopAllBtn" hidden title="停止所有正在运行的模型,并清空还没发出去的排队消息">停止全部</button><button id="cmpSendBtn">发送</button></div>
     <input type="file" id="cmpFileInput" multiple style="display:none">
     <div id="cmpQueue" hidden></div>
   </div>
