@@ -1,32 +1,108 @@
-CodeWhale GUI —— 发布在线更新 操作指南
-==========================================
+CodeWhale GUI 正式发布指南
+==========================
 
-一次性准备(已完成):
-  • 私钥: ~/codewhale-release/signing-key.pem  ← 务必离线备份、绝不外传!泄露=别人能签恶意更新
-  • 公钥: 已内嵌进 server.py(收件人用它验签)
-  • 发版脚本: ~/codewhale-release/make-release.sh
+发布目标
+--------
 
-每次发布新版的步骤（务必发全 4 个文件，否则新机器装不到最新版！）:
-  1. 改好 ~/codewhale-gui 里的 web/ 或 server.py
-  2. 同步到 repo + 设版本:
-        cp ~/codewhale-gui/{server.py,web/index.html 等} ~/codewhale-gui-repo/对应位置
-        echo 2.2.0 > ~/codewhale-gui-repo/VERSION
-  3. 在线更新 3 产物(从 dev 打):
-        ~/codewhale-release/make-release.sh 2.2.0 "这版改了啥"
-        → dist/2.2.0/ 生成 gui-2.2.0.tar.gz / manifest.json / manifest.json.sig
-  4. ★ 完整安装包(从 repo 打,编译原生 app):
-        cd ~/codewhale-gui-repo && ./package-installer.sh ~/codewhale-release/dist/2.2.0/codewhale-installer.tar.gz
-        → 生成 codewhale-installer.tar.gz（新机器一键装最新版用的，必须随每版发！）
-  5. 建 Release 上传【全部 4 个文件】:
-        gh release create v2.2.0 --repo <owner/repo> ... \
-          gui-2.2.0.tar.gz manifest.json manifest.json.sig codewhale-installer.tar.gz
-  6. 装过的机器：界面点「↑ 界面」看进度条更新；新机器：下 codewhale-installer.tar.gz 双击 install.command。
-  ⚠ 只传 3 个在线产物（漏掉 installer）会导致新机器在 Releases 页找不到安装包 —— v2.1.6~v2.1.9 就犯过这错。
+一次发布必须同时覆盖：
 
-开启面向用户的自动更新:
-  • 编辑安装包里的 update.json:repo 改成你的 "owner/repo",enabled 改 true,然后重打包分享
-  • 收件人装上后就能收到你的更新
+  1. GUI 在线更新包
+  2. 研究 Harness 在线更新包
+  3. 新机器完整安装包
+  4. 原生 macOS App（构建成功时）
+  5. 可选的 Claude 订阅补丁二进制
+  6. Ed25519 签名清单和 SHA-256 校验文件
 
-安全要点:
-  • 私钥只在你这台机;就算 GitHub 被黑,没私钥也签不出能被接受的更新
-  • 每次更新都验:Ed25519 签名 + SHA-256 + 版本只升不降 + 路径封死在 GUI 目录
+安全前提
+--------
+
+  • 私钥只保存在发布者电脑，绝不能提交、上传或写入文档。
+  • 默认从 ~/.codewhale-release/signing-key.pem 读取；也可显式设置：
+
+      export CODEWHALE_SIGNING_KEY=/absolute/path/to/signing-key.pem
+
+  • 公钥已内嵌在 server.py，客户端会验证 manifest.json.sig。
+  • 正式发布前工作树必须干净，发布脚本会主动拒绝脏工作树。
+  • GUI/Harness 更新会校验 Ed25519 签名、SHA-256、版本只升不降和目标路径。
+
+正式发布
+--------
+
+  1. 更新 VERSION、installer/VERSION、harness/VERSION 和 CHANGELOG.md。
+  2. 为本次版本创建 docs/releases/vX.Y.Z.md。
+  3. 完成代码检查、安装包结构检查和 UI 冒烟测试。
+  4. 合并发布分支到 main，确认 GitHub 上 main 已包含该版本。
+  5. 在仓库根目录执行：
+
+      ./publish-release.sh X.Y.Z
+
+     默认发布到 felixgo2140/CodeWhale-GUI，并把 vX.Y.Z 标签指向 main。
+     如需覆盖目标：
+
+      CODEWHALE_GITHUB_REPO=owner/repo \
+      CODEWHALE_RELEASE_TARGET=main \
+      CODEWHALE_SIGNING_KEY=/absolute/path/to/signing-key.pem \
+      ./publish-release.sh X.Y.Z
+
+发布资产
+--------
+
+脚本会在 dist/X.Y.Z/ 生成并上传：
+
+  • gui-X.Y.Z.tar.gz
+      GUI 在线更新包：web/、server.py、VERSION。
+
+  • harness-X.Y.Z.tar.gz
+      研究 Harness 更新包；不包含 harness.env、API key 或私有 skill。
+
+  • codewhale-installer.tar.gz
+      新机器完整安装包；下载文件名必须保持完全一致。
+
+  • manifest.json
+      GUI、Harness、原生 App、可选二进制的版本、大小和 SHA-256。
+
+  • manifest.json.sig
+      manifest.json 原始字节的 Ed25519 签名（Base64）。
+
+  • SHA256SUMS
+      用户可独立校验主要发布资产。
+
+  • CodeWhale.app.tar.gz（构建成功时）
+      原生 macOS WKWebView 壳。
+
+  • codewhale-claude / codewhale-tui（本机存在时）
+      Claude 订阅桥接的可选签名资产。
+
+新用户与已安装用户
+------------------
+
+  • 新用户：下载 codewhale-installer.tar.gz，解压后双击 install.command。
+  • 已安装用户：设置 → 更新；GUI、后端、大模型、Harness 和插件分级检查。
+  • App 内 GUI 更新只替换 web/、server.py、VERSION；安装器级改动必须同时在
+    server.py 中提供兼容/迁移逻辑，不能只改 installer/install.sh。
+
+发布后回验
+----------
+
+  1. 查看 Release：
+
+      gh release view vX.Y.Z --repo felixgo2140/CodeWhale-GUI
+
+  2. 检查固定下载地址返回 200：
+
+      https://github.com/felixgo2140/CodeWhale-GUI/releases/latest/download/codewhale-installer.tar.gz
+      https://github.com/felixgo2140/CodeWhale-GUI/releases/latest/download/manifest.json
+      https://github.com/felixgo2140/CodeWhale-GUI/releases/latest/download/manifest.json.sig
+
+  3. 在 CodeWhale 设置 → 更新中重新检查，确认 GUI vX.Y.Z 可见。
+  4. 下载完整安装包到临时目录，确认 VERSION、web/、server.py、harness/、
+     install.sh、install.command 和 CodeWhale.app 都存在。
+
+常见错误
+--------
+
+  • 漏传 codewhale-installer.tar.gz：新机器固定下载地址会 404。
+  • 把“显示名称”当下载名：GitHub 资产的真实文件名仍可能错误。
+  • 只更新 install.sh：App 内在线更新用户不会执行它。
+  • 私钥或 harness.env 被打包：立即停止发布并轮换相关凭证。
+  • 本地插件有未提交修改：GitHub 插件更新会拒绝覆盖，需先处理本地修改。

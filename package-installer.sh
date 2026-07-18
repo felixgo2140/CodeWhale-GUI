@@ -16,7 +16,11 @@ cp "$HERE/installer/README.txt"     "$STAGE/README.txt"
 cp "$HERE/installer/update.json"    "$STAGE/update.json"
 cp "$HERE/VERSION"                  "$STAGE/VERSION"   # 用顶层 VERSION(= 本次发布版本),不用 stale 的 installer/VERSION
 cp -R "$HERE/web"                   "$STAGE/web"
+cp -R "$HERE/harness"               "$STAGE/harness"
 cp "$HERE/server.py"                "$STAGE/server.py"
+cp "$HERE/playwright-mcp-launch.sh" "$STAGE/playwright-mcp-launch.sh" 2>/dev/null || true
+find "$STAGE" -type d -name '__pycache__' -prune -exec rm -rf {} +
+find "$STAGE" -type f -name '*.pyc' -delete
 # claude-code 补丁二进制(Claude 订阅 / Opus 引擎)——官方 codewhale 不识别 claude-code provider,必须带上这俩。
 # 来源:本机已签名副本 ~/.codewhale-gui/bin/(回退到 build 目录)。arm64(M 系);Intel 需另出 universal。
 CCBIN_CLAUDE="$(ls "$HOME/.codewhale-gui/bin/codewhale-claude" "$HOME/codewhale-src/target/release/codewhale" 2>/dev/null | head -1)"
@@ -31,6 +35,7 @@ else
 fi
 chmod +x "$STAGE/install.sh" 2>/dev/null || true
 chmod +x "$STAGE/install.command" 2>/dev/null || true
+chmod +x "$STAGE/harness/install_harnesses.sh" 2>/dev/null || true
 echo "→ [3/3] 打包…"
 OUT="${1:-$HERE/codewhale-installer.tar.gz}"
 ( cd "$TMP" && COPYFILE_DISABLE=1 tar --exclude='.DS_Store' -czf "$OUT" codewhale-installer )

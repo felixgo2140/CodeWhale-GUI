@@ -9,27 +9,207 @@ import os
 import subprocess
 import sys
 import time
+import tomllib
 import uuid
+import re
 
 VENV_PY = os.path.expanduser("~/agent-harnesses/gptr-venv/bin/python")
 OUT = os.path.expanduser("~/harness-output/gptr")
 JOBS = os.path.join(OUT, "jobs")
 ENVFILE = os.path.expanduser("~/agent-harnesses/gptr.env")
+HARNESS_ENV = os.path.expanduser("~/agent-harnesses/harness.env")
+CODEWHALE_CFG = os.path.expanduser("~/.codewhale/config.toml")
+CODEWHALE_CMP_DIR = os.path.expanduser("~/.codewhale-gui/cmp")
 
 
-def _load_env():
-    # 强制覆盖(不能 setdefault):宿主 shell 可能已有别家 OPENAI_API_KEY,会让 deepseek 调用 401
-    for ln in open(ENVFILE):
+def _read_env_file(path):
+    vals = {}
+    if not os.path.exists(path):
+        return vals
+    for ln in open(path):
         ln = ln.strip()
         if ln and not ln.startswith("#") and "=" in ln:
             k, v = ln.split("=", 1)
-            os.environ[k] = v
+            vals[k] = v
+    return vals
 
 
-def cmd_submit(prompt):
+def _codewhale_custom():
+    key, base, _ = _codewhale_provider_config("custom", "https://tokenhub.tencentmaas.com/v1")
+    return key, base
+
+
+def _looks_placeholder(value):
+    v = (value or "").strip().lower()
+    return (not v) or "xxxx" in v or v in {"sk-", "your-key", "your_api_key", "changeme"}
+
+
+def _redact(text):
+    s = str(text or "")
+    s = re.sub(r"\b(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]{8,}([A-Za-z0-9_-]{4})\b", r"\1…\2", s)
+    return re.sub(r"\b(sk-[A-Za-z0-9_-]{4,})\*+([A-Za-z0-9_-]{4})\b", r"\1…\2", s)
+
+
+def _read_toml(path):
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except Exception:
+        return {}
+
+
+def _provider_result(prov, default_base, default_model):
+    if not isinstance(prov, dict):
+        return None
+    key = (prov.get("api_key") or "").strip()
+    if not key:
+        return None
+    return (
+        key,
+        (prov.get("base_url") or default_base).rstrip("/"),
+        prov.get("model") or default_model,
+    )
+
+
+def _codewhale_provider_config(name, default_base="", default_model=""):
+    cfg = _read_toml(CODEWHALE_CFG)
+
+    providers = cfg.get("providers") or {}
+    prov = providers.get(name) if isinstance(providers, dict) else {}
+    result = _provider_result(prov, default_base, default_model)
+    if result:
+        return result
+
+    if cfg.get("provider") == name:
+        result = _provider_result(cfg, default_base, default_model)
+        if result:
+            return result
+
+    cmp_cfg = _read_toml(os.path.join(CODEWHALE_CMP_DIR, f"{name}.toml"))
+    providers = cmp_cfg.get("providers") or {}
+    prov = providers.get(name) if isinstance(providers, dict) else {}
+    result = _provider_result(prov, default_base, default_model)
+    if result:
+        return result
+
+    return "", default_base.rstrip("/"), default_model
+
+
+def _codewhale_provider(name, default_base=""):
+    key, base, _ = _codewhale_provider_config(name, default_base)
+    return key, base
+
+
+def _model_key(model):
+    m = (model or "").lower()
+    if m in ("hunyuan", "custom", "hy3-preview"):
+        return "hunyuan"
+    if m in ("glm", "zai", "zhipu", "glm-5.2", "glm-5.2-air"):
+        return "zai"
+    if m in ("kimi", "moonshot", "kimi-for-coding", "moonshot-v1-128k"):
+        return "kimi"
+    if m in ("longcat", "longcat-2.0"):
+        return "longcat"
+    if m in ("volcengine", "doubao", "doubao-seed-2-1-pro-260628"):
+        return "volcengine"
+    if m in ("qwen", "qwen-plus", "qwen-max", "dashscope", "tongyi", "qianwen") or "qwen" in m:
+        return "qwen"
+    return "deepseek"
+
+
+def _set_embedding(vals):
+    key, base = _codewhale_provider("moonshot", "https://api.kimi.com/coding/v1")
+    key = key or vals.get("KIMI_API_KEY", "")
+    if _looks_placeholder(key):
+        raise RuntimeError("GPT Researcher 需要 Kimi embedding key:请在 CodeWhale 的 Kimi/Moonshot 配置里保存可用 key")
+    os.environ["EMBEDDING"] = "openai:moonshot-v1-embedding"
+    os.environ["EMBEDDING_KWARGS"] = json.dumps({
+        "openai_api_base": base or "https://api.kimi.com/coding/v1",
+        "openai_api_key": key,
+    }, ensure_ascii=False)
+
+
+def _set_openai_compat(key, base, model):
+    if _looks_placeholder(key):
+        raise RuntimeError(f"{model} 的 API key 未配置或还是占位符")
+    base = (base or "").rstrip("/")
+    os.environ["OPENAI_API_KEY"] = key
+    os.environ["OPENAI_BASE_URL"] = base
+    os.environ["OPENAI_API_BASE"] = base
+    os.environ["FAST_LLM"] = f"openai:{model}"
+    os.environ["SMART_LLM"] = f"openai:{model}"
+    os.environ["STRATEGIC_LLM"] = f"openai:{model}"
+    # 推理型模型(doubao-seed/LongCat/混元等)思考会吃掉输出预算,gpt-researcher 默认 3000/6000/4000
+    # 太小 → 正文为空("LLM returned empty response")。统一拉高,普通模型也无害(只是上限)。
+    os.environ.setdefault("FAST_TOKEN_LIMIT", "8000")
+    os.environ.setdefault("SMART_TOKEN_LIMIT", "16000")
+    os.environ.setdefault("STRATEGIC_TOKEN_LIMIT", "8000")
+
+
+def _set_deepseek(vals):
+    key, _ = _codewhale_provider("deepseek", "https://api.deepseek.com")
+    key = key or vals.get("DEEPSEEK_API_KEY", "")
+    if _looks_placeholder(key):
+        raise RuntimeError("DeepSeek API key 未配置:请先在 CodeWhale 模型设置里保存 DeepSeek key")
+    os.environ["DEEPSEEK_API_KEY"] = key
+    os.environ["FAST_LLM"] = "deepseek:deepseek-v4-flash"
+    os.environ["SMART_LLM"] = "deepseek:deepseek-v4-pro"
+    os.environ["STRATEGIC_LLM"] = "deepseek:deepseek-v4-pro"
+
+
+def _load_env(model=""):
+    # 强制覆盖(不能 setdefault):宿主 shell/gptr.env 可能已有别家 OPENAI_API_KEY,会让调用串到 OpenAI 官方 401
+    vals = _read_env_file(ENVFILE)
+    vals.update({k: v for k, v in _read_env_file(HARNESS_ENV).items() if k not in vals})
+    shadowed = {
+        "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE",
+        "FAST_LLM", "SMART_LLM", "STRATEGIC_LLM",
+        "EMBEDDING", "EMBEDDING_KWARGS", "LLM_KWARGS",
+    }
+    for k, v in vals.items():
+        if k in shadowed:
+            continue
+        os.environ[k] = v
+    for k in shadowed:
+        os.environ.pop(k, None)
+    if not os.environ.get("TAVILY_API_KEY"):
+        raise RuntimeError("~/agent-harnesses/harness.env 缺 TAVILY_API_KEY")
+    os.environ["LANGUAGE"] = "chinese"
+    os.environ.setdefault("TOTAL_WORDS", "1800")
+    os.environ.setdefault("MAX_ITERATIONS", "3")
+    _set_embedding(vals)
+
+    mk = _model_key(model)
+    if mk == "hunyuan":
+        key, base = _codewhale_custom()
+        key = key or vals.get("HUNYUAN_API_KEY", "")
+        _set_openai_compat(key, base, "hy3-preview")
+    elif mk == "zai":
+        key, base = _codewhale_provider("zai", "https://api.z.ai/api/paas/v4")
+        key = key or vals.get("ZHIPU_API_KEY", "")
+        _set_openai_compat(key, base or "https://api.z.ai/api/paas/v4", "GLM-5.2")
+    elif mk == "kimi":
+        key, base = _codewhale_provider("moonshot", "https://api.kimi.com/coding/v1")
+        key = key or vals.get("KIMI_API_KEY", "")
+        _set_openai_compat(key, base or "https://api.kimi.com/coding/v1", "kimi-for-coding")
+    elif mk == "longcat":
+        key, base, mdl = _codewhale_provider_config("longcat", "https://api.longcat.chat/openai", "LongCat-2.0")
+        _set_openai_compat(key, base, mdl or "LongCat-2.0")
+    elif mk == "volcengine":
+        key, base, mdl = _codewhale_provider_config("volcengine", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seed-2-1-pro-260628")
+        _set_openai_compat(key, base, mdl or "doubao-seed-2-1-pro-260628")
+    elif mk == "qwen":
+        key, base, mdl = _codewhale_provider_config("qwen", "https://ws-zazex2z3400vhsxs.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", "qwen3.7-max-2026-06-08")
+        key = key or vals.get("DASHSCOPE_API_KEY", "")
+        _set_openai_compat(key, base, mdl or "qwen3.7-max-2026-06-08")
+    else:
+        _set_deepseek(vals)
+
+
+def cmd_submit(prompt, model=""):
     os.makedirs(JOBS, exist_ok=True)
     jid = uuid.uuid4().hex[:12]
-    job = {"id": jid, "status": "running", "query": prompt, "started": time.time()}
+    job = {"id": jid, "status": "running", "query": prompt, "model": model, "started": time.time()}
     json.dump(job, open(f"{JOBS}/{jid}.json", "w"), ensure_ascii=False)
     subprocess.Popen(
         [VENV_PY, os.path.abspath(__file__), "run", jid],
@@ -41,10 +221,10 @@ def cmd_submit(prompt):
 
 
 def cmd_run(jid):
-    _load_env()
     import asyncio
 
     job = json.load(open(f"{JOBS}/{jid}.json"))
+    _load_env(job.get("model", ""))
     try:
         from gpt_researcher import GPTResearcher
 
@@ -72,7 +252,7 @@ def cmd_run(jid):
             pass
         job.update(status="success", file=fn, path=path, costs=costs, sources=srcs)
     except Exception as e:
-        job.update(status="error", error=str(e)[:500])
+        job.update(status="error", error=_redact(str(e))[:500])
     json.dump(job, open(f"{JOBS}/{jid}.json", "w"), ensure_ascii=False)
 
 
@@ -85,14 +265,14 @@ def cmd_progress(jid):
     tail, nlines = "", 0
     try:
         log = open(f"{JOBS}/{jid}.log", errors="replace").read()
-        tail = log[-2000:]
+        tail = _redact(log[-2000:])
         nlines = len([l for l in log.splitlines() if l.strip()])
     except Exception:
         pass
     out = {"status": job.get("status", "unknown"), "tail": tail, "msg_count": nlines,
            "llm_calls": 0, "in_tokens": 0, "out_tokens": 0}
     if job.get("error"):
-        out["error"] = job["error"]
+        out["error"] = _redact(job["error"])
     if job.get("sources"):
         out["msg_count"] = job["sources"]
     print(json.dumps(out, ensure_ascii=False))
@@ -108,14 +288,26 @@ def cmd_result(jid):
         print(json.dumps({"ok": True, "output": open(job["path"], errors="replace").read(),
                           "file": job.get("file"), "path": job.get("path")}, ensure_ascii=False))
     else:
-        print(json.dumps({"ok": False, "error": job.get("error") or "无结果"}, ensure_ascii=False))
+        print(json.dumps({"ok": False, "error": _redact(job.get("error") or "无结果")}, ensure_ascii=False))
 
 
 def main():
     if len(sys.argv) < 3:
-        sys.exit("用法: gptr_client.py submit <prompt> | run|progress|result <job_id>")
+        sys.exit("用法: gptr_client.py submit <prompt> [--model hunyuan|deepseek|zai|kimi|longcat|volcengine|qwen] | run|progress|result <job_id>")
     cmd, arg = sys.argv[1], sys.argv[2]
-    {"submit": cmd_submit, "run": cmd_run, "progress": cmd_progress, "result": cmd_result}[cmd](arg)
+    model = ""
+    if "--model" in sys.argv:
+        i = sys.argv.index("--model")
+        if i + 1 < len(sys.argv):
+            model = sys.argv[i + 1]
+    if "-m" in sys.argv:
+        i = sys.argv.index("-m")
+        if i + 1 < len(sys.argv):
+            model = sys.argv[i + 1]
+    if cmd == "submit":
+        cmd_submit(arg, model)
+    else:
+        {"run": cmd_run, "progress": cmd_progress, "result": cmd_result}[cmd](arg)
 
 
 if __name__ == "__main__":

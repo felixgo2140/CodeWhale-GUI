@@ -1,5 +1,25 @@
 # 更新日志
 
+## v2.7.0 — 正式整合发布
+
+### 界面与会话
+- GUI 拆分为独立 CSS/ES modules,重做侧栏、顶栏、消息流、对比窗口和输入区;加强背景、分隔线、选中态和模块对比度。
+- 多模型对比改为标签页为主,会话使用唯一 comparison session ID 归组;关闭后重开模型仍保留原历史。
+- 长对话采用按需渲染和历史渐进加载,修复切换占用高、页面闪烁、输出重复和完成卡片无限增长。
+- 新增输入时间线、归档会话管理、首条消息后一次性智能短标题、研究 Markdown 正文/附件卡和 PDF 预览。
+- 新增 `Cron Jobs` 标签,优先显示在「置顶」之前;普通线程和多模型会话均可独立标记。
+- 每个 CodeWhale turn 完成、失败或中断后发送 macOS 原生通知,具备持久化去重,不补弹历史任务。
+
+### 模型、插件与研究
+- 完成 CodeWhale v0.9.0 provider/thread 路由兼容,单聊与对比窗口会按实际线程身份恢复模型。
+- 模型管理器拆分 CodeWhale 后端与各大模型,支持独立可用性/模型列表检查;包含 ChatGPT OAuth、Kimi K3 订阅路由及自定义 OpenAI-compatible provider 迁移。
+- 插件管理统一本地目录和 GitHub 安装,插件子 skill 从 `+` 一级菜单直接调用,并支持安装、启停、修复与更新检查。
+- 研究 harness 扩展到 DeerFlow、GPT Researcher、Open Deep Research、STORM、Agent Loop、Pydantic AI、CrewAI、Browser Use 与 Obsidian 等桥接,默认中文输出,研究结果直接附加 Markdown/PDF。
+
+### 安全与发布
+- 加固凭据下载、命令/路径校验、插件信任来源、安全解包、SSE 快照互斥和 harness 版本防回退。
+- 完整安装包现在同时携带 GUI、原生 App、安装器、Claude 订阅桥接二进制和无密钥 harness 脚本;在线更新继续使用 Ed25519 + SHA-256 验签。
+
 ## v2.6.0 — 深度研究引擎选择器(5 引擎)+ 一批稳定性根治
 
 ### 新增

@@ -1,67 +1,151 @@
 #!/usr/bin/env bash
-# CodeWhale GUI 发版:打包 web/+server.py+VERSION → 算 SHA-256 → 生成清单 → 用私钥 Ed25519 签名。
-# 用法: make-release.sh <版本号 如 2.1.0> ["发布说明"]
-set -e
-VERSION="${1:?用法: make-release.sh <版本号 如 2.1.0> [发布说明]}"
+# Build and sign the CodeWhale GUI online-update assets.
+# Usage: ./make-release.sh <version> [release notes]
+set -euo pipefail
+
+VERSION="${1:?Usage: ./make-release.sh <version> [release notes]}"
 NOTES="${2:-}"
-SRC="$HOME/codewhale-gui"
-KEY="$HOME/codewhale-release/signing-key.pem"
-OUT="$HOME/codewhale-release/dist/$VERSION"
-[ -f "$KEY" ] || { echo "✗ 私钥不在 $KEY,无法签名"; exit 1; }
-mkdir -p "$OUT"
-echo "$VERSION" > "$SRC/VERSION"
-BUNDLE="gui-$VERSION.tar.gz"
-( cd "$SRC" && COPYFILE_DISABLE=1 tar --exclude='.DS_Store' --exclude='*.bak*' -czf "$OUT/$BUNDLE" web server.py VERSION )
-# claude-code 补丁二进制(供 server.py lazy-fetch 自动下载):拷到发布目录 + 把 SHA-256/arch 写进签名清单。
-BINDIR="$HOME/.codewhale-gui/bin"
-for b in codewhale-claude codewhale-tui; do
-  if [ -f "$BINDIR/$b" ]; then cp "$BINDIR/$b" "$OUT/$b"; else echo "  ⚠ 缺补丁二进制 $b —— lazy-fetch 将不可用"; fi
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SRC="${CODEWHALE_SOURCE_DIR:-$HERE}"
+OUT="${CODEWHALE_RELEASE_OUT:-$HERE/dist/$VERSION}"
+KEY="${CODEWHALE_SIGNING_KEY:-$HOME/.codewhale-release/signing-key.pem}"
+
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+  echo "Error: invalid version: $VERSION" >&2
+  exit 1
+fi
+if [ ! -f "$KEY" ] && [ -f "$HOME/Desktop/work/signing-key.pem" ]; then
+  KEY="$HOME/Desktop/work/signing-key.pem"
+elif [ ! -f "$KEY" ] && [ -f "$HOME/codewhale-release/signing-key.pem" ]; then
+  KEY="$HOME/codewhale-release/signing-key.pem"
+fi
+[ -f "$KEY" ] || { echo "Error: signing key not found. Set CODEWHALE_SIGNING_KEY." >&2; exit 1; }
+for path in "$SRC/web" "$SRC/server.py" "$SRC/VERSION" "$SRC/harness"; do
+  [ -e "$path" ] || { echo "Error: missing release input: $path" >&2; exit 1; }
 done
-# 原生 App(CodeWhale.app):main.swift 没变就**复用上版 tar**(swiftc 非确定性 SHA 否则每版都变 → 触发所有机器无谓重下 + 误报"重开");变了才重建。
-NATIVE_BUILD="$HOME/codewhale-gui-repo/native/build.sh"
-SWIFT_SRC="$HOME/codewhale-gui-repo/native/main.swift"
-SWIFT_MARK="$HOME/codewhale-release/.swift_sha"
-PREV_APP="$(ls -t "$HOME/codewhale-release/dist"/*/CodeWhale.app.tar.gz 2>/dev/null | grep -v "/$VERSION/" | head -1)"
-CUR_SWIFT="$( [ -f "$SWIFT_SRC" ] && shasum -a256 "$SWIFT_SRC" | cut -d' ' -f1 )"
-if [ -n "$CUR_SWIFT" ] && [ "$CUR_SWIFT" = "$(cat "$SWIFT_MARK" 2>/dev/null)" ] && [ -n "$PREV_APP" ]; then
-  cp "$PREV_APP" "$OUT/CodeWhale.app.tar.gz"; echo "  + 原生 App 复用上版(main.swift 未变,SHA 不变 → 各机不会无谓重下)"
-elif [ -f "$NATIVE_BUILD" ]; then
-  rm -rf "$OUT/CodeWhale.app"
-  if bash "$NATIVE_BUILD" "$OUT/CodeWhale.app" >/dev/null 2>&1; then
-    ( cd "$OUT" && COPYFILE_DISABLE=1 tar --exclude='.DS_Store' -czf CodeWhale.app.tar.gz CodeWhale.app ) && rm -rf "$OUT/CodeWhale.app"
-    [ -n "$CUR_SWIFT" ] && echo "$CUR_SWIFT" > "$SWIFT_MARK"
-    echo "  + 原生 App 重建打包(main.swift 变了)"
-  else echo "  ⚠ 原生 App 构建失败 —— 在线更新将不带原生壳"; fi
-else echo "  ⚠ 找不到 $NATIVE_BUILD —— 在线更新将不带原生壳"; fi
-python3 - "$VERSION" "$NOTES" "$OUT/$BUNDLE" "$BUNDLE" "$KEY" "$OUT" <<'PY'
-import sys,hashlib,json,base64,os,subprocess
-from cryptography.hazmat.primitives import serialization as ser
-ver,notes,bpath,bname,key,out=sys.argv[1:7]
-def sha(p):
-    import hashlib; h=hashlib.sha256();
-    with open(p,'rb') as f:
-        for c in iter(lambda:f.read(1<<20),b''): h.update(c)
-    return h.hexdigest()
-blob=open(bpath,'rb').read()
-man={"version":ver,"notes":notes,"bundle":bname,"sha256":hashlib.sha256(blob).hexdigest(),"size":len(blob)}
-bins=[]
-for name in ("codewhale-claude","codewhale-tui"):
-    p=os.path.join(out,name)
-    if os.path.exists(p):
-        try: arch=subprocess.run(["lipo","-archs",p],capture_output=True,text=True).stdout.strip() or "arm64"
-        except Exception: arch="arm64"
-        bins.append({"name":name,"sha256":sha(p),"size":os.path.getsize(p),"arch":arch})
-if bins: man["binaries"]=bins                                          # 二进制清单进签名清单 → SHA-256 可信
-napp=os.path.join(out,"CodeWhale.app.tar.gz")                          # 原生 App SHA 进签名清单 → 版本感知刷新可信
-if os.path.exists(napp):
-    man["native_app"]={"name":"CodeWhale.app.tar.gz","sha256":sha(napp),"size":os.path.getsize(napp)}
-man_bytes=json.dumps(man,ensure_ascii=False,sort_keys=True).encode()   # 签的就是写进 manifest.json 的字节
-open(os.path.join(out,"manifest.json"),'wb').write(man_bytes)
-priv=ser.load_pem_private_key(open(key,'rb').read(),password=None)
-open(os.path.join(out,"manifest.json.sig"),'w').write(base64.b64encode(priv.sign(man_bytes)).decode())
-print(f"  version={ver} size={len(blob)} sha256={man['sha256'][:16]}…  binaries={[b['name'] for b in bins]} native_app={'native_app' in man}")
+
+mkdir -p "$OUT"
+rm -f "$OUT"/gui-*.tar.gz "$OUT"/harness-*.tar.gz \
+  "$OUT/manifest.json" "$OUT/manifest.json.sig" \
+  "$OUT/codewhale-claude" "$OUT/codewhale-tui" "$OUT/CodeWhale.app.tar.gz"
+printf '%s\n' "$VERSION" > "$SRC/VERSION"
+printf '%s\n' "$VERSION" > "$SRC/harness/VERSION"
+
+GUI_BUNDLE="gui-$VERSION.tar.gz"
+HARNESS_BUNDLE="harness-$VERSION.tar.gz"
+
+echo "-> Building $GUI_BUNDLE"
+(
+  cd "$SRC"
+  COPYFILE_DISABLE=1 tar --exclude='.DS_Store' --exclude='*.bak*' \
+    --exclude='__pycache__' --exclude='*.pyc' \
+    -czf "$OUT/$GUI_BUNDLE" web server.py VERSION
+)
+
+echo "-> Building $HARNESS_BUNDLE"
+(
+  cd "$SRC"
+  COPYFILE_DISABLE=1 tar --exclude='.DS_Store' --exclude='__pycache__' \
+    --exclude='*.pyc' --exclude='harness.env' --exclude='skills-custom' \
+    -czf "$OUT/$HARNESS_BUNDLE" harness
+)
+
+# Optional patched Claude subscription runtime. The signed manifest records
+# every copied binary, so clients reject a tampered release asset.
+BIN_DIR="${CODEWHALE_PATCHED_BIN_DIR:-$HOME/.codewhale-gui/bin}"
+for name in codewhale-claude codewhale-tui; do
+  if [ -f "$BIN_DIR/$name" ]; then
+    cp "$BIN_DIR/$name" "$OUT/$name"
+  else
+    echo "Warning: missing optional patched binary: $BIN_DIR/$name" >&2
+  fi
+done
+
+# Native shell is an independently verified release asset. Build it when the
+# source is available; online updates remain valid when it is omitted.
+if [ -x "$SRC/native/build.sh" ]; then
+  APP_DIR="$OUT/CodeWhale.app"
+  rm -rf "$APP_DIR"
+  if "$SRC/native/build.sh" "$APP_DIR" >/dev/null; then
+    (
+      cd "$OUT"
+      COPYFILE_DISABLE=1 tar --exclude='.DS_Store' -czf CodeWhale.app.tar.gz CodeWhale.app
+    )
+    rm -rf "$APP_DIR"
+  else
+    echo "Warning: native app build failed; continuing without native asset" >&2
+  fi
+fi
+
+python3 - "$VERSION" "$NOTES" "$OUT/$GUI_BUNDLE" "$GUI_BUNDLE" \
+  "$OUT/$HARNESS_BUNDLE" "$HARNESS_BUNDLE" "$KEY" "$OUT" <<'PY'
+import base64
+import hashlib
+import json
+import os
+import subprocess
+import sys
+
+from cryptography.hazmat.primitives import serialization
+
+version, notes, gui_path, gui_name, harness_path, harness_name, key_path, out = sys.argv[1:]
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def asset(path, name, **extra):
+    value = {"name": name, "sha256": sha256(path), "size": os.path.getsize(path)}
+    value.update(extra)
+    return value
+
+manifest = {
+    "version": version,
+    "notes": notes,
+    "bundle": gui_name,
+    "sha256": sha256(gui_path),
+    "size": os.path.getsize(gui_path),
+    "harness": asset(harness_path, harness_name, version=version),
+}
+
+binaries = []
+for name in ("codewhale-claude", "codewhale-tui"):
+    path = os.path.join(out, name)
+    if not os.path.exists(path):
+        continue
+    try:
+        arch = subprocess.run(
+            ["lipo", "-archs", path], capture_output=True, text=True, check=False
+        ).stdout.strip() or "arm64"
+    except Exception:
+        arch = "arm64"
+    binaries.append(asset(path, name, arch=arch))
+if binaries:
+    manifest["binaries"] = binaries
+
+native_path = os.path.join(out, "CodeWhale.app.tar.gz")
+if os.path.exists(native_path):
+    manifest["native_app"] = asset(native_path, "CodeWhale.app.tar.gz")
+
+manifest_bytes = json.dumps(
+    manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+).encode("utf-8")
+private_key = serialization.load_pem_private_key(open(key_path, "rb").read(), password=None)
+signature = private_key.sign(manifest_bytes)
+private_key.public_key().verify(signature, manifest_bytes)
+
+open(os.path.join(out, "manifest.json"), "wb").write(manifest_bytes)
+open(os.path.join(out, "manifest.json.sig"), "w", encoding="ascii").write(
+    base64.b64encode(signature).decode("ascii")
+)
+
+print(f"   GUI SHA-256: {manifest['sha256']}")
+print(f"   Harness SHA-256: {manifest['harness']['sha256']}")
+print("   Ed25519 signature: verified")
 PY
-echo "✓ 发布产物($OUT):"; ls -1 "$OUT"
-echo "→ 上传到 GitHub Release(同一个 release):"
-echo "    $BUNDLE / manifest.json / manifest.json.sig"
-echo "    codewhale-claude / codewhale-tui / CodeWhale.app.tar.gz  (server.py 版本感知刷新自动下载;资产名固定)"
+
+echo "Release assets written to $OUT"
+find "$OUT" -maxdepth 1 -type f -print | sort

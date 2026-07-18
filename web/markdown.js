@@ -4,7 +4,7 @@
   }
 
   function sanitizeHtml(html){
-    const allowed = new Set(["A","BLOCKQUOTE","BR","CODE","DEL","EM","H1","H2","H3","H4","HR","LI","OL","P","PRE","STRONG","TABLE","TBODY","TD","TH","THEAD","TR","UL"]);
+    const allowed = new Set(["A","BLOCKQUOTE","BR","CODE","DEL","EM","H1","H2","H3","H4","HR","IMG","LI","OL","P","PRE","STRONG","TABLE","TBODY","TD","TH","THEAD","TR","UL"]);
     const drop = new Set(["EMBED","IFRAME","LINK","META","OBJECT","SCRIPT","STYLE","SVG","FORM","INPUT","BUTTON","TEXTAREA","SELECT","DETAILS","SUMMARY"]);
     const template = document.createElement("template");
     template.innerHTML = html || "";
@@ -21,6 +21,15 @@
         }
         Array.from(el.attributes).forEach(attr => {
           const name = attr.name.toLowerCase();
+          if(el.tagName === "IMG"){
+            if(name === "src"){
+              const v = el.getAttribute("src") || "";
+              if(!(v.startsWith("/api/file/download?") || /^https?:/i.test(v))) el.removeAttribute("src");
+            }else if(name !== "alt" && name !== "loading" && name !== "title"){
+              el.removeAttribute(attr.name);
+            }
+            return;
+          }
           if(el.tagName === "A" && (name === "href" || name === "target" || name === "rel")){
             if(name === "href"){
               try{
@@ -30,6 +39,10 @@
             }
           }else el.removeAttribute(attr.name);
         });
+        if(el.tagName === "IMG" && !el.getAttribute("src")){
+          el.remove();
+          return;
+        }
         if(el.tagName === "A"){
           if(el.hasAttribute("href")){
             el.setAttribute("target","_blank");
@@ -55,6 +68,10 @@
     });
     const inline = function(s){
       return escapeHtml(s)
+        .replace(/!\[([^\]]*)\]\(((?:https?:[^)\n]+)|(?:(?:\/|~\/)[^)\n]+?\.(?:png|jpe?g|gif|webp|svg)))\)/gi, function(m, alt, src){
+          if(!/^https?:/i.test(src)) src = "/api/file/download?path=" + encodeURIComponent(src) + "&inline=1";
+          return '<img src="' + src + '" alt="' + alt + '" loading="lazy">';
+        })
         .replace(/`([^`\n]+)`/g, function(m, c){ return "<code>" + c + "</code>"; })
         .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
         .replace(/(^|[^*\w])\*(?!\s)([^*\n]+?)\*(?!\*)/g, "$1<em>$2</em>")
