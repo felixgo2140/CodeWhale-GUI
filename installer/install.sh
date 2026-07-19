@@ -151,7 +151,7 @@ cat > "$LA/com.codewhale.frontend.plist" <<PLIST
   <key>ProgramArguments</key><array><string>$PY</string><string>$HOME/codewhale-gui/server.py</string></array>
   <key>WorkingDirectory</key><string>$HOME/codewhale-gui</string>
   <key>EnvironmentVariables</key><dict><key>PATH</key><string>$PLPATH</string></dict>
-  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>AbandonProcessGroup</key><true/><key>ThrottleInterval</key><integer>10</integer>
   <key>StandardOutPath</key><string>$HOME/codewhale-gui/webserver.log</string>
   <key>StandardErrorPath</key><string>$HOME/codewhale-gui/webserver.log</string>
 </dict></plist>

@@ -61,6 +61,7 @@
       </div>
     </div>
     <div id="composer">
+      <div id="voiceStatus" hidden role="status" aria-live="polite"><span class="voice-dot"></span><b class="voice-label"></b><span class="voice-preview"></span></div>
       <div id="attachbar"></div>
       <div id="cwrap">
         <button id="pluginbtn" title="插件/工具">+</button>
@@ -69,6 +70,7 @@
           <div id="plugincustom"><!-- 插件由 ~/.codewhale-gui/plugins.json 定义(用 Claude Code 安装/编辑),renderPlugins() 填充 --></div>
         </div>
         <button id="attachbtn" title="上传文件(文本/代码,agent 会读取;图片会显示预览)"></button>
+        <button id="voicebtn" class="voicebtn" type="button" title="语音输入（点击开始,再次点击结束）"></button>
         <input type="file" id="fileinput" multiple style="display:none">
         <textarea id="input" rows="1" wrap="soft" placeholder="给 CodeWhale 发消息…  (Enter 发送 · Shift+Enter 换行)"></textarea>
         <button id="sendbtn" title="发送"></button>
@@ -151,7 +153,8 @@
   <div id="cmpTop">
     <div id="cmpHead"><b>⚖️ 多模型对比</b><div id="cmpChips"></div><div id="cmpLite" hidden title="对比流量经 LiteLLM 网关">LiteLLM</div><div id="cmpShellTgl" class="tgl" title="开 = 允许 exec_shell 跑命令(跳出沙箱)。注:MCP / web_search / 读取等工具跟单窗口一样一直可用,此开关只额外控制 shell 命令"><span class="sw"></span>💻 Shell</div><div id="cmpAutoTgl" class="tgl" title="工具调用自动批准(对比无逐栏审批 UI,开 Shell 时建议开)"><span class="sw"></span>⚡ 自动批准</div><div id="cmpLayout" title="排列方式:横列 / 标签页 / 田字格(标签页只显示当前模型,点上方标签切换;横/田可点某一栏的 ⤢ 放大)"><button class="laybtn" data-l="row">横</button><button class="laybtn" data-l="tab">标签</button><button class="laybtn" data-l="grid">田</button></div><div id="cmpFswrap" title="对比文字大小(独立于主窗口)"><button class="fsbtn" onclick="bumpCmpFs(-1)" title="字小一点">A−</button><button class="fsbtn" onclick="bumpCmpFs(1)" title="字大一点">A+</button></div><button id="cmpTimelineBtn" title="打开本轮对比的用户输入时间线" onclick="event.preventDefault();event.stopPropagation();window.timelineToggle&&window.timelineToggle('compare')">时间线</button><button id="cmpNewBtn" title="在当前窗口开新一轮对比(上一轮已自动存进侧栏「多模型对比」会话,随时点回,不会丢)">＋ 新对话</button><button id="cmpResetBtn" title="某栏回答的不是它本人(回退成了 DeepSeek)?点这里用最新配置/key 重启所有对比后端">↻ 重启后端</button><button id="cmpClose" title="关闭这个对比窗口">✕ 退出</button></div>
     <div id="cmpAttachBar" hidden></div>
-    <div id="cmpInputRow"><button id="cmpPluginBtn" title="插件/工具">+</button><div id="cmpPlugindrop"></div><button id="cmpAttachBtn" title="上传文件(文本/代码,各模型会 read_file 读取;也可直接粘贴/拖拽。图片会显示预览)">📎</button><textarea id="cmpInput" wrap="soft" placeholder="输入一个问题,同时发给所有选中的模型…（Enter 发送 · Shift+Enter 换行 · 可粘贴/拖拽文件）"></textarea><button id="cmpStopAllBtn" hidden title="停止所有正在运行的模型,并清空还没发出去的排队消息">停止全部</button><button id="cmpSendBtn">发送</button></div>
+    <div id="cmpVoiceStatus" hidden role="status" aria-live="polite"><span class="voice-dot"></span><b class="voice-label"></b><span class="voice-preview"></span></div>
+    <div id="cmpInputRow"><button id="cmpPluginBtn" title="插件/工具">+</button><div id="cmpPlugindrop"></div><button id="cmpAttachBtn" title="上传文件(文本/代码,各模型会 read_file 读取;也可直接粘贴/拖拽。图片会显示预览)">📎</button><button id="cmpVoiceBtn" class="voicebtn" type="button" title="语音输入（点击开始,再次点击结束）"></button><textarea id="cmpInput" wrap="soft" placeholder="输入一个问题,同时发给所有选中的模型…（Enter 发送 · Shift+Enter 换行 · 可粘贴/拖拽文件）"></textarea><button id="cmpStopAllBtn" hidden title="停止所有正在运行的模型,并清空还没发出去的排队消息">停止全部</button><button id="cmpSendBtn">发送</button></div>
     <input type="file" id="cmpFileInput" multiple style="display:none">
     <div id="cmpQueue" hidden></div>
   </div>

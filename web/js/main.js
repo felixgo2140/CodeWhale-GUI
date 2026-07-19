@@ -7,6 +7,7 @@ const modulePaths = [
   "./state.js",
   "./preview.js",
   "./tools.js",
+  "./voice.js",
   "./chat-view.js",
   "./threads.js",
   "./stream.js",
@@ -108,6 +109,7 @@ function boot(){
   initMessageScroll();
   initZoomControls();
   initTimelineControls();
+  initVoiceInput();
 
   const inp=$("#input");
   inp.addEventListener("input",()=>{ inp.style.height="auto"; inp.style.height=Math.min(inp.scrollHeight,200)+"px"; $("#sendbtn").disabled=!state.running && !inp.value.trim() && !state.attachments.length; });
@@ -127,7 +129,9 @@ function boot(){
   if(IS_CMP_WIN){
     loadCmpSessions();   // 独立对比窗口:主 UI 被对比层盖住,只需会话数据(?session 还原);跳过 loadThreads(慢~4.5s)/balance/pins/cmp/model/checkSetup,显著加快
   }else{
-    loadThreads(); loadBalance(); loadPins(); loadCronJobs(); loadCmp(); loadCmpSessions(); loadModelLabel(); checkSetup(); loadPlugins(); loadResearchSkills();   // pins/Cron:服务端拉跨窗口标签;loadCmp:对比 thread 分组;loadCmpSessions:对比会话归集;loadModelLabel:侧栏显当前模型
+    const initialThreads=loadThreads(); loadBalance(); loadPins(); loadCronJobs(); loadCmp(); loadCmpSessions(); loadModelLabel(); checkSetup(); loadPlugins(); loadResearchSkills();   // pins/Cron:服务端拉跨窗口标签;loadCmp:对比 thread 分组;loadCmpSessions:对比会话归集;loadModelLabel:侧栏显当前模型
+    const deepThread=new URLSearchParams(location.search).get("thread");
+    if(/^thr_[A-Za-z0-9_-]+$/.test(deepThread||"")) Promise.resolve(initialThreads).then(()=>openThread(deepThread)).catch(e=>cwToast(e?.message||"任务链接打开失败"));
   }
   if(IS_CMP_WIN){
     setInterval(loadCmpSessions, 15000);   // 独立对比窗口只需要轻量同步 session,不跑完整侧栏/余额/版本轮询

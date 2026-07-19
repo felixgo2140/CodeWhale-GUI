@@ -10,7 +10,7 @@
 Security: when bound to a non-loopback host (LAN), a token is REQUIRED. Without
 one it fails closed to 127.0.0.1, so the agent API is never exposed unprotected.
 """
-import http.server, http.client, socketserver, json, re, os, time, subprocess, shutil, urllib.request, urllib.error, urllib.parse, mimetypes, secrets
+import http.server, http.client, socketserver, json, re, os, time, subprocess, shutil, urllib.request, urllib.error, urllib.parse, mimetypes, secrets, shlex
 import base64, hashlib, tarfile, tempfile, io, threading, ssl, socket, ipaddress, signal, tomllib
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -2617,6 +2617,85 @@ def _safe_download_pdf(path):
     fp = _safe_download_file(path)
     return fp if fp.lower().endswith(".pdf") else ""
 
+def _safe_workspace_dir(path):
+    raw = os.path.expanduser(str(path or ""))
+    if not raw:
+        return ""
+    target = os.path.realpath(raw)
+    roots = [
+        os.path.realpath(os.path.expanduser("~")),
+        os.path.realpath(tempfile.gettempdir()),
+        os.path.realpath("/tmp"),
+        os.path.realpath("/private/tmp"),
+    ]
+    return target if os.path.isdir(target) and _path_in_roots(target, roots) else ""
+
+def _reveal_workspace(path):
+    target = _safe_workspace_dir(path)
+    if not target:
+        return {"ok": False, "error": "工作目录不存在或不允许访问"}
+    code, out = _run(["/usr/bin/open", target], timeout=15)
+    return {"ok": code == 0, "path": target, "error": "" if code == 0 else (out or "Finder 打开失败")[:500]}
+
+def _remove_created_worktree(repo, path, branch):
+    if path:
+        _run(["git", "-C", repo, "worktree", "remove", "--force", path], timeout=30)
+    if branch:
+        _run(["git", "-C", repo, "branch", "-D", branch], timeout=30)
+
+def _fork_thread_in_worktree(thread_id, workspace, title=""):
+    if not re.match(r'^thr_[A-Za-z0-9_-]+$', thread_id or ""):
+        return {"ok": False, "error": "非法会话 ID"}
+    workspace = _safe_workspace_dir(workspace)
+    if not workspace:
+        return {"ok": False, "error": "这个任务没有可用的工作目录"}
+    code, repo = _run(["git", "-C", workspace, "rev-parse", "--show-toplevel"], timeout=15)
+    repo = os.path.realpath((repo or "").strip()) if code == 0 else ""
+    if not repo or not os.path.isdir(repo):
+        return {"ok": False, "error": "当前工作目录不是 Git 仓库,无法创建工作树"}
+    code, _ = _run(["git", "-C", repo, "rev-parse", "--verify", "HEAD"], timeout=15)
+    if code != 0:
+        return {"ok": False, "error": "当前 Git 仓库还没有提交,无法创建工作树"}
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+    short = thread_id.removeprefix("thr_")[:8]
+    repo_name = re.sub(r'[^A-Za-z0-9._-]+', '-', os.path.basename(repo)) or "project"
+    leaf = f"task-{short}-{stamp}"
+    path = os.path.realpath(os.path.expanduser(f"~/.codewhale/worktrees/{repo_name}/{leaf}"))
+    branch = f"codewhale/{leaf}"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    code, out = _run(["git", "-C", repo, "worktree", "add", "-b", branch, path, "HEAD"], timeout=90)
+    if code != 0:
+        return {"ok": False, "error": (out or "创建 Git 工作树失败")[:500]}
+    try:
+        base = _route_base(f"/v1/threads/{thread_id}")
+        fork_req = urllib.request.Request(f"{base}/v1/threads/{thread_id}/fork", data=b"{}", method="POST", headers={"Content-Type": "application/json"})
+        forked = json.loads(_LOCAL.open(fork_req, timeout=60).read() or b"{}")
+        new_id = forked.get("id") or (forked.get("thread") or {}).get("id")
+        if not re.match(r'^thr_[A-Za-z0-9_-]+$', new_id or ""):
+            raise RuntimeError("分叉成功但没有返回新会话 ID")
+        patch = json.dumps({"workspace": path}, ensure_ascii=False).encode()
+        patch_req = urllib.request.Request(f"{base}/v1/threads/{new_id}", data=patch, method="PATCH", headers={"Content-Type": "application/json"})
+        updated = json.loads(_LOCAL.open(patch_req, timeout=60).read() or b"{}")
+        thread = updated.get("thread") if isinstance(updated, dict) else None
+        thread = thread if isinstance(thread, dict) else (updated if isinstance(updated, dict) else {})
+        if not thread.get("id"):
+            thread = dict(forked.get("thread") or forked)
+        thread.update({"id": new_id, "workspace": path})
+        prov = _thread_route_provider(thread_id)
+        if prov:
+            _pin_thread(new_id, prov)
+            thread["provider"] = prov
+        _mark_single_thread(new_id)
+        cur = _threads_cache.get("v")
+        if isinstance(cur, list):
+            cur.insert(0, thread)
+            try: _atomic_write_json(_THREADS_CACHE_FILE, cur)
+            except Exception: pass
+        return {"ok": True, "thread": thread, "worktree": path, "branch": branch, "repo": repo}
+    except Exception as e:
+        _remove_created_worktree(repo, path, branch)
+        return {"ok": False, "error": str(e)[:500]}
+
 def _file_app_name(app_url):
     path = str(app_url.path())
     name = os.path.splitext(os.path.basename(path))[0]
@@ -4213,6 +4292,7 @@ metadata:
 - 如果上游工具或插件产出了英文中间结果,请先理解再用中文整理给用户;不要把大段英文原样作为最终答案。
 - 写投研/研究类输出时,结论先行,关键数字和来源时间点要保留清楚。
 - 遇到普通搜索、RSS、静态 HTML 或 API 拿不到的动态网页内容时,默认把 `browser-use` 当作只读网页行动层来补证据,再回到对应业务 skill 做判断。
+- 不要把“我接下来会……”“让我先……”或一份待办计划当作最终回复。只要任务仍可继续,就直接调用工具并完成；确实受阻时,明确说明阻塞原因和需要用户提供的非敏感信息。
 - 需要 X/Twitter 内容(搜索、推文、KOL 观点、情绪样本)时,一律走 OpenTwitter 后端(`twitter` MCP server / `load_skill opentwitter` / 直接 curl `https://ai.6551.io/open/twitter_search`,token 在 `~/.codewhale/mcp.json` 的 `TWITTER_TOKEN`)。**绝不用 `site:x.com` 网页搜索(搜索引擎不索引 X,永远为空),更不许据此在报告里写"X/Twitter 数据不可用/缺失"**。期权链/PCR 走 FutuOpenD SSH(见 compare-research 第5条;IBKR 未批准不用);CNN Fear & Greed 可直连(带浏览器 UA+Referer)。情绪/期权/风险证据可一键采集:`python3 ~/.codewhale/scripts/sentiment_harvest.py <TICKER>`(X/期权PCR/F&G/Stocktwits/AAII/NAAIM 六层)。Google Trends 的 API 被 429 硬封,要用 `browser-use` 开 trends.google.com 读。
 - 生成了本地图表/图片(png/jpg/svg)要给用户看时,最终回复里直接用 `![标题](/绝对路径.png)` 内嵌——GUI 会内联渲染成图;关键数据用 markdown 表格直接放正文。**不要用"下载链接/文件名清单"代替内容展示**,文件路径只作为正文末尾的补充信息。
 """
@@ -4579,6 +4659,54 @@ def _kill_cmp_backends():
     for pid in _cmp_backend_pids():
         _kill_gracefully(pid)
     CMP_PROCS.clear()
+def _adopt_cmp_backends():
+    """Adopt healthy per-provider runtimes left by an earlier GUI process.
+
+    Provider runtimes own active turns, so a GUI-only restart must not terminate
+    them.  Rebuild the in-memory provider->port map from their command lines;
+    explicit reset/update/config-change paths still use _kill_cmp_backends().
+    """
+    try:
+        output = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,command="],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except Exception as exc:
+        print(f"[cmp] warning: 无法扫描现有 provider 后端: {exc}", flush=True)
+        return {}
+    candidates = {}
+    cmp_root = os.path.realpath(CMP_DIR)
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2 or parts[0] == str(os.getpid()):
+            continue
+        try:
+            argv = shlex.split(parts[1])
+            cfg_idx = argv.index("--config")
+            port_idx = argv.index("--port")
+            cfg = os.path.realpath(os.path.expanduser(argv[cfg_idx + 1]))
+            port = int(argv[port_idx + 1])
+        except (ValueError, IndexError):
+            continue
+        if os.path.dirname(cfg) != cmp_root or not cfg.endswith(".toml"):
+            continue
+        provider = os.path.splitext(os.path.basename(cfg))[0]
+        if not re.match(r"^[a-zA-Z0-9_-]+$", provider):
+            continue
+        candidates[(provider, port)] = max(int(parts[0]), candidates.get((provider, port), 0))
+    adopted = {}
+    for (provider, port), pid in sorted(candidates.items(), key=lambda row: row[1], reverse=True):
+        if provider in adopted or not _port_up(port):
+            continue
+        adopted[provider] = {"port": port, "pid": pid}
+        CMP_PORTS[provider] = port
+    if adopted:
+        summary = ", ".join(f"{provider}:{meta['port']}" for provider, meta in sorted(adopted.items()))
+        print(f"[cmp] 已接管存活的 provider 后端: {summary}", flush=True)
+    return adopted
 def _cmp_pick_port():
     used = set(CMP_PORTS.values())
     port = 7900
@@ -4659,7 +4787,8 @@ def ensure_provider_server(prov):
                 logf = open(log_path, "a")
                 CMP_PROCS[prov] = subprocess.Popen([_cw_binary(prov), "app-server", "--config", cfg, "--http", "--host", "127.0.0.1",
                                                     "--port", str(port), "--insecure-no-auth"],
-                                                   env=env, cwd=os.path.expanduser("~"), stdout=logf, stderr=subprocess.STDOUT)
+                                                   env=env, cwd=os.path.expanduser("~"), stdout=logf, stderr=subprocess.STDOUT,
+                                                   start_new_session=True)
         for _ in range(112):                                     # 就绪等待在锁外:启动 A 不再阻塞切到 B(消除连环卡顿),最多 ~45s(并发起多个后端时留足余量)
             if _port_up(port):
                 return port
@@ -4869,6 +4998,40 @@ _threads_refresh_lock = threading.Lock()
 _ARCHIVED_TOMBSTONES = set()
 def _drop_tombstoned(arr):
     return [t for t in arr if not (isinstance(t, dict) and t.get("id") in _ARCHIVED_TOMBSTONES)]
+def _overlay_runtime_thread_state(arr):
+    """用本地 runtime 覆盖慢 summary 的易变字段。
+
+    summary 最多缓存 120 秒，适合承载标题和预览，但不能作为 turn 状态的权威来源。
+    本地 thread/turn JSON 会随运行即时落盘，因此侧栏每次读取都以它为准。
+    """
+    out = []
+    for raw in arr or []:
+        if not isinstance(raw, dict):
+            continue
+        row = dict(raw)
+        tid = row.get("id") or ""
+        th = _runtime_json("threads", tid)
+        if isinstance(th, dict):
+            for key in ("title", "updated_at", "model", "workspace", "mode", "archived"):
+                if key in th:
+                    row[key] = th.get(key)
+            latest_id = th.get("latest_turn_id") or ""
+            row["latest_turn_id"] = latest_id or None
+            if latest_id:
+                latest = _runtime_json("turns", latest_id)
+                if isinstance(latest, dict):
+                    row["latest_turn_status"] = latest.get("status") or ""
+            else:
+                row["latest_turn_status"] = ""
+            provider = _tprov.get(tid) or _runtime_provider_from_thread(th)
+            if provider:
+                row["provider"] = provider
+        out.append(row)
+    try:
+        out.sort(key=lambda t: t.get("updated_at") or "", reverse=True)
+    except Exception:
+        pass
+    return out
 def _fetch_threads_now():
     """实际抓 :7878 summary(慢,可能 >8s);成功才更新内存 + 落盘。返回列表或 None。"""
     try:
@@ -4930,8 +5093,10 @@ def aggregate_threads():     # SWR:有缓存立刻返回,过期只后台刷新,�
                 if not _threads_cache["refreshing"]:
                     _threads_cache["refreshing"] = True
                     threading.Thread(target=_bg_refresh_threads, daemon=True).start()
-        return _tag_compare(_drop_tombstoned([t for t in cached if not t.get("archived")]))   # 兜底:归档标记 + 墓碑都过滤
-    return _tag_compare(_fetch_threads_now() or [])   # 从没成功 + 无落盘 → 只能同步取一次(尽量快;失败返回空)
+        current = _overlay_runtime_thread_state(_drop_tombstoned(cached))
+        return _tag_compare([t for t in current if not t.get("archived")])   # 兜底:实时归档标记 + 墓碑都过滤
+    current = _overlay_runtime_thread_state(_fetch_threads_now() or [])
+    return _tag_compare([t for t in current if not t.get("archived")])   # 从没成功 + 无落盘 → 只能同步取一次(尽量快;失败返回空)
 
 # ── macOS 对话结束通知 ──
 # 不依赖当前浏览器是否停留在线程里:服务端只跟踪新建 turn 和启动时尚未结束的 turn。
@@ -5280,6 +5445,89 @@ def _chat_title_once(messages, prov):
         data = json.loads(r.read().decode("utf-8", "replace"))
     title = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
     return title, cfg
+
+def _voice_prompt_fallback(transcript, draft=""):
+    """Conservative local cleanup used when no direct LLM provider is available."""
+    spoken = str(transcript or "").replace("\r", "\n").strip()
+    existing = str(draft or "").replace("\r", "\n").strip()
+    filler_pattern = r'(^|[，。！？!?；;\n])\s*(?:嗯+|呃+|啊+|那个|这个|怎么说呢|我想一下)[，,、\s]*'
+    # Fillers often appear in runs ("嗯那个..."). Re-run until the text is stable.
+    for _ in range(4):
+        cleaned = re.sub(filler_pattern, r'\1', spoken)
+        if cleaned == spoken:
+            break
+        spoken = cleaned
+    spoken = re.sub(r'\b(?:um+|uh+|you know)\b[,.\s]*', ' ', spoken, flags=re.I)
+    spoken = re.sub(r'[ \t]+', ' ', spoken)
+    spoken = re.sub(r'\n{3,}', '\n\n', spoken).strip(' ，,')
+    parts = [x for x in (existing, spoken) if x]
+    return "\n".join(parts).strip()
+
+def refine_voice_prompt(transcript, draft="", provider=""):
+    """Turn a spoken transcript into an executable prompt without inventing facts."""
+    transcript = str(transcript or "").strip()[:12000]
+    draft = str(draft or "").strip()[:12000]
+    if not transcript:
+        return {"ok": False, "error": "语音转写为空"}
+    fallback = _voice_prompt_fallback(transcript, draft)
+    requested = re.sub(r'[^A-Za-z0-9._-]', '', str(provider or ""))[:80]
+    candidates = []
+    for prov in (requested, _cfg_get("provider") or "", "deepseek", "volcengine"):
+        if prov and prov not in candidates:
+            candidates.append(prov)
+    configs = []
+    seen_configs = set()
+    for prov in candidates:
+        try:
+            item = _provider_chat_config(prov)
+            if item.get("key"):
+                cfg = dict(item)
+                if cfg.get("provider") == "deepseek":
+                    cfg["model"] = "deepseek-chat"
+                signature = (cfg.get("provider", ""), cfg.get("base", ""), cfg.get("model", ""))
+                if signature not in seen_configs:
+                    seen_configs.add(signature)
+                    configs.append(cfg)
+        except Exception:
+            continue
+    if not configs:
+        return {"ok": True, "prompt": fallback, "refined": False, "warning": "没有可用的直连模型,已做本地整理"}
+    source = ("输入框已有内容:\n" + draft + "\n\n" if draft else "") + "本次口述:\n" + transcript
+    messages = [
+        {"role": "system", "content": (
+            "你是 AI Agent 的 prompt 编辑器。把用户的口语转写改写成简洁、连贯、逻辑清晰、可直接执行的中文指令。"
+            "必须保留全部事实、数字、专有名词、限制条件、优先级、疑问和不确定性;删除口头禅、重复、自我修正和无意义停顿。"
+            "已有输入与本次口述要合并成一条不重复的完整任务。复杂任务可按目标、背景、要求、交付物组织,简单任务不要强行套模板。"
+            "不得补充用户没有说过的事实、工具、结论或要求。只输出改写后的 prompt,不要解释、评价、加引号或代码围栏。"
+        )},
+        {"role": "user", "content": source},
+    ]
+    errors = []
+    for cfg in configs:
+        payload = json.dumps({
+            "model": cfg["model"],
+            "messages": messages,
+            "temperature": 0.05,
+            "max_tokens": 1200,
+            "stream": False,
+        }, ensure_ascii=False).encode()
+        req = urllib.request.Request(cfg["base"].rstrip("/") + "/chat/completions",
+                                     data=payload, method="POST",
+                                     headers={"Authorization": "Bearer " + cfg["key"],
+                                              "Content-Type": "application/json"})
+        try:
+            with _open_url(req, 60) as r:
+                data = json.loads(r.read().decode("utf-8", "replace"))
+            prompt = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+            prompt = re.sub(r'^```(?:markdown|text)?\s*|\s*```$', '', prompt, flags=re.I).strip()
+            if not prompt:
+                raise RuntimeError("模型返回空内容")
+            return {"ok": True, "prompt": prompt[:16000], "refined": True,
+                    "provider": cfg.get("provider", ""), "model": cfg.get("model", "")}
+        except Exception as e:
+            errors.append(f"{cfg.get('provider', 'unknown')}/{cfg.get('model', 'unknown')}: {e}")
+    return {"ok": True, "prompt": fallback, "refined": False,
+            "warning": "模型整理失败,已保留并本地整理口述", "detail": "; ".join(errors)[:300]}
 
 def _title_provider(fallback=""):
     """Use a stable Chinese-capable model for naming instead of whatever model ran the thread."""
@@ -6206,6 +6454,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
     def do_POST(self):
         p = urllib.parse.urlparse(self.path).path
+        if p == "/api/workspace/reveal":
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                out = _reveal_workspace(data.get("path", ""))
+                return self._json(out, 200 if out.get("ok") else 400)
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:300]}, 400)
+        if p == "/api/thread/fork-worktree":
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                out = _fork_thread_in_worktree(data.get("thread_id", ""), data.get("workspace", ""), data.get("title", ""))
+                return self._json(out, 200 if out.get("ok") else 400)
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:300]}, 400)
         if p == "/api/local/plugin-path":
             if not self._authed():
                 return self._deny()
@@ -6274,6 +6542,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json(_switch_single_thread_provider(tid, prov, model or None))
             except Exception as e:
                 return self._json({"error": str(e)[:200]}, 502)
+        if p == "/api/voice/refine":   # 原生 Fn 语音转写 → 精练、连贯、可执行 prompt;只填输入框,不自动发送
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(min(length, 50000)) or b"{}") if length else {}
+                transcript = str(data.get("transcript") or data.get("text") or "")[:12000]
+                draft = str(data.get("draft") or "")[:12000]
+                provider = str(data.get("provider") or "")[:80]
+                out = refine_voice_prompt(transcript, draft, provider)
+                return self._json(out, 200 if out.get("ok") else 400)
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:300]}, 400)
         if p == "/api/thread-title/auto":   # 首条消息发出后很快用 LLM 按对话目的生成更自然标题;成功后锁定,不反复改
             if not self._authed():
                 return self._deny()
@@ -6945,11 +7226,12 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 if __name__ == "__main__":
     _ensure_default_output_config()   # 新线程/插件/harness 默认中文输出;含 api_key 的主配置用 0600 tmp 原子写
-    # 清理可能残留的旧对比 app-server(老版本无代理 env 会答错模型 / 复用旧后端)→ 下次按需重启为带修复的
+    # GUI 本身重启不应杀 provider 后端:它们可能仍承载正在运行的 turn。接管健康实例,
+    # 只有更新 runtime、显式重置或 provider 配置变化时才走 _kill_cmp_backends/_cmp_reset。
     try:
-        _kill_cmp_backends()
-    except Exception:
-        pass
+        _adopt_cmp_backends()
+    except Exception as exc:
+        print(f"[cmp] warning: 接管现有 provider 后端失败: {exc}", flush=True)
     # 后台检查补丁二进制 + 原生 App:缺则下载,SHA 变了则刷新(OCR/二进制/原生壳 升级经此自动传播);不阻塞启动
     threading.Thread(target=lambda: _ensure_patched_binaries(block=False, refresh=True), daemon=True).start()
     threading.Thread(target=_refresh_native_app, daemon=True).start()
