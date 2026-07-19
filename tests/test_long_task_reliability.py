@@ -3,6 +3,8 @@ import json
 import os
 import pathlib
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -33,6 +35,51 @@ class RuntimeFixture:
 
 
 class LongTaskReliabilityTests(unittest.TestCase):
+    def test_image_upload_returns_before_deferred_vision_finishes(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_extract(path):
+            started.set()
+            release.wait(2)
+            SERVER._atomic_write(path + ".txt", "视觉模型识别结果\n完成")
+            return path + ".txt"
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(SERVER, "UPLOAD_DIR", tmp), \
+             mock.patch.object(SERVER, "_extract_image_upload_text", side_effect=slow_extract):
+            before = time.monotonic()
+            result = SERVER.save_upload(b"not-a-real-png", "screen.png", "thr_demo", defer_extract=True)
+            elapsed = time.monotonic() - before
+
+            self.assertLess(elapsed, 0.5)
+            self.assertEqual(result["text_kind"], "image_vision_pending")
+            self.assertTrue(result["extracting"])
+            self.assertIn("processing", pathlib.Path(result["text_path"]).read_text(encoding="utf-8"))
+            self.assertTrue(started.wait(1))
+            release.set()
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                current = pathlib.Path(result["text_path"]).read_text(encoding="utf-8")
+                if current.startswith("视觉模型识别结果"):
+                    break
+                time.sleep(0.02)
+            final = pathlib.Path(result["text_path"]).read_text(encoding="utf-8")
+            self.assertTrue(final.startswith("视觉模型识别结果"))
+
+    def test_frontend_queues_attachment_transport_but_not_image_recognition(self):
+        tools = (ROOT / "web/js/tools.js").read_text(encoding="utf-8")
+        stream = (ROOT / "web/js/stream.js").read_text(encoding="utf-8")
+        compare = (ROOT / "web/js/compare.js").read_text(encoding="utf-8")
+
+        self.assertIn('"X-Upload-Extract":"deferred"', tools)
+        self.assertIn("function takeAttachmentBundle", tools)
+        self.assertIn("async function attachmentPrompt", tools)
+        self.assertIn("附件已入队", stream)
+        self.assertIn("state.queue[0].ready===false", stream)
+        self.assertIn("CMP.prepareChain", compare)
+        self.assertNotIn("图片需识图约 20 秒", stream + compare)
+
     def test_emergency_compaction_that_leaves_91_percent_triggers_preflight(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(SERVER, "RUNTIME_DIR", tmp):
             fx = RuntimeFixture(tmp)

@@ -612,11 +612,24 @@ async function send(queuedText){
   const inp=$("#input");
   let text=queuedText;
   if(text===undefined){
-    text=inp.value.trim(); if(!text && !state.attachments.length) return;
-    text=withAttachments(text); if(text===null) return;
+    const raw=inp.value.trim(); if(!raw && !state.attachments.length) return;
+    state._preparingSend=true;
+    const waiting=state.attachments.some(a=>a&&a.pending);
+    const prepared=withAttachments(raw);   // 同步取走当前附件包，异步只等待文件落盘；输入框立即可写下一条
     inp.value=""; inp.style.height="auto"; getMainView().setStick(true);
+    if(waiting){
+      if(!state.running) runStatusReset(false);
+      setRunning(true); runStatusUpdate("附件已入队","文件落盘后立即发送；图片识别会在本任务中继续");
+    }
+    text=await prepared;
+    if(!text){
+      state._preparingSend=false;
+      if(waiting){ runStatusFinish("附件发送失败","err"); setRunning(false); processQueue(); }
+      return;
+    }
   }   // 新发:折入附件路径 + 贴底
   if(!text) return;
+  state._preparingSend=true;
   try{
     let implicitNewTitle="";
     if(!state.activeId){ const t=await createThread(); implicitNewTitle=roughThreadTitle(text); _addOptimisticThread(t.id, implicitNewTitle); await openThread(t.id); loadThreads(); }   // 乐观立刻把新 thread 加进侧栏(否则慢 SWR 缓存下首条消息不生成可见 thread,要发第二条才出现);loadThreads 后台刷,不阻塞
@@ -629,6 +642,7 @@ async function send(queuedText){
     const th=state.threads.find(x=>x.id===state.activeId);
     const freezeName = !!implicitNewTitle || !th || !th.title || th.title==="New Thread";   // 首条消息 → 先落粗标题,随后按对话目的智能改名
     const r=await api(`/v1/threads/${state.activeId}/turns`,{method:"POST",body:JSON.stringify({prompt:text})});
+    state._preparingSend=false;
     state.turnId=r?.turn?.id||state.turnId; setRunning(true); runStatusUpdate("思考中","请求已送达,等待模型返回状态"); runStatusStep("请求已送达");
     if(freezeName){
       const title=implicitNewTitle || roughThreadTitle(text);
@@ -639,6 +653,7 @@ async function send(queuedText){
       }).catch(()=>{}).finally(()=>scheduleSmartTitle(tid,title,text));
     }
   }catch(e){
+    state._preparingSend=false;
     if(state._optimUser){ state._optimUser.remove(); state._optimUser=null; }   // 发送失败/转排队 → 移除乐观气泡(由排队占位或错误提示接管)
     if(/\b409\b|active turn/i.test(e.message||"")){   // 该对话仍有一轮在跑(切回来误发/连点)→ 不报错,转为排队,turn 完成后自动发
       setRunning(true); state.queue.push({text, el:(()=>{ const el=document.createElement("div"); el.className="msg user queued"; el.innerHTML=`<div class="av">你</div><div class="body"><div class="who">${icon("clock")} 排队中(上一轮还在跑)</div><div class="content"></div><button class="qx" title="取消排队">✕</button></div>`; el.querySelector(".content").textContent=text; el.querySelector(".qx").onclick=()=>{ const i=state.queue.findIndex(q=>q.el===el); if(i>=0) state.queue.splice(i,1); el.remove(); }; $("#mwrap").appendChild(el); scrollDown(true); return el; })()});
@@ -663,24 +678,29 @@ function enterSend(){
     const engine={df:"deerflow",deerflow:"deerflow",gptr:"gptr",odr:"odr",storm:"storm",agentloop:"agentloop",loop:"agentloop",pydai:"pydai",pydantic:"pydai",browser:"browser",browseruse:"browser",browse:"browser",crew:"crew",crewai:"crew",obsidian:"obsidian",vault:"obsidian",method:"skill",skill:"skill"}[key]||"deerflow";
     submitDeerFlowFromInput(prompt, engine); return;
   }
-  if(state.running) queueFromInput(); else send();
+  if(state.running || state._preparingSend) queueFromInput(); else send();
 }   // 运行中=排队,空闲=直接发
 function queueFromInput(){
   const inp=$("#input"); const raw=inp.value.trim(); if(!raw && !state.attachments.length) return;
-  const text=withAttachments(raw);   // 排队时就折入附件(否则等发送时附件可能已被后一条消息清掉)
-  if(text===null) return;
+  const prepared=withAttachments(raw);   // 立即取走这一条的附件包，解析未完成也不会占住下一条输入
   inp.value=""; inp.style.height="auto"; $("#sendbtn").disabled=true;
   const el=document.createElement("div"); el.className="msg user queued";
-  el.innerHTML=`<div class="av">你</div><div class="body"><div class="who">${icon("clock")} 排队中</div><div class="content"></div><button class="qx" title="取消排队">✕</button></div>`;
+  el.innerHTML=`<div class="av">你</div><div class="body"><div class="who">${icon("clock")} 排队中（附件会在任务内识别）</div><div class="content"></div><button class="qx" title="取消排队">✕</button></div>`;
   el.querySelector(".content").textContent=raw||"(附件)";
   el.querySelector(".qx").onclick=()=>{ const i=state.queue.findIndex(q=>q.el===el); if(i>=0) state.queue.splice(i,1); el.remove(); };
   $("#mwrap").appendChild(el); scrollDown(true);
-  state.queue.push({text, el});
+  const item={text:"", el, ready:false}; state.queue.push(item);
+  prepared.then(text=>{
+    item.text=text||""; item.ready=true;
+    if(!item.text){ const i=state.queue.indexOf(item); if(i>=0) state.queue.splice(i,1); el.remove(); }
+    processQueue();
+  }).catch(e=>{ const i=state.queue.indexOf(item); if(i>=0) state.queue.splice(i,1); el.remove(); sysnote("附件发送失败: "+e.message); processQueue(); });
 }
 function processQueue(){   // 当前任务结束后,自动发下一条排队消息
   if(state.running || state._contextMaintenance || !state.queue.length) return;
+  if(state.queue[0].ready===false) return;   // 保持用户发送顺序：前一条附件落盘前，后一条不能插队
   const item=state.queue.shift(); item.el.remove();   // 移除占位,真消息由 turn 事件渲染
-  send(item.text);
+  if(item.text) send(item.text); else processQueue();
 }
 async function interrupt(){
   if(!state.activeId) return;
@@ -704,7 +724,7 @@ async function uploadOne(f, scope){   // 上传单个文件到 workspace,返回�
   if(f.size>50*1024*1024){ sysnote("⚠ "+f.name+" 超过 50MB,跳过"); return null; }
   try{
     const buf=await f.arrayBuffer();
-    const r=await fetch(url("/api/upload"),{method:"POST",headers:{...auth,"X-Filename":encodeURIComponent(f.name),"X-Upload-Scope":scope||"inbox"},body:buf});
+    const r=await fetch(url("/api/upload"),{method:"POST",headers:{...auth,"X-Filename":encodeURIComponent(f.name),"X-Upload-Scope":scope||"inbox","X-Upload-Extract":"deferred"},body:buf});
     const d=await r.json();
     if(d.path) return uploadAttachmentRecord(f,d);
     sysnote("⚠ 上传失败: "+(d.error||f.name));
@@ -722,13 +742,10 @@ function renderAttach(){
   });
   $("#sendbtn").disabled=!state.running && !$("#input").value.trim() && !state.attachments.length;
 }
-function withAttachments(text){   // 把附件路径折进 prompt,让 agent 用 read_file 读;然后清空
+async function withAttachments(text){   // 取走附件后只等快速落盘；耗时识图/PDF 解析留在任务内部
   if(!state.attachments.length) return text;
-  if(state.attachments.some(a=>a&&a.pending)){ cwToast("附件还在上传(图片需识图约 20 秒),传完再发"); return null; }
-  const refs=state.attachments.map(attachmentReadRef).join("\n");
-  const out=`我上传了以下文件,请先用 read_file 读取再回答:\n${refs}\n\n${text}`.trim();
-  clearAttachmentList(state.attachments); renderAttach();
-  return out;
+  const bundle=takeAttachmentBundle(state.attachments,renderAttach);
+  return attachmentPrompt(text,bundle);
 }
 
 

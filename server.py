@@ -2626,6 +2626,7 @@ def _seed_cmp_from_tprov():
 
 # ── 文件上传:存到 ~/codewhale-uploads(在 agent workspace=$HOME 下,read_file 能读)──
 UPLOAD_DIR = os.path.expanduser("~/codewhale-uploads")
+_UPLOAD_EXTRACT_SEMAPHORE = threading.BoundedSemaphore(2)
 def _safe_upload_scope(scope):
     scope = (scope or "").strip()
     if re.match(r'^thr_[A-Za-z0-9_-]+$', scope):
@@ -2633,7 +2634,36 @@ def _safe_upload_scope(scope):
     if re.match(r'^cmp_[A-Za-z0-9_-]+$', scope):
         return scope
     return "inbox"
-def save_upload(raw, filename, scope=None):
+def _upload_extract_placeholder(path, kind):
+    label = "图片识别" if kind == "image" else "PDF 文本提取"
+    return (f"{label}正在后台处理\n"
+            f"原文件: {path}\n"
+            "状态: processing\n"
+            "说明: 上传已经完成，不要要求用户重新发送。若当前任务需要文件内容，请稍后重新读取本文件；"
+            + ("也可以直接对原图调用 image_ocr。\n" if kind == "image" else "也可以直接读取原 PDF。\n"))
+
+def _deferred_upload_extract(path, kind):
+    """附件先落盘并返回，耗时解析在后台完成，不占住聊天发送。"""
+    sidecar = path + ".txt"
+    extracted = ""
+    try:
+        with _UPLOAD_EXTRACT_SEMAPHORE:
+            extracted = _extract_image_upload_text(path) if kind == "image" else _extract_pdf_upload_text(path)
+    except Exception as e:
+        print("[upload] deferred extraction failed:", e, flush=True)
+    if extracted:
+        return
+    # 解析不可用时把 placeholder 改成明确的降级说明，任务仍可读取原文件继续。
+    label = "图片识别" if kind == "image" else "PDF 文本提取"
+    fallback = (f"{label}未生成可用文本\n原文件: {path}\n状态: unavailable\n"
+                "上传已经完成，请直接读取原文件"
+                + ("或调用 image_ocr。\n" if kind == "image" else "。\n"))
+    try:
+        _atomic_write(sidecar, fallback)
+    except Exception as e:
+        print("[upload] deferred extraction status write failed:", e, flush=True)
+
+def save_upload(raw, filename, scope=None, defer_extract=False):
     name = os.path.basename(filename or "file")
     name = re.sub(r"[^A-Za-z0-9._一-鿿 -]", "_", name).strip() or "file"
     root = os.path.join(UPLOAD_DIR, _safe_upload_scope(scope))
@@ -2645,7 +2675,17 @@ def save_upload(raw, filename, scope=None):
     with open(dest, "wb") as f:
         f.write(raw)
     out = {"path": dest, "name": os.path.basename(dest), "size": len(raw)}
-    if ext.lower() == ".pdf":
+    extract_kind = "pdf" if ext.lower() == ".pdf" else ("image" if ext.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"} else "")
+    if defer_extract and extract_kind:
+        txt_path = dest + ".txt"
+        _atomic_write(txt_path, _upload_extract_placeholder(dest, extract_kind))
+        out["text_path"] = txt_path
+        out["text_name"] = os.path.basename(txt_path)
+        out["text_kind"] = f"{extract_kind}_text_pending" if extract_kind == "pdf" else "image_vision_pending"
+        out["extracting"] = True
+        threading.Thread(target=_deferred_upload_extract, args=(dest, extract_kind),
+                         name="codewhale-upload-extract", daemon=True).start()
+    elif ext.lower() == ".pdf":
         txt_path = _extract_pdf_upload_text(dest)
         if txt_path:
             out["text_path"] = txt_path
@@ -2675,11 +2715,11 @@ def _extract_pdf_upload_text(path):
         if not parts:
             return ""
         out = path + ".txt"
-        with open(out, "w", encoding="utf-8") as f:
-            f.write("PDF text extracted from: " + path + "\n")
-            f.write("Pages extracted: " + str(min(len(reader.pages), 300)) + "\n")
-            f.write("Note: formatting/tables may be approximate; refer to original PDF for layout.\n")
-            f.write("".join(parts))
+        text = ("PDF text extracted from: " + path + "\n"
+                + "Pages extracted: " + str(min(len(reader.pages), 300)) + "\n"
+                + "Note: formatting/tables may be approximate; refer to original PDF for layout.\n"
+                + "".join(parts))
+        _atomic_write(out, text)
         return out
     except Exception as e:
         print("[upload] pdf text extraction failed:", e, flush=True)
@@ -2777,11 +2817,11 @@ def _extract_image_upload_text(path):
         if not isinstance(content, str) or not content.strip():
             raise ValueError("vision model returned an empty reply")
         out = path + ".txt"
-        with open(out, "w", encoding="utf-8") as f:
-            f.write("视觉模型识别结果\n")
-            f.write("原图: " + path + "\n")
-            f.write(f"模型: {model}；细节请以原图为准，必要时可对原图调用 image_ocr 复核\n")
-            f.write(content.strip() + "\n")
+        text = ("视觉模型识别结果\n"
+                + "原图: " + path + "\n"
+                + f"模型: {model}；细节请以原图为准，必要时可对原图调用 image_ocr 复核\n"
+                + content.strip() + "\n")
+        _atomic_write(out, text)
         return out
     except Exception as e:
         message = str(e)
@@ -7169,7 +7209,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         raise ValueError("文件过大(>50MB)")
                     raw = self.rfile.read(length) if length else b""
                     fn = urllib.parse.unquote(self.headers.get("X-Filename", "file"))
-                    out = save_upload(raw, fn, self.headers.get("X-Upload-Scope", ""))
+                    defer_extract = self.headers.get("X-Upload-Extract", "").strip().lower() in {
+                        "1", "async", "background", "deferred",
+                    }
+                    out = save_upload(raw, fn, self.headers.get("X-Upload-Scope", ""),
+                                      defer_extract=defer_extract)
                 else:
                     data = json.loads(self.rfile.read(length) or b"{}")
                     if p == "/api/mcp":

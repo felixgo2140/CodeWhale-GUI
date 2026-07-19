@@ -616,30 +616,53 @@ async function optimisticUpload(files, opts={}){
     if(isImageAttachment(rec)) rec.previewUrl=URL.createObjectURL(f);
     list.push(rec); queue.push({file:f, rec}); render();
   });
-  for(const it of queue){
+  queue.forEach(it=>{
     const f=it.file, rec=it.rec;
-    try{
-      const buf=await f.arrayBuffer();
-      const r=await fetch(url("/api/upload"),{method:"POST",headers:{...auth,"X-Filename":encodeURIComponent(f.name),"X-Upload-Scope":scope},body:buf});
-      let d={}; try{ d=await r.json(); }catch(e){ if(!r.ok) throw new Error("HTTP "+r.status); throw e; }
-      if(!r.ok) throw new Error(d.error||("HTTP "+r.status));
-      if(!d.path) throw new Error(d.error||f.name);
-      const done=uploadAttachmentRecord(f,d);
-      if(rec.previewUrl && done.previewUrl && done.previewUrl!==rec.previewUrl){ revokeAttachmentPreview(done); done.previewUrl=rec.previewUrl; }
-      if(!list.includes(rec)){ revokeAttachmentPreview(rec); revokeAttachmentPreview(done); render(); continue; }
-      Object.assign(rec, done, {pending:false});
-      render();
-    }catch(e){
-      const idx=list.indexOf(rec);
-      if(idx>=0) list.splice(idx,1);
-      revokeAttachmentPreview(rec);
-      if(idx>=0) cwToast("⚠ 上传失败: "+f.name+"/"+(e&&e.message||e||"未知错误"));
-      render();
-    }
-  }
+    rec.ready=(async()=>{
+      try{
+        const buf=await f.arrayBuffer();
+        const r=await fetch(url("/api/upload"),{method:"POST",headers:{...auth,"X-Filename":encodeURIComponent(f.name),"X-Upload-Scope":scope,"X-Upload-Extract":"deferred"},body:buf});
+        let d={}; try{ d=await r.json(); }catch(e){ if(!r.ok) throw new Error("HTTP "+r.status); throw e; }
+        if(!r.ok) throw new Error(d.error||("HTTP "+r.status));
+        if(!d.path) throw new Error(d.error||f.name);
+        const done=uploadAttachmentRecord(f,d);
+        if(rec.previewUrl && done.previewUrl && done.previewUrl!==rec.previewUrl){ revokeAttachmentPreview(done); done.previewUrl=rec.previewUrl; }
+        // consumed=用户已按发送,附件从输入栏取走但仍属于待发送任务；不能当作“被删除”丢弃。
+        if(!list.includes(rec) && !rec.consumed){ revokeAttachmentPreview(rec); revokeAttachmentPreview(done); render(); return rec; }
+        Object.assign(rec, done, {pending:false});
+        if(list.includes(rec)) render();
+      }catch(e){
+        rec.pending=false; rec.error=String(e&&e.message||e||"未知错误");
+        const idx=list.indexOf(rec);
+        if(idx>=0) list.splice(idx,1);
+        skipNotify("⚠ 上传失败: "+f.name+"/"+rec.error);
+        if(!rec.consumed) revokeAttachmentPreview(rec);
+        render();
+      }
+      return rec;
+    })();
+  });
+  await Promise.all(queue.map(it=>it.rec.ready));
+}
+function takeAttachmentBundle(list, render){
+  const bundle=(list||[]).splice(0);
+  bundle.forEach(a=>{ if(a) a.consumed=true; });
+  if(typeof render==="function") render();
+  return bundle;
+}
+async function attachmentPrompt(text, bundle){
+  const files=bundle||[];
+  await Promise.all(files.map(a=>a&&a.ready ? a.ready : Promise.resolve(a)));
+  const ready=files.filter(a=>a&&a.path&&!a.error);
+  const refs=ready.map(attachmentReadRef).join("\n");
+  files.forEach(revokeAttachmentPreview);
+  if(!refs) return text;
+  return `我上传了以下文件。上传已完成；图片识别/PDF 解析可能仍在后台进行，请把读取和识别作为当前任务内部步骤，不要要求我等待或重新发送。\n${refs}\n\n${text}`.trim();
 }
 function attachmentReadRef(a){
   if(a&&a.textPath){
+    if(a.textKind==="image_vision_pending") return `- 原图: ${a.path}\n  后台识图结果: ${a.textPath}（可能仍为 processing；需要图片内容时请稍后重读，或立即对原图调用 image_ocr）`;
+    if(a.textKind==="pdf_text_pending") return `- 原 PDF: ${a.path}\n  后台文本结果: ${a.textPath}（可能仍为 processing；需要内容时请稍后重读，或直接读取原 PDF）`;
     if(a.textKind==="image_vision" || isImageAttachment(a)) return `- ${a.textPath} (视觉模型已识别该图片: 含完整文字转录与界面描述; 原图: ${a.path})`;
     return `- ${a.textPath} (从 PDF 自动提取的可读文本; 原 PDF: ${a.path})`;
   }

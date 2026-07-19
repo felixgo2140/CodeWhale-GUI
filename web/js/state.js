@@ -8,7 +8,7 @@ const state = { threads:[], activeId:null, es:null, items:new Map(), seen:new Se
   // 乐观新建、还没进服务端慢缓存(summary 刷新最长 2-3 分钟)的新对话:持久化到 localStorage——
   // 否则这窗口刷新页面就丢(felix 撞过两次"新对话找不到"),留 48h 兜底,真出现在列表后由 loadThreads 清掉
   pendingNew:(JSON.parse(localStorage.getItem("cw_pendingnew")||"[]")).filter(p=>p&&p.id&&(Date.now()-new Date(p.updated_at||0).getTime())<48*3600*1000),
-  autoApprove:false, allowShell:false, queue:[], attachments:[], stopTurnId:null, stopRequestedAt:0, runUI:null, finishedTurnIds:new Set(), lastEventAt:0, activeMaxInputTokens:0, activeTurnCount:0 };  // 按会话,不再全局持久
+  autoApprove:false, allowShell:false, queue:[], attachments:[], _preparingSend:false, stopTurnId:null, stopRequestedAt:0, runUI:null, finishedTurnIds:new Set(), lastEventAt:0, activeMaxInputTokens:0, activeTurnCount:0 };  // 按会话,不再全局持久
 function savePendingNew(){ try{ localStorage.setItem("cw_pendingnew",JSON.stringify((state.pendingNew||[]).slice(0,20))); }catch(e){} }
 const preview={url:localStorage.getItem("cw_preview_url")||"", scanT:null, lastKey:"", autoOpen:localStorage.getItem("cw_pv_auto_open")!=="0", autoRefresh:localStorage.getItem("cw_pv_auto_refresh")!=="0", size:localStorage.getItem("cw_pv_size")||"desktop", sandboxMode:localStorage.getItem("cw_pv_sandbox")||"auto", confirmedExternal:new Set()};
 

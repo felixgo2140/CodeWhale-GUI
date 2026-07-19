@@ -10,18 +10,15 @@ function cmpColRenderAttach(prov){
   bar.innerHTML=""; bar.hidden=!list.length;
   list.forEach((a,i)=>bar.appendChild(attachmentChip(a,()=>{ revokeAttachmentPreview(a); list.splice(i,1); cmpColRenderAttach(prov); })));
 }
-function cmpColWithAttach(prov, text){   // 把该栏附件路径折进 prompt 后清空(与单窗口 withAttachments 一致)
+async function cmpColWithAttach(prov, text){   // 取走该栏附件包；只等落盘，识图在该栏任务内继续
   const list=(CMP.colAttach&&CMP.colAttach[prov])||[];
   if(!list.length) return text;
-  if(list.some(a=>a&&a.pending)){ cwToast("附件还在上传(图片需识图约 20 秒),传完再发"); return null; }
-  const refs=list.map(attachmentReadRef).join("\n");
-  const out=`我上传了以下文件,请先用 read_file 读取再回答:\n${refs}\n\n${text}`.trim();
-  clearAttachmentList(list); cmpColRenderAttach(prov);
-  return out;
+  const bundle=takeAttachmentBundle(list,()=>cmpColRenderAttach(prov));
+  return attachmentPrompt(text,bundle);
 }
 
 /* ---------- 多模型并排对比 ---------- */
-const CMP={ sel:new Set(), threads:{}, seq:{}, keyed:{}, maxed:null, autoApprove:true, allowShell:false, fakeip:false, turn:{}, running:{}, busy:false, sendQ:[], provQ:{}, dispatching:{}, cancelled:{}, attachments:[], sessionId:null, topic:"", titleSeed:"", history:{}, historyLoading:{}, historyFull:{}, brief:{}, briefLoading:{}, restoring:false, views:{}, bags:{}, runState:{} };  // sessionId:当前对比会话(null=未开始,首次发送时建);provQ=按模型拆开的待发送队列
+const CMP={ sel:new Set(), threads:{}, seq:{}, keyed:{}, maxed:null, autoApprove:true, allowShell:false, fakeip:false, turn:{}, running:{}, busy:false, sendQ:[], provQ:{}, dispatching:{}, cancelled:{}, attachments:[], prepareChain:null, sessionId:null, topic:"", titleSeed:"", history:{}, historyLoading:{}, historyFull:{}, brief:{}, briefLoading:{}, restoring:false, views:{}, bags:{}, runState:{} };  // sessionId:当前对比会话(null=未开始,首次发送时建);provQ=按模型拆开的待发送队列
 const CMP_TITLE_DELAY_MS=1000;
 const CMP_CONTEXT_RISK={ "openai-codex":{maxInput:220000, turns:14} };
 const CMP_HANDOFF_AGENT_CHARS=9000;
@@ -773,15 +770,16 @@ async function cmpRunOne(prov){   // 只追问这一个模型(单独继续该栏
   const raw=(inp.value||"").trim();
   const hasAtt=!!(CMP.colAttach&&CMP.colAttach[prov]&&CMP.colAttach[prov].length);
   if((!raw && !hasAtt) || CMP.running[prov] || CMP.dispatching[prov]) return;   // 无字且无附件,或该栏在跑/派发中→拦住
-  const text=cmpColWithAttach(prov, raw);   // 折入该栏附件路径 + 清空该栏附件条
-  if(text===null) return;
   CMP.dispatching[prov]=true;   // 同步占位锁:在 await 之前就置上,关闭"重复 Enter"窗口
+  const prepared=cmpColWithAttach(prov, raw);   // 立即清空该栏附件条，上传落盘后自动继续
   inp.value=""; inp.style.height="auto";
-  const item=cmpMakeItem(text, raw || "附件追问");
-  cmpEnsureSession(item,[prov]);             // 单栏追问也属于一个对比会话,否则侧栏会散成多个 thread
-  if(CMP.threads[prov]) cmpSessionRecordThread(prov,CMP.threads[prov]);
-  cmpAddMsg(prov,"u",`<span class="cmpu-text">${esc(item.disp)}</span>`,{key:item.id,text:item.disp,time:item.time,provider:prov,optimistic:prov!=="qwen"});
   try{
+    const text=await prepared;
+    if(!text) return;
+    const item=cmpMakeItem(text, raw || "附件追问");
+    cmpEnsureSession(item,[prov]);             // 单栏追问也属于一个对比会话,否则侧栏会散成多个 thread
+    if(CMP.threads[prov]) cmpSessionRecordThread(prov,CMP.threads[prov]);
+    cmpAddMsg(prov,"u",`<span class="cmpu-text">${esc(item.disp)}</span>`,{key:item.id,text:item.disp,time:item.time,provider:prov,optimistic:prov!=="qwen"});
     let ensured={}; try{ ensured=await api("/api/compare/ensure",{method:"POST",body:JSON.stringify({providers:[prov]})}); }catch(e){}
     await cmpRun(prov,text,ensured[prov]);
   } finally { CMP.dispatching[prov]=false; cmpMaybeFlush(); }   // 该栏结束→若有排队的全栏发送在等,顺手 flush
@@ -928,34 +926,40 @@ function cmpSyncSendUI(){
 async function cmpSend(){
   const ta=$("#cmpInput"); const raw=(ta.value||"").trim();
   if(!raw && !CMP.attachments.length) return;   // 有字或有附件就能发
-  if(CMP.attachments.some(a=>a&&a.pending)){ cwToast("附件还在上传(图片需识图约 20 秒),传完再发"); return; }
   ta.value=""; ta.style.height="auto";
-  const atts=CMP.attachments.slice(); CMP.attachments=[]; cmpRenderAttach();   // 取走本轮附件并清空附件栏
-  atts.forEach(revokeAttachmentPreview);
-  const steerable=(atts.length||!raw)?[]:[...CMP.sel].filter(p=>CMP.running[p] && CMP.threads[p] && CMP.turn[p]);   // 正在跑且有活动 turn 的列
-  if(steerable.length){
-    const steerKey="cmpsteer_"+Date.now()+"_"+timelineHash(raw);
-    const steerTime=new Date().toISOString();
-    steerable.forEach(p=>cmpAddMsg(p,"u steer",`<span class="cmpu-text">⤵ 引导:${esc(raw)}</span>`,{key:steerKey,text:"引导:"+raw,time:steerTime,provider:p,meta:"引导"}));   // 显示引导气泡
-    Promise.allSettled(steerable.map(p=>
-      fetch(url(`/cmp/${p}/v1/threads/${CMP.threads[p]}/turns/${CMP.turn[p]}/steer`),
-        {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:raw})})
-        .then(r=>{ if(!r.ok) return r.text().then(t=>{throw new Error(t.slice(0,80))}); })
-        .catch(e=>cmpAddMsg(p,"a err","✗ 引导失败:"+esc(String(e&&e.message||e))))
-    ));
-  }
-  // sent=发给模型(折入文件路径,让各栏 read_file 读);disp=气泡显示(原文 + 附件名)
-  const sent=atts.length ? `我上传了以下文件,请先用 read_file 读取再回答:\n${atts.map(attachmentReadRef).join("\n")}\n\n${raw}`.trim() : raw;
-  const disp=raw+(atts.length?("  📎 "+atts.map(a=>a.name).join(", ")):"");
-  const item=cmpMakeItem(sent,disp);
-  const provs=cmpValidProviders([...CMP.sel]).filter(p=>!steerable.includes(p));   // 已被引导的列不再收同内容新消息
-  if(!provs.length){ cmpSyncSendUI(); return; }
-  cmpEnsureSession(item,provs);
-  const ready=[], queued=[];
-  provs.forEach(p=>cmpProvBusy(p)?queued.push(p):ready.push(p));
-  queued.forEach(p=>cmpQueueFor(p,item));
-  if(ready.length) cmpDispatch(item,ready);
-  cmpSyncSendUI();
+  const atts=takeAttachmentBundle(CMP.attachments,cmpRenderAttach);   // 立即释放输入区，附件只在本次发送包里等待落盘
+  const run=async()=>{
+    const sent=await attachmentPrompt(raw,atts);
+    if(!sent) return;
+    const steerable=(atts.length||!raw)?[]:[...CMP.sel].filter(p=>CMP.running[p] && CMP.threads[p] && CMP.turn[p]);   // 正在跑且有活动 turn 的列
+    if(steerable.length){
+      const steerKey="cmpsteer_"+Date.now()+"_"+timelineHash(raw);
+      const steerTime=new Date().toISOString();
+      steerable.forEach(p=>cmpAddMsg(p,"u steer",`<span class="cmpu-text">⤵ 引导:${esc(raw)}</span>`,{key:steerKey,text:"引导:"+raw,time:steerTime,provider:p,meta:"引导"}));   // 显示引导气泡
+      Promise.allSettled(steerable.map(p=>
+        fetch(url(`/cmp/${p}/v1/threads/${CMP.threads[p]}/turns/${CMP.turn[p]}/steer`),
+          {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:raw})})
+          .then(r=>{ if(!r.ok) return r.text().then(t=>{throw new Error(t.slice(0,80))}); })
+          .catch(e=>cmpAddMsg(p,"a err","✗ 引导失败:"+esc(String(e&&e.message||e))))
+      ));
+    }
+    // sent=发给模型(附件路径 + 任务内识别指令);disp=气泡显示(原文 + 附件名)
+    const disp=raw+(atts.length?("  📎 "+atts.map(a=>a.name).join(", ")):"");
+    const item=cmpMakeItem(sent,disp);
+    const provs=cmpValidProviders([...CMP.sel]).filter(p=>!steerable.includes(p));   // 已被引导的列不再收同内容新消息
+    if(!provs.length){ cmpSyncSendUI(); return; }
+    cmpEnsureSession(item,provs);
+    const ready=[], queued=[];
+    provs.forEach(p=>cmpProvBusy(p)?queued.push(p):ready.push(p));
+    queued.forEach(p=>cmpQueueFor(p,item));
+    if(ready.length) cmpDispatch(item,ready);
+    cmpSyncSendUI();
+  };
+  // 多次快速发送也按输入顺序准备，避免“后一条无附件”越过前一条附件消息。
+  const previous=CMP.prepareChain||Promise.resolve();
+  const current=previous.catch(()=>{}).then(run); CMP.prepareChain=current;
+  try{ return await current; }
+  finally{ if(CMP.prepareChain===current) CMP.prepareChain=null; }
 }
 async function cmpDispatch(item,provs){   // 把同一条用户问题发给指定的一组空闲 provider;忙的 provider 会由各自队列稍后补发
   provs=cmpValidProviders((provs||[]).filter(p=>CMP.sel.has(p)&&!cmpProvBusy(p)));
