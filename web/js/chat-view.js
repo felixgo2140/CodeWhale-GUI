@@ -5,6 +5,10 @@ const SNAPSHOT_LAZY_DETAIL_CHARS = 9000;
 const SNAPSHOT_RENDER_CHUNK = 12;
 const STREAM_MD_DEFER_CHARS = 6000;
 
+let activeAssistantMessage=null;
+let selectionMenu=null;
+let selectionActionsInstalled=false;
+
 function select(sel){
   if(!sel) return null;
   if(typeof $==="function") return $(sel);
@@ -161,6 +165,159 @@ function copyText(text){
   return execCopyText(text);
 }
 
+function cleanMarkdown(text){
+  return String(text||"").replace(/[ \t]+\n/g,"\n").replace(/\n{3,}/g,"\n\n").trim();
+}
+
+function nodeMarkdown(node){
+  if(!node) return "";
+  if(node.nodeType===Node.TEXT_NODE) return node.nodeValue||"";
+  if(node.nodeType!==Node.ELEMENT_NODE && node.nodeType!==Node.DOCUMENT_FRAGMENT_NODE) return "";
+  if(node.nodeType===Node.DOCUMENT_FRAGMENT_NODE) return [...node.childNodes].map(nodeMarkdown).join("");
+  const tag=node.tagName.toLowerCase();
+  const inner=()=>[...node.childNodes].map(nodeMarkdown).join("");
+  if(tag==="br") return "\n";
+  if(tag==="strong"||tag==="b") return `**${inner()}**`;
+  if(tag==="em"||tag==="i") return `*${inner()}*`;
+  if(tag==="del"||tag==="s") return `~~${inner()}~~`;
+  if(tag==="code" && node.parentElement?.tagName.toLowerCase()!=="pre"){
+    const value=node.textContent||"";
+    const fence=value.includes("`")?"``":"`";
+    return `${fence}${value}${fence}`;
+  }
+  if(tag==="pre"){
+    const code=node.textContent||"";
+    const cls=node.querySelector("code")?.className||"";
+    const lang=(cls.match(/language-([\w+-]+)/)||[])[1]||"";
+    return `\n\`\`\`${lang}\n${code.replace(/\n+$/,"")}\n\`\`\`\n`;
+  }
+  if(tag==="a"){
+    const label=cleanMarkdown(inner())||node.getAttribute("href")||"";
+    const href=node.getAttribute("href")||"";
+    return href?`[${label}](${href})`:label;
+  }
+  if(tag==="img") return `![${node.getAttribute("alt")||""}](${node.getAttribute("src")||""})`;
+  if(/^h[1-6]$/.test(tag)) return `\n${"#".repeat(Number(tag[1]))} ${cleanMarkdown(inner())}\n\n`;
+  if(tag==="blockquote") return `\n${cleanMarkdown(inner()).split("\n").map(line=>"> "+line).join("\n")}\n\n`;
+  if(tag==="ul"||tag==="ol"){
+    const ordered=tag==="ol";
+    const lines=[...node.children].filter(child=>child.tagName.toLowerCase()==="li").map((li,index)=>{
+      const body=cleanMarkdown([...li.childNodes].filter(child=>!(child.nodeType===Node.ELEMENT_NODE&&["ul","ol"].includes(child.tagName.toLowerCase()))).map(nodeMarkdown).join(""));
+      const nested=[...li.children].filter(child=>["ul","ol"].includes(child.tagName.toLowerCase())).map(nodeMarkdown).join("");
+      const prefix=ordered?`${index+1}. `:"- ";
+      return prefix+body.replace(/\n/g,"\n  ")+(nested?"\n"+nested.split("\n").map(line=>line?"  "+line:line).join("\n"):"");
+    });
+    return `\n${lines.join("\n")}\n`;
+  }
+  if(tag==="li") return inner();
+  if(["p","div","section","article","header","footer","table","thead","tbody","tr"].includes(tag)) return `\n${inner()}\n`;
+  if(tag==="th"||tag==="td") return `${inner()}\t`;
+  return inner();
+}
+
+function selectionAsMarkdown(range, fallback){
+  try{
+    const fragment=range.cloneContents();
+    return cleanMarkdown(nodeMarkdown(fragment))||String(fallback||"").trim();
+  }catch(e){ return String(fallback||"").trim(); }
+}
+
+function assistantMessageText(msg){
+  try{ return String(typeof msg?._cwRawMessage==="function" ? msg._cwRawMessage() : (msg?.querySelector(".content")?.innerText||"")); }
+  catch(e){ return String(msg?.querySelector(".content")?.innerText||""); }
+}
+
+function pulseCopyButton(btn){
+  if(!btn) return;
+  btn.classList.add("ok");
+  const old=btn.innerHTML;
+  btn.innerHTML=typeof icon==="function"?icon("check"):"✓";
+  setTimeout(()=>{ if(btn.isConnected){ btn.innerHTML=old; btn.classList.remove("ok"); } },900);
+}
+
+function appendSelectionContext(msg,text){
+  const target=msg?._cwInputSel||"#input";
+  const inp=select(target)||select("#input");
+  if(!inp) throw new Error("找不到对应输入框");
+  const quote=String(text||"").trim().split("\n").map(line=>"> "+line).join("\n");
+  const block=`引用回复片段：\n${quote}`;
+  inp.value=inp.value.trim()?`${inp.value.replace(/\s+$/,"")}\n\n${block}`:block;
+  inp.dispatchEvent(new Event("input"));
+  inp.focus();
+  try{ inp.setSelectionRange(inp.value.length,inp.value.length); }catch(e){}
+}
+
+function closeSelectionMenu(){
+  if(selectionMenu){ selectionMenu.remove(); selectionMenu=null; }
+}
+
+function showSelectionMenu(event,msg,selected,markdown){
+  closeSelectionMenu();
+  const menu=document.createElement("div");
+  menu.className="message-selection-menu";
+  const action=(name,label,shortcut="")=>{
+    const button=document.createElement("button");
+    button.type="button";
+    button.dataset.messageAction=name;
+    const text=document.createElement("span"); text.textContent=label; button.appendChild(text);
+    if(shortcut){ const key=document.createElement("kbd"); key.textContent=shortcut; button.appendChild(key); }
+    return button;
+  };
+  menu.append(action("copy-selection","复制"));
+  menu.append(action("copy-message","复制整条回复","⌘⇧C"));
+  menu.append(action("copy-markdown","复制为 Markdown"));
+  const sep=document.createElement("div"); sep.className="message-selection-sep"; menu.append(sep);
+  menu.append(action("attach-context","将所选内容附加为上下文"));
+  menu.addEventListener("click",async e=>{
+    const button=e.target.closest("[data-message-action]"); if(!button) return;
+    e.preventDefault(); e.stopPropagation();
+    try{
+      if(button.dataset.messageAction==="copy-selection") await copyText(selected);
+      else if(button.dataset.messageAction==="copy-message") await copyText(assistantMessageText(msg));
+      else if(button.dataset.messageAction==="copy-markdown") await copyText(markdown||selected);
+      else if(button.dataset.messageAction==="attach-context"){ appendSelectionContext(msg,selected); cwToast("已附加到输入框"); closeSelectionMenu(); return; }
+      cwToast("已复制");
+    }catch(err){ cwToast(err?.message||"操作失败"); }
+    closeSelectionMenu();
+  });
+  document.body.appendChild(menu);
+  const rect=menu.getBoundingClientRect();
+  const left=Math.max(8,Math.min(event.clientX,window.innerWidth-rect.width-8));
+  const top=Math.max(8,Math.min(event.clientY,window.innerHeight-rect.height-8));
+  menu.style.left=left+"px"; menu.style.top=top+"px";
+  selectionMenu=menu;
+}
+
+function installSelectionActions(){
+  if(selectionActionsInstalled) return;
+  selectionActionsInstalled=true;
+  document.addEventListener("contextmenu",event=>{
+    const content=event.target.closest?.(".msg.assistant .content");
+    const msg=content?.closest?.(".msg.assistant");
+    const selection=window.getSelection?.();
+    if(!content||!msg||!selection||selection.isCollapsed||!selection.rangeCount) return;
+    const range=selection.getRangeAt(0);
+    if(!content.contains(range.commonAncestorContainer)) return;
+    const selected=selection.toString().trim(); if(!selected) return;
+    event.preventDefault();
+    activeAssistantMessage=msg;
+    showSelectionMenu(event,msg,selected,selectionAsMarkdown(range,selected));
+  });
+  document.addEventListener("pointerdown",event=>{ if(selectionMenu&&!selectionMenu.contains(event.target)) closeSelectionMenu(); },true);
+  document.addEventListener("keydown",async event=>{
+    if(event.key==="Escape") closeSelectionMenu();
+    if(!(event.metaKey||event.ctrlKey)||!event.shiftKey||event.altKey||event.key.toLowerCase()!=="c") return;
+    if(event.target.closest?.("input,textarea,[contenteditable=true]")) return;
+    const msg=activeAssistantMessage?.isConnected ? activeAssistantMessage : [...document.querySelectorAll(".msg.assistant")].reverse().find(el=>el.offsetParent!==null);
+    if(!msg) return;
+    event.preventDefault();
+    try{ await copyText(assistantMessageText(msg)); pulseCopyButton(msg.querySelector(".mact.copy")); cwToast("已复制整条回复"); }
+    catch(err){ cwToast(err?.message||"复制失败"); }
+  });
+  addEventListener("scroll",closeSelectionMenu,true);
+  addEventListener("resize",closeSelectionMenu);
+}
+
 function createChatView(opts={}){
   const bag=opts.bag||{};
   const getWrap=typeof opts.getWrap==="function" ? opts.getWrap : (()=>null);
@@ -169,6 +326,7 @@ function createChatView(opts={}){
   const hooks=opts.hooks||{};
   let stick=true, mdObserver=null;
   let deferredMd=new WeakMap();
+  installSelectionActions();
 
   function initBag(){
     if(!bag.items || typeof bag.items.get!=="function") bag.items=new Map();
@@ -446,6 +604,27 @@ function createChatView(opts={}){
     }
     el.dataset.threadId=userMessageThreadId(item,el);
     setUserActionTime(el, when);
+  }
+
+  function ensureAssistantActions(el,id){
+    if(!el) return;
+    el._cwInputSel=inputSel||"#input";
+    el._cwRawMessage=()=>{
+      const item=bag.items&&bag.items.get(id);
+      return (item&&item.raw)||el.querySelector(".content")?.innerText||"";
+    };
+    const button=el.querySelector(".mact.copy");
+    if(button){ button.title="复制整条回复 (⌘⇧C)"; button.setAttribute("aria-label","复制整条回复"); }
+    if(el.dataset.assistantActions) return;
+    el.dataset.assistantActions="1";
+    el.addEventListener("pointerenter",()=>{ activeAssistantMessage=el; });
+    el.addEventListener("focusin",()=>{ activeAssistantMessage=el; });
+    el.querySelector(".acts")?.addEventListener("click",async event=>{
+      const copy=event.target.closest(".mact.copy"); if(!copy) return;
+      event.preventDefault(); event.stopPropagation();
+      try{ await copyText(assistantMessageText(el)); pulseCopyButton(copy); cwToast("已复制整条回复"); }
+      catch(err){ cwToast(err?.message||"复制失败"); }
+    });
   }
 
   async function renderThreadSnapshot(rec, preserveQueue=false, opts={}){
@@ -770,6 +949,7 @@ function createChatView(opts={}){
       if(typeof hooks.onUserMessage==="function") hooks.onUserMessage(item, el, {id,text,content});
     }
     bag.items.set(id,{el,content,kind,raw:(kind==="user_message"?userText:(item?.detail||"")),meta:(kind==="user_message"?{time:userWhen&&userWhen.toISOString(),threadId:userMessageThreadId(item,el)}:meta)});
+    if(kind==="agent_message") ensureAssistantActions(el,id);
     if(kind==="agent_message") (bag._turnMsgs=bag._turnMsgs||[]).push(id);
   }
 

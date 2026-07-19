@@ -724,6 +724,36 @@ body.sideresizing,body.previewresizing{cursor:col-resize;user-select:none}
 .mact:disabled{opacity:.45;cursor:default}
 .mact:hover,.mact.ok{background:var(--accent-tint);color:var(--accent-deep)}
 
+.message-selection-menu{
+  position:fixed;
+  z-index:1800;
+  width:min(290px,calc(100vw - 16px));
+  padding:6px;
+  border:1px solid var(--line-strong);
+  border-radius:var(--r-s);
+  background:var(--panel);
+  box-shadow:var(--sh-dropdown);
+}
+.message-selection-menu button{
+  width:100%;
+  min-height:34px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  padding:0 10px;
+  border:0;
+  border-radius:var(--r-s);
+  background:transparent;
+  color:var(--ink);
+  text-align:left;
+  font-size:13px;
+  cursor:pointer;
+}
+.message-selection-menu button:hover,.message-selection-menu button:focus-visible{background:var(--accent-tint);color:var(--accent-deep);outline:0}
+.message-selection-menu kbd{color:var(--ink-3);font:11px/1 var(--mono);white-space:nowrap}
+.message-selection-sep{height:1px;margin:5px 3px;background:var(--line)}
+
 /* User input timeline */
 #timelinePanel{
   position:fixed;
