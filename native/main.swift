@@ -34,7 +34,7 @@ func wakeManagedService(_ label: String) -> Bool {
 func ensureServices() {
     if !ping("http://127.0.0.1:7878/health") {
         if !wakeManagedService("com.codewhale.appserver") {
-            sh("cd \"$HOME\" && nohup codewhale app-server --http --host 127.0.0.1 --port 7878 --insecure-no-auth >\"$HOME/codewhale-gui/app-server.log\" 2>&1 &", wait: false)
+            sh("cd \"$HOME\" && NO_COLOR=1 TERM=dumb nohup codewhale app-server --http --host 127.0.0.1 --port 7878 --insecure-no-auth >/dev/null 2>>\"$HOME/codewhale-gui/app-server.err.log\" &", wait: false)
         }
     }
     if !ping("http://127.0.0.1:3000/") {
@@ -116,6 +116,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     // 加载失败(后端还没起)→ 稍等重试
     func webView(_ w: WKWebView, didFail nav: WKNavigation!, withError e: Error) { retry() }
     func webView(_ w: WKWebView, didFailProvisionalNavigation nav: WKNavigation!, withError e: Error) { retry() }
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self, weak webView] in
+            guard let self = self, let webView = webView else { return }
+            if webView.url != nil { webView.reload() }
+            else if webView === self.web { self.load() }
+        }
+    }
     func retry() { DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.load() } }
 
     // 标准主菜单:App 菜单(隐藏/退出)+ 编辑菜单(撤销/重做/剪切/拷贝/粘贴/全选)。
@@ -443,7 +450,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         fnPressed = false
         if voiceRecording { cancelVoiceCapture(message: nil) }
     }
-    func applicationShouldTerminateAfterLastWindowClosed(_ a: NSApplication) -> Bool { return true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ a: NSApplication) -> Bool { return false }
 }
 
 let app = NSApplication.shared

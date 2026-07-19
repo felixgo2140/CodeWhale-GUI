@@ -137,10 +137,10 @@ cat > "$LA/com.codewhale.appserver.plist" <<PLIST
     <string>--port</string><string>7878</string><string>--insecure-no-auth</string>
   </array>
   <key>WorkingDirectory</key><string>$HOME</string>
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$PLPATH</string></dict>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$PLPATH</string><key>NO_COLOR</key><string>1</string><key>TERM</key><string>dumb</string></dict>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>
-  <key>StandardOutPath</key><string>$HOME/codewhale-gui/app-server.log</string>
-  <key>StandardErrorPath</key><string>$HOME/codewhale-gui/app-server.log</string>
+  <key>StandardOutPath</key><string>/dev/null</string>
+  <key>StandardErrorPath</key><string>$HOME/codewhale-gui/app-server.err.log</string>
 </dict></plist>
 PLIST
 cat > "$LA/com.codewhale.frontend.plist" <<PLIST
@@ -158,6 +158,8 @@ cat > "$LA/com.codewhale.frontend.plist" <<PLIST
 PLIST
 launchctl bootout "gui/$UID_N/com.codewhale.appserver" 2>/dev/null || true
 launchctl bootout "gui/$UID_N/com.codewhale.frontend"  2>/dev/null || true
+rm -f "$HOME/codewhale-gui/app-server.log"
+: > "$HOME/codewhale-gui/app-server.err.log"
 launchctl load -w "$LA/com.codewhale.appserver.plist"
 launchctl load -w "$LA/com.codewhale.frontend.plist"
 

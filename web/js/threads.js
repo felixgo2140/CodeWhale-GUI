@@ -92,6 +92,14 @@ function showThreadContextMenu(ev,actions){
   menu.style.visibility="visible";
   menu.querySelector(".ctx-item")?.focus({preventScroll:true});
 }
+function showThreadActionMenu(ev,actions){
+  ev.preventDefault(); ev.stopPropagation();
+  const rect=ev.currentTarget.getBoundingClientRect();
+  showThreadContextMenu({
+    preventDefault(){}, stopPropagation(){},
+    clientX:rect.right, clientY:rect.bottom+4
+  },actions);
+}
 async function copyContextValue(value,okLabel){
   const text=String(value||"").trim(); if(!text){ cwToast("没有可复制的内容"); return; }
   await clipCopy(text); cwToast(okLabel||"已复制");
@@ -190,15 +198,12 @@ function threadEl(t){   // 单条对话 DOM
   }
   const stalled = dotCls==="stalled";
   d.innerHTML=`<div class="t1"><span class="dot ${dotCls}" title="${dotTitle}"></span><span class="title">${pinned?icon("pin"):""}${stalled?icon("alert"):""}${esc(t.title||"未命名")}</span>`+
-    `<span class="time">${relTime(t.updated_at)}</span><span class="actions"><button class="act rename" title="重命名">${icon("edit")}</button><button class="act cron ${cron?"on":""}" title="${cron?"移出 Cron Jobs":"加入 Cron Jobs"}">${icon("calendar")}</button><button class="act pin" title="${pinned?"取消置顶":"置顶"}">${icon("pin")}</button><button class="act del" title="删除">${icon("trash")}</button></span></div>`+
+    `<span class="time">${relTime(t.updated_at)}</span><span class="actions"><button class="act more" type="button" title="更多操作" aria-label="更多操作">${icon("more")}</button></span></div>`+
     `<div class="meta"><span class="models">${esc(PROV_SHORT[t.provider]||t.provider||t.model||"")}</span>${t.preview?`<span class="prev snippet">${esc(t.preview)}</span>`:""}</div>`;
   d.onclick=()=>openThread(t.id);
   d.oncontextmenu=e=>showThreadContextMenu(e,threadContextActions(t));
   keyboardButton(d,()=>openThread(t.id),`打开对话: ${t.title||"未命名"}`);
-  d.querySelector(".pin").onclick=(e)=>{e.stopPropagation();togglePin(t.id);};
-  d.querySelector(".cron").onclick=(e)=>{e.stopPropagation();toggleCronJob(t.id);};
-  d.querySelector(".del").onclick=(e)=>{e.stopPropagation();deleteThread(t.id,t.title);};
-  d.querySelector(".rename").onclick=(e)=>{e.stopPropagation();renameThread(t.id,t.title);};
+  d.querySelector(".more").onclick=e=>showThreadActionMenu(e,threadContextActions(t));
   return d;
 }
 function cmpSessionEl(s){   // 对比会话行:点=回到当时整场对比
@@ -207,15 +212,12 @@ function cmpSessionEl(s){   // 对比会话行:点=回到当时整场对比
   const cron=state.cronJobs.has(s.id);
   const d=document.createElement("div"); d.className="thread cmpsess"+(cron?" cronjob":"")+(s.id===CMP.sessionId&&!$("#cmpView")?.hidden?" active":"");
   d.innerHTML=`<div class="t1"><span class="dot ok" title="对比会话(点击回到当时对比)"></span><span class="title">${pinned?icon("pin"):""}${icon("layout")}${esc(s.topic||"对比")}</span>`+
-    `<span class="time">${relTime(s.ts||0)}</span><span class="actions"><button class="act rename" title="重命名">${icon("edit")}</button><button class="act cron ${cron?"on":""}" title="${cron?"移出 Cron Jobs":"加入 Cron Jobs"}">${icon("calendar")}</button><button class="act pin" title="${pinned?"取消置顶":"置顶"}">${icon("pin")}</button><button class="act del" title="从列表删除此对比会话">${icon("trash")}</button></span></div>`+
+    `<span class="time">${relTime(s.ts||0)}</span><span class="actions"><button class="act more" type="button" title="更多操作" aria-label="更多操作">${icon("more")}</button></span></div>`+
     `<div class="meta"><span class="models">${esc(modelSummary(provs))}</span></div>`;
   d.onclick=()=>openCompareWindow(s.id);   // 点会话 → 新开一个独立窗口还原那场对比(主窗口不受影响)
   d.oncontextmenu=e=>showThreadContextMenu(e,comparisonContextActions(s));
   keyboardButton(d,()=>openCompareWindow(s.id),`打开对比会话: ${s.topic||"对比"}`);
-  d.querySelector(".rename").onclick=(e)=>{e.stopPropagation();renameCmpSession(s.id,s.topic);};
-  d.querySelector(".pin").onclick=(e)=>{e.stopPropagation();togglePin(s.id);};
-  d.querySelector(".cron").onclick=(e)=>{e.stopPropagation();toggleCronJob(s.id);};
-  d.querySelector(".del").onclick=(e)=>{e.stopPropagation();deleteCmpSession(s.id,s.topic);};
+  d.querySelector(".more").onclick=e=>showThreadActionMenu(e,comparisonContextActions(s));
   return d;
 }
 function renameCmpSession(id,cur){   // topic_ts=重命名时间戳,合并平局时新者胜(否则别的窗口旧副本会把名字盖回去)

@@ -1843,6 +1843,16 @@ def _clean_research_record(data):
         pass
     rec["id"] = str(data.get("id") or _research_record_id(rec))[:80]
     return rec
+
+def _clamp_research_progress(data, limit=24000):
+    if not isinstance(data, dict):
+        return data
+    out = dict(data)
+    for key in ("tail", "detail"):
+        text = out.get(key)
+        if isinstance(text, str) and len(text) > limit:
+            out[key] = "…前面的进度已折叠…\n" + text[-limit:]
+    return out
 def upsert_research_record(data):
     rec = _clean_research_record(data if isinstance(data, dict) else {})
     if not rec["cw_thread_id"]:
@@ -6986,6 +6996,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         try:
                             parsed = json.loads((r.stdout or "").strip().splitlines()[-1])
                             out = parsed if parsed.get("ok") is False else {"ok": True, **parsed}
+                            if not full:
+                                out = _clamp_research_progress(out)
                         except Exception:
                             out = {"ok": False, "error": (r.stderr or r.stdout or "无输出")[:300]}
                         if full and isinstance(out, dict) and out.get("ok") is not False:
@@ -7062,6 +7074,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                        capture_output=True, text=True, timeout=30)
                     try:
                         out = {"ok": True, **json.loads((r.stdout or "").strip().splitlines()[-1])}
+                        out = _clamp_research_progress(out)
                     except Exception:
                         out = {"ok": False, "error": (r.stderr or r.stdout or "progress 无输出")[:300]}
                 else:

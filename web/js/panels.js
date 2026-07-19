@@ -589,6 +589,11 @@ function researchRecordTitle(rec){
   const nm=(rec&&rec.engine_name)||"研究";
   return nm;
 }
+const RESEARCH_PROGRESS_MAX_CHARS=24000;
+function researchProgressText(value){
+  const text=String(value||"");
+  return text.length>RESEARCH_PROGRESS_MAX_CHARS ? "…前面的进度已折叠…\n"+text.slice(-RESEARCH_PROGRESS_MAX_CHARS) : text;
+}
 function renderResearchMarkdown(body, text){
   const raw=String(text||"").trim();
   body.innerHTML=`<div class="df-md">${md(raw||"(报告正文为空,请用下方链接打开完整报告文件)")}</div>`;
@@ -629,7 +634,7 @@ function renderResearchRecord(rec){
     body.textContent=rec.output||"研究失败";
   }else{
     body.innerHTML='<div class="df-progtt">当前推理进展(最新中间产出):</div><pre class="df-prog"></pre>';
-    body.querySelector(".df-prog").textContent=rec.output||"研究仍在进行或等待下一次轮询";
+    body.querySelector(".df-prog").textContent=researchProgressText(rec.output)||"研究仍在进行或等待下一次轮询";
   }
   stats.textContent=researchStatsWithModel(rec.stats||((rec.external_thread_id||rec.ext_thread_id)?("Thread: "+String(rec.external_thread_id||rec.ext_thread_id).slice(0,12)+"…"):""), rec);
   $("#mwrap").appendChild(dfel);
@@ -714,10 +719,11 @@ async function submitDeerFlow(promptArg,eng){   // eng=DF_ENGINES 条目;默认 
         if(pd.tail){
           let pg=body.querySelector(".df-prog");
           if(!pg){ body.innerHTML='<div class="df-progtt">当前推理进展(最新中间产出):</div><pre class="df-prog"></pre>'; pg=body.querySelector(".df-prog"); }
-          if(pg.textContent!==pd.tail){ pg.textContent=pd.tail; pg.scrollTop=pg.scrollHeight; }
+          const progress=researchProgressText(pd.tail);
+          if(pg.textContent!==progress){ pg.textContent=progress; pg.scrollTop=pg.scrollHeight; }
         } else body.textContent="研究中… ("+secs+"s) 计划生成阶段,暂无中间产出";
-        recId=await saveResearchRecord({...recBase,id:recId,external_thread_id:d.thread_id,status:st,stats:stat,output:pd.tail||body.textContent});
-        if(["error","failed","cancelled"].includes(st)){ hdr.classList.remove("running"); hdr.textContent="❌ "+eng.name+" 研究"+(st==="cancelled"?"被取消":"失败")+(rm.label?` · LLM: ${rm.label}`:""); recId=await saveResearchRecord({...recBase,id:recId,external_thread_id:d.thread_id,status:st,stats:stat,output:pd.tail||body.textContent}); return; }
+        recId=await saveResearchRecord({...recBase,id:recId,external_thread_id:d.thread_id,status:st,stats:stat,output:researchProgressText(pd.tail)||body.textContent});
+        if(["error","failed","cancelled"].includes(st)){ hdr.classList.remove("running"); hdr.textContent="❌ "+eng.name+" 研究"+(st==="cancelled"?"被取消":"失败")+(rm.label?` · LLM: ${rm.label}`:""); recId=await saveResearchRecord({...recBase,id:recId,external_thread_id:d.thread_id,status:st,stats:stat,output:researchProgressText(pd.tail)||body.textContent}); return; }
         continue;
       }
       if(st==="success"){

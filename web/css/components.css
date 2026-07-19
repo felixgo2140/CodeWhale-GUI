@@ -237,10 +237,9 @@ body.sideresizing,body.previewresizing{cursor:col-resize;user-select:none}
   right:8px;
   top:7px;
   display:flex;
-  gap:2px;
   margin:0;
-  padding:1px 2px;
-  border:1px solid var(--line);
+  padding:0;
+  border:0;
   border-radius:var(--r-s);
   background:var(--panel);
   box-shadow:var(--sh-2);
@@ -250,20 +249,19 @@ body.sideresizing,body.previewresizing{cursor:col-resize;user-select:none}
 }
 .thread:hover .actions,.thread:focus-within .actions{opacity:1;pointer-events:auto}
 .thread .act{
-  border:0;
-  background:transparent;
+  border:1px solid var(--line);
+  background:var(--panel);
   border-radius:var(--r-s);
-  width:24px;
-  height:24px;
+  width:28px;
+  height:28px;
   padding:0;
   display:inline-flex;
   align-items:center;
   justify-content:center;
   color:var(--ink-2);
 }
-.thread .act .ico{width:14px;height:14px}
+.thread .act .ico{width:16px;height:16px}
 .thread .act:hover{background:var(--accent-tint);color:var(--accent-deep)}
-.thread .act.cron.on{background:var(--cron-bg);color:var(--cron-ink)}
 .thread-context-menu{
   position:fixed;
   z-index:205;
