@@ -2,7 +2,7 @@
 """CodeWhale GUI server.
 
 - Serves the static web app.
-- /api/balance: DeepSeek balance proxy (reads codewhale config key).
+- /api/balance: provider balance/quota proxy (reads codewhale config key).
 - /v1/* and /health: token-gated reverse proxy (incl. SSE streaming) to the
   loopback-only codewhale app-server. The phone (PWA) talks ONLY to this server
   (same-origin, no CORS); codewhale itself never leaves 127.0.0.1.
@@ -41,6 +41,16 @@ def _atomic_write(path, text, secret=False):
 def _atomic_write_json(path, obj, secret=False, ensure_ascii=True):
     _atomic_write(path, json.dumps(obj, ensure_ascii=ensure_ascii), secret=secret)
 
+def _tail_text(path, n=2000):
+    try:
+        with open(os.path.expanduser(path), "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - max(1024, n * 2)))
+            return f.read().decode("utf-8", errors="replace")[-n:]
+    except Exception:
+        return ""
+
 # DeerFlow 研究前置指令:把 CodeWhale 两个专属 skill 的方法论浓缩进 DeerFlow 的研究行为
 # (DeerFlow 自身 prompt 改不动/脆 → 服务端给每个查询前置)。A=价值投资大师 v7(个股),
 # B=供应链瓶颈猎手 chokepoint-atlas(板块/AI 基础设施)。自动路由 + 压掉 DeerFlow 过程性废话。
@@ -72,8 +82,13 @@ _DF_FRAMEWORK = """【研究框架】先判断本次研究属哪类,套对应框
 ─────────────
 """
 PINS_FILE = os.path.expanduser("~/.codewhale-gui/pins.json")
+CRON_JOBS_FILE = os.path.expanduser("~/.codewhale-gui/cron_jobs.json")
 CMP_THREADS_FILE = os.path.expanduser("~/.codewhale-gui/cmp_threads.json")   # 多模型对比建的 thread id 集合 → 侧栏按组归类(对比/普通分开),跨窗口共享
 CMP_SESSIONS_FILE = os.path.expanduser("~/.codewhale-gui/cmp_sessions.json")  # 对比会话 [{id,topic,ts,threads:{prov:tid}}] → 侧栏每会话一行、点回当时对比,跨窗口共享
+CMP_THREAD_SESSIONS_FILE = os.path.expanduser("~/.codewhale-gui/cmp_thread_sessions.json")  # thread_id -> {session_id,provider}:对比归组的权威唯一编码索引
+TITLE_STATE_FILE = os.path.expanduser("~/.codewhale-gui/title_state.json")  # thread_id -> {locked,kind,title}:自动标题只改一次;手动改名后永久锁定
+RUNTIME_DIR = os.path.expanduser("~/.codewhale/tasks/runtime")
+NOTIFICATION_STATE_FILE = os.path.expanduser("~/.codewhale-gui/notification_state.json")
 UPSTREAM = "http://127.0.0.1:7878"
 _LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))   # 本机 app-server 请求绝不走代理(代理会劫持 127.0.0.1 导致超时)
 BIND = os.environ.get("CW_BIND", "0.0.0.0")
@@ -87,6 +102,7 @@ PREVIEW_DENY_EXTS = {".pem", ".key", ".p12", ".pfx", ".sqlite", ".db", ".log", "
 MCP_ALLOWED_BINS = {"npx", "node", "uvx", "python", "python3", "bun", "deno"}
 MCP_SAFE_DIRS = tuple(os.path.realpath(os.path.expanduser(p)) for p in (
     "~/codewhale-gui", "~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"))
+_TITLE_STATE_LOCK = threading.Lock()
 
 # ── 外部研究 harness 注册表:桥接脚本与 deerflow_client 同契约(submit/progress/result 输出 JSON),
 #    /api/harness/<name>/research|poll|file 三端点通用。新装 harness → 写桥接脚本 + 这里加一条即可。──
@@ -94,7 +110,33 @@ _HARNESS = {
     "gptr": {"client": os.path.expanduser("~/scripts/gptr_client.py"), "outdir": os.path.expanduser("~/harness-output/gptr")},
     "odr": {"client": os.path.expanduser("~/scripts/odr_client.py"), "outdir": os.path.expanduser("~/harness-output/odr")},
     "storm": {"client": os.path.expanduser("~/scripts/storm_client.py"), "outdir": os.path.expanduser("~/harness-output/storm")},
+    "agentloop": {"client": os.path.expanduser("~/scripts/agentloop_client.py"), "outdir": os.path.expanduser("~/harness-output/agentloop")},
+    "pydai": {"client": os.path.expanduser("~/scripts/pydai_client.py"), "outdir": os.path.expanduser("~/harness-output/pydai")},
+    "browser": {"client": os.path.expanduser("~/scripts/browseruse_client.py"), "outdir": os.path.expanduser("~/harness-output/browseruse")},
+    "crew": {"client": os.path.expanduser("~/scripts/crewai_client.py"), "outdir": os.path.expanduser("~/harness-output/crewai")},
+    "obsidian": {"client": os.path.expanduser("~/scripts/obsidian_client.py"), "outdir": os.path.expanduser("~/harness-output/obsidian")},
 }
+_HARNESS_META = {
+    "deerflow": {"emoji": "🔬", "name": "DeerFlow", "description": "重型深研:多轮搜索+全文抓取+可挂研究 skill", "api": "/api/deerflow"},
+    "gptr": {"emoji": "📑", "name": "GPT Researcher", "description": "快而规整:规划→并行搜索→引用报告", "api": "/api/harness/gptr"},
+    "odr": {"emoji": "🕸️", "name": "Open Deep Research", "description": "宽题深挖:监督者+子研究员分解研究", "api": "/api/harness/odr"},
+    "storm": {"emoji": "🌪️", "name": "STORM", "description": "综述长文:多视角提问→大纲→百科式文章", "api": "/api/harness/storm"},
+    "agentloop": {"emoji": "🔁", "name": "Agent Loop", "description": "自我修正:计划→初稿→批判→补搜→定稿", "api": "/api/harness/agentloop"},
+    "pydai": {"emoji": "🧩", "name": "Pydantic AI", "description": "结构稳定:搜索取材→schema 校验→字段化报告", "api": "/api/harness/pydai"},
+    "browser": {"emoji": "🌐", "name": "browser-use", "description": "网页操作:打开网页→点击/滚动→提取动态内容", "api": "/api/harness/browser"},
+    "crew": {"emoji": "👥", "name": "CrewAI", "description": "多角色委员会:事实→正方→反方→总编", "api": "/api/harness/crew"},
+    "obsidian": {"emoji": "🗂️", "name": "Obsidian / LlamaIndex", "description": "私人知识库:只读 vault→语义检索→引用回答", "api": "/api/harness/obsidian"},
+}
+def read_harnesses():
+    items = []
+    deer_client = os.path.expanduser("~/scripts/deerflow_client.py")
+    items.append({**_HARNESS_META["deerflow"], "id": "deerflow", "client": deer_client,
+                  "outdir": os.path.expanduser("~/deerflow-output"), "available": os.path.isfile(deer_client)})
+    for hid, cfg in _HARNESS.items():
+        meta = _HARNESS_META.get(hid, {})
+        items.append({**meta, "id": hid, "client": cfg.get("client", ""),
+                      "outdir": cfg.get("outdir", ""), "available": os.path.isfile(cfg.get("client", ""))})
+    return items
 
 # ── 安全在线更新(签名验证)──
 # 内嵌发布公钥(Ed25519,验签锚点)。私钥仅发布者持有,绝不随包分发。
@@ -327,20 +369,125 @@ def _open_url(req, timeout):
         return opener.open(req, timeout=timeout)
 
 _bal = {"t": 0.0, "d": None}
+# qwen 这类 GUI 自创的 [providers.<x>] 段不在 codewhale CLI 的 schema 里,CLI 任何写配置操作
+# (config set / auth set / login)按类型化 schema 重新序列化 TOML 时会把未知段整段丢掉 →
+# 「qwen key 经常掉」的根因(2026-07-11 已在副本上复现)。修复:GUI 保存 key 时镜像一份到
+# 自己的 json;读配置时发现段丢了 → 内存兜底 + 限频写回 config.toml 自愈。
+_PROVIDER_KEYS_MIRROR = os.path.expanduser("~/.codewhale-gui/provider_keys.json")
+_mirror_heal_at = {}   # prov -> 上次自愈时间戳,限频防写风暴
+def _read_key_mirror():
+    try:
+        d = json.load(open(_PROVIDER_KEYS_MIRROR))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+def _save_key_mirror(prov, values):
+    try:
+        d = _read_key_mirror()
+        cur = d.get(prov) if isinstance(d.get(prov), dict) else {}
+        cur.update({k: v for k, v in (values or {}).items() if (isinstance(v, str) and v) or isinstance(v, int)})
+        if not cur:
+            return
+        d[prov] = cur
+        _atomic_write_json(_PROVIDER_KEYS_MIRROR, d)
+        try:
+            os.chmod(_PROVIDER_KEYS_MIRROR, 0o600)
+        except Exception:
+            pass
+    except Exception:
+        pass
 def _load_config():
     # 用 tomllib 正确解析 config.toml(替代正则:注释里的 api_key、单引号值、多行值都不会误匹配)。
     # 每次现读现解析(文件小、够快),避免缓存与 set_model 写入不同步。
     try:
         with open(CFG, "rb") as f:
-            return tomllib.load(f)
+            cfg = tomllib.load(f)
     except Exception:
         return {}
+    try:   # 镜像兜底:CLI 重写把 GUI 自创 provider 段抹了 → 内存补回 + 自愈写回文件
+        for prov, vals in _read_key_mirror().items():
+            if not (isinstance(vals, dict) and vals.get("api_key")):
+                continue
+            if (cfg.get("providers") or {}).get(prov, {}).get("api_key"):
+                continue
+            cfg.setdefault("providers", {}).setdefault(prov, {}).update(vals)
+            now = time.time()
+            if now - _mirror_heal_at.get(prov, 0) > 60:
+                _mirror_heal_at[prov] = now
+                try:
+                    _set_provider_table_values(prov, vals)
+                    print(f"[keys] warning: [providers.{prov}] 段被外部配置重写丢失,已从镜像自动恢复", flush=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return cfg
 def deepseek_key():
     cfg = _load_config()
     return (cfg.get("providers", {}).get("deepseek", {}).get("api_key")
             or cfg.get("api_key"))   # deepseek key 可能在顶层
 def _provider_key(prov):   # 读 [providers.<prov>] api_key
     return _load_config().get("providers", {}).get(prov, {}).get("api_key")
+def _provider_cfg(prov):
+    d = _load_config().get("providers", {}).get(prov, {})
+    return d if isinstance(d, dict) else {}
+def _json_get(url, headers=None, timeout=15):
+    req = urllib.request.Request(url, headers=headers or {})
+    return json.load(_open_url(req, timeout))
+def _balance_money(provider, label, amount, currency="", raw=None, source="official", note=""):
+    try:
+        val = float(amount)
+    except Exception:
+        val = None
+    return {"provider": provider, "label": label, "kind": "money", "amount": val,
+            "currency": currency or "", "raw_amount": amount, "source": source,
+            "note": note, "raw": raw or {}}
+def _balance_quota(provider, label, used=None, limit=None, percent=None, window="", note="", raw=None):
+    try:
+        pct = float(percent) if percent is not None else None
+    except Exception:
+        pct = None
+    return {"provider": provider, "label": label, "kind": "quota", "used": used,
+            "limit": limit, "percent": pct, "window": window, "note": note,
+            "raw": raw or {}}
+def _balance_unavailable(provider, label, reason, hint="", litellm=None):
+    d = {"provider": provider, "label": label, "kind": "unavailable",
+         "unavailable": True, "reason": reason, "hint": hint}
+    if litellm:
+        d["litellm"] = litellm
+    return d
+def _deepseek_balance(key):
+    d = _json_get("https://api.deepseek.com/user/balance",
+                  {"Authorization": "Bearer " + key}, 15)
+    b = (d.get("balance_infos") or [{}])[0]
+    return _balance_money("deepseek", "DeepSeek", b.get("total_balance"),
+                          b.get("currency") or "", raw=d)
+def _moonshot_balance(key):
+    cfg = _provider_cfg("moonshot")
+    base = (cfg.get("base_url") or "https://api.moonshot.cn/v1").rstrip("/")
+    bases = [base]
+    if re.search(r"/coding/v1/?$", base):
+        bases.append(re.sub(r"/coding/v1/?$", "/v1", base))
+    bases += ["https://api.moonshot.cn/v1", "https://api.moonshot.ai/v1", "https://api.kimi.com/v1"]
+    last = None
+    d = None
+    for b in list(dict.fromkeys(x.rstrip("/") for x in bases if x)):
+        try:
+            d = _json_get(b + "/users/me/balance", {"Authorization": "Bearer " + key}, 15)
+            break
+        except Exception as e:
+            last = str(e)[:120]
+    if d is None:
+        return _balance_unavailable(
+            "moonshot", "Kimi", "balance_endpoint_unavailable",
+            "当前 Kimi key/base_url 不能读取余额;Kimi Code 订阅通常需到平台查看额度,或通过 LiteLLM 统计已花费。"
+            + (f" 最近错误:{last}" if last else "")
+        )
+    data = d.get("data") if isinstance(d.get("data"), dict) else d
+    amount = (data.get("available_balance") or data.get("balance")
+              or data.get("total_balance") or data.get("cash_balance"))
+    currency = data.get("currency") or "CNY"
+    return _balance_money("moonshot", "Kimi", amount, currency, raw=d)
 def _tokenhub_key_probe(key, model):
     # 保存混元前做一次轻量校验:只把 "invalid api key" 当硬失败;402 说明 key 有效但套餐/额度不可用。
     key = (key or "").strip()
@@ -385,46 +532,160 @@ def _zai_usage(key):
             if not body.get("success", True):
                 msg = body.get("msg") or "zai error"
                 if "coding plan" in msg:                       # 没订阅 Coding Plan
-                    return {"provider": "zai", "glm": True, "no_plan": True}
+                    return {"provider": "zai", "label": "GLM", "glm": True, "no_plan": True,
+                            "kind": "unavailable", "reason": "no_coding_plan",
+                            "hint": "此 z.ai key 未订阅 GLM Coding Plan"}
                 last = msg; continue
             data = body.get("data") or body
             limits = (data.get("limits") if isinstance(data, dict) else None) or body.get("limits") or []
             tok = next((l for l in limits if l.get("type") == "TOKENS_LIMIT"), (limits[0] if limits else None))
             if tok:
-                return {"provider": "zai", "glm": True,
-                        "percent": tok.get("percentage"),
-                        "used": tok.get("currentValue"), "limit": tok.get("usage")}
+                d = _balance_quota("zai", "GLM", tok.get("currentValue"), tok.get("usage"),
+                                   tok.get("percentage"), "5h", raw=body)
+                d["glm"] = True
+                return d
             last = "无 limits 字段"
         except Exception as e:
             last = str(e)[:120]
-    return {"provider": "zai", "glm": True, "error": last or "zai 用量读取失败"}
-def balance():
-    now = time.time()
-    prov = _cfg_get("provider") or "deepseek"
-    if _bal["d"] and _bal.get("prov") == prov and now - _bal["t"] < 60:   # 缓存按 provider 区分,切换后不再返回旧 provider 余额
-        return _bal["d"]
-    if prov == "zai":   # GLM:读 Coding Plan 5h 用量额度
-        key = _provider_key("zai")
-        d = _zai_usage(key) if key else {"provider": "zai", "error": "no zai key"}
-        _bal.update(t=now, d=d, prov=prov)
-        return d
-    if prov != "deepseek":   # 其它 provider 暂无简单余额接口;不误显 DeepSeek 余额
-        d = {"provider": prov, "unavailable": True}
-        _bal.update(t=now, d=d, prov=prov)
-        return d
-    key = deepseek_key()
-    if not key:
-        d = {"provider": "deepseek", "error": "no deepseek key"}
-        _bal.update(t=now, d=d, prov=prov)
-        return d
+    return {"provider": "zai", "label": "GLM", "glm": True, "kind": "error", "error": last or "zai 用量读取失败"}
+def _litellm_config():
+    cfg = _provider_cfg("litellm")
+    url = (os.environ.get("LITELLM_PROXY_URL") or os.environ.get("LITELLM_BASE_URL")
+           or cfg.get("base_url") or cfg.get("proxy_url") or "http://127.0.0.1:4000").rstrip("/")
+    key = (os.environ.get("LITELLM_MASTER_KEY") or os.environ.get("LITELLM_API_KEY")
+           or cfg.get("api_key") or cfg.get("master_key") or "")
+    installed = bool(shutil.which("litellm") or os.path.exists(os.path.expanduser("~/agent-harnesses/litellm-venv/bin/litellm")))
+    return url, key, installed
+def _litellm_spend_probe_enabled():
+    cfg = _provider_cfg("litellm")
+    raw = os.environ.get("LITELLM_SPEND_PROBE")
+    if raw is None:
+        raw = cfg.get("spend_probe")
+    return str(raw or "").strip().lower() in ("1", "true", "yes", "on")
+def _litellm_proxy_summary(provider=""):
+    url, key, installed = _litellm_config()
+    headers = {"Authorization": "Bearer " + key} if key else {}
+    out = {"installed": installed, "proxy_url": url, "running": False}
     try:
-        req = urllib.request.Request("https://api.deepseek.com/user/balance",
-                                     headers={"Authorization": "Bearer " + key})
-        d = json.load(_open_url(req, 15))
-        d["provider"] = "deepseek"
+        health = _json_get(url + "/models", headers, 2)
+        out["running"] = True
+        models = health.get("data") or health.get("models") or []
+        if isinstance(models, list):
+            out["models"] = len(models)
     except Exception as e:
-        d = {"provider": "deepseek", "error": str(e)[:120]}
-    _bal.update(t=now, d=d, prov=prov)
+        out["error"] = str(e)[:120]
+        return out
+    if not key:
+        out["note"] = "LiteLLM proxy 已运行,但未配置 master key,只能显示运行状态"
+        return out
+    if not _litellm_spend_probe_enabled():
+        out["spend_note"] = "spend_probe_disabled"
+        return out
+    # 不同 LiteLLM 版本/配置暴露的 spend endpoint 略有差异;逐个尝试,拿到 spend/max_budget 就显示。
+    candidates = [
+        "/global/spend",
+        "/global/spend/report",
+        "/spend/logs?start_date=" + time.strftime("%Y-%m-%d", time.gmtime(time.time() - 30 * 86400)) +
+        "&end_date=" + time.strftime("%Y-%m-%d", time.gmtime(time.time() + 86400)),
+        "/spend/keys",
+    ]
+    last = None
+    for suffix in candidates:
+        try:
+            data = _json_get(url + suffix, headers, 1.5)
+        except Exception as e:
+            last = str(e)[:120]
+            continue
+        total = _litellm_extract_spend(data)
+        budget = _litellm_extract_budget(data)
+        out.update({"spend": total, "max_budget": budget, "spend_endpoint": suffix})
+        return out
+    if last:
+        out["spend_error"] = last
+    return out
+def _litellm_extract_spend(data):
+    vals = []
+    def walk(x, depth=0):
+        if depth > 4:
+            return
+        if isinstance(x, dict):
+            for k, v in x.items():
+                lk = str(k).lower()
+                if lk in {"spend", "total_spend", "cost", "total_cost"}:
+                    try: vals.append(float(v))
+                    except Exception: pass
+                elif isinstance(v, (dict, list)):
+                    walk(v, depth + 1)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v, depth + 1)
+    walk(data)
+    return round(max(vals), 6) if vals else None
+def _litellm_extract_budget(data):
+    vals = []
+    def walk(x, depth=0):
+        if depth > 4:
+            return
+        if isinstance(x, dict):
+            for k, v in x.items():
+                lk = str(k).lower()
+                if lk in {"max_budget", "budget", "soft_budget"}:
+                    try: vals.append(float(v))
+                    except Exception: pass
+                elif isinstance(v, (dict, list)):
+                    walk(v, depth + 1)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v, depth + 1)
+    walk(data)
+    return round(max(vals), 6) if vals else None
+def _provider_balance(prov):
+    label = {"deepseek": "DeepSeek", "zai": "GLM", "moonshot": "Kimi",
+             "custom": "混元", "volcengine": "火山", "longcat": "LongCat", "qwen": "千问",
+             "openai-codex": "ChatGPT", "claude-code": "Claude"}.get(prov, prov or "provider")
+    try:
+        if prov == "deepseek":
+            key = deepseek_key()
+            return _deepseek_balance(key) if key else {"provider": prov, "label": label, "kind": "error", "error": "no deepseek key"}
+        if prov == "zai":
+            key = _provider_key("zai")
+            return _zai_usage(key) if key else {"provider": prov, "label": label, "kind": "error", "error": "no zai key"}
+        if prov == "moonshot":
+            key = _provider_key("moonshot")
+            return _moonshot_balance(key) if key else {"provider": prov, "label": label, "kind": "error", "error": "no moonshot key"}
+    except Exception as e:
+        return {"provider": prov, "label": label, "kind": "error", "error": str(e)[:120]}
+
+    litellm = _litellm_proxy_summary(prov)
+    hints = {
+        "custom": "TokenHub/混元暂未接到简单余额 API;可在腾讯控制台看账户余额,或通过 LiteLLM 统计已花费。",
+        "volcengine": "火山 Ark API key 不能直接查询账户余额;余额通常需火山控制台/云账号 AKSK,或通过 LiteLLM 统计已花费。",
+        "longcat": "LongCat OpenAI 兼容接口暂未接到公开余额 API;可用 LiteLLM 统计已花费。",
+        "qwen": "阿里云百炼/千问暂未接到简单余额 API;可在阿里云控制台查看,或通过 LiteLLM 统计已花费。",
+        "openai-codex": "OAuth/订阅通道没有 API key 余额概念;可显示 LiteLLM 代理统计或在官方账户页查看。",
+        "claude-code": "Claude 订阅通道没有 API key 余额概念;可显示 LiteLLM 代理统计或在官方账户页查看。",
+    }
+    return _balance_unavailable(prov, label, "no_direct_balance_api", hints.get(prov, "该 provider 暂无已接入余额接口"), litellm)
+def balance(provider=None, include_all=False):
+    now = time.time()
+    prov = re.sub(r'[^A-Za-z0-9._-]', '', provider or "") or _cfg_get("provider") or "deepseek"
+    cache_key = prov + ("|all" if include_all else "")
+    if _bal["d"] and _bal.get("key") == cache_key and now - _bal["t"] < 60:
+        return _bal["d"]
+
+    current = _provider_balance(prov)
+    d = current
+    if include_all:
+        providers = ["deepseek", "zai", "moonshot", "custom", "volcengine", "longcat", "qwen", "openai-codex", "claude-code"]
+        keyed = provider_key_status()
+        items = []
+        for p in providers:
+            if p == prov:
+                items.append(current)
+            elif p in ("openai-codex", "claude-code") or keyed.get(p) or p in ("deepseek", "zai", "moonshot"):
+                items.append(_provider_balance(p))
+        d = {"provider": prov, "current": current, "items": items, "litellm": _litellm_proxy_summary(prov)}
+    _bal.update(t=now, d=d, key=cache_key)
     return d
 
 def _find_codewhale():   # Apple Silicon=/opt/homebrew, Intel=/usr/local, 直装=~/.local/bin
@@ -464,6 +725,18 @@ def check_update():
     return {"current": cur, "latest": lat, "available": bool(avail)}
 def apply_update():
     code, out = _run([CODEWHALE, "update"], timeout=240)
+    if code == 0:
+        # Per-provider compare backends are long-lived child processes.  After
+        # replacing the CodeWhale binary they must not keep serving the old
+        # runtime until the next GUI restart.
+        try:
+            _kill_cmp_backends()
+            with _cmp_lock:
+                CMP_PORTS.clear()
+                _cmp_launching.clear()
+                _PORT_UP.clear()
+        except Exception as e:
+            out += f"\ncompare backend cleanup warning: {e}"
     # reload the launchd-managed app-server so the new binary takes effect
     _run(["/bin/launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.codewhale.appserver"], timeout=30)
     return {"ok": code == 0, "output": out[-1500:]}
@@ -477,12 +750,26 @@ def _gui_version():
 def _vtuple(v):
     nums = [int(x) for x in re.findall(r"\d+", str(v))][:4]
     return tuple(nums) if nums else (0,)
+def _strict_vtuple(v):
+    s = str(v or "").strip()
+    if not re.match(r"^v?\d+(?:[._-]\d+){0,3}(?:[-+][0-9A-Za-z][0-9A-Za-z._-]*)?$", s):
+        return None
+    nums = [int(x) for x in re.findall(r"\d+", s)][:4]
+    return tuple(nums) if nums else None
 def _update_cfg():
+    d = _raw_update_cfg()
+    return d if d.get("enabled", True) else {}
+def _raw_update_cfg():
     try:
         d = json.load(open(UPDATE_CFG))
-        return d if d.get("enabled", True) else {}
+        return d if isinstance(d, dict) else {}
     except Exception:
         return {}
+def _asset_update_cfg():
+    d = _raw_update_cfg()
+    if d.get("repo") or d.get("base_url"):
+        return d
+    return {}
 def _release_url(cfg, asset):
     base = (cfg.get("base_url") or "").rstrip("/")
     if base:
@@ -661,6 +948,80 @@ def write_pins(ids):
     os.replace(tmp, PINS_FILE)   # 原子写,防并发半截文件
     return ids
 
+def read_cron_jobs():   # Cron 标签与置顶独立,线程可同时具备两种属性;侧栏展示时 Cron 优先
+    try:
+        d = json.load(open(CRON_JOBS_FILE))
+        return [str(x) for x in d] if isinstance(d, list) else []
+    except Exception:
+        return []
+def write_cron_jobs(ids):
+    ids = [str(x) for x in ids if isinstance(x, (str, int))][:500]
+    _atomic_write_json(CRON_JOBS_FILE, ids)
+    return ids
+
+def read_title_state():
+    try:
+        d = json.load(open(TITLE_STATE_FILE))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+def write_title_state(d):
+    cleaned = {}
+    for tid, rec in (d or {}).items():
+        if not re.match(r'^thr_[A-Za-z0-9_-]+$', str(tid)):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        cleaned[str(tid)] = {
+            "locked": bool(rec.get("locked")),
+            "pending": bool(rec.get("pending")),
+            "kind": str(rec.get("kind") or "")[:40],
+            "title": str(rec.get("title") or "")[:120],
+            "ts": int(rec.get("ts") or 0),
+        }
+    if len(cleaned) > 3000:
+        rows = sorted(cleaned.items(), key=lambda kv: kv[1].get("ts") or 0, reverse=True)[:3000]
+        cleaned = dict(rows)
+    _atomic_write_json(TITLE_STATE_FILE, cleaned, ensure_ascii=False)
+    return cleaned
+def _title_lock_rec(tid):
+    if not re.match(r'^thr_[A-Za-z0-9_-]+$', tid or ""):
+        return {}
+    rec = read_title_state().get(tid)
+    return rec if isinstance(rec, dict) else {}
+def _title_is_locked(tid):
+    return bool(_title_lock_rec(tid).get("locked"))
+def _mark_title_locked(tid, title, kind):
+    if not re.match(r'^thr_[A-Za-z0-9_-]+$', tid or ""):
+        return
+    with _TITLE_STATE_LOCK:
+        d = read_title_state()
+        d[tid] = {"locked": True, "pending": False, "kind": str(kind or "auto")[:40], "title": str(title or "")[:120], "ts": int(time.time() * 1000)}
+        write_title_state(d)
+def _begin_title_auto(tid, current_title=""):
+    if not re.match(r'^thr_[A-Za-z0-9_-]+$', tid or ""):
+        return False, {}, "invalid"
+    now = int(time.time() * 1000)
+    with _TITLE_STATE_LOCK:
+        d = read_title_state()
+        rec = d.get(tid) if isinstance(d.get(tid), dict) else {}
+        if rec.get("locked"):
+            return False, rec, "title_locked"
+        if rec.get("pending") and now - int(rec.get("ts") or 0) < 10 * 60 * 1000:
+            return False, rec, "title_pending"
+        d[tid] = {"locked": False, "pending": True, "kind": "auto_pending", "title": str(current_title or "")[:120], "ts": now}
+        write_title_state(d)
+    return True, {}, ""
+def _clear_title_pending(tid):
+    if not re.match(r'^thr_[A-Za-z0-9_-]+$', tid or ""):
+        return
+    with _TITLE_STATE_LOCK:
+        d = read_title_state()
+        rec = d.get(tid)
+        if isinstance(rec, dict) and rec.get("pending") and not rec.get("locked"):
+            d.pop(tid, None)
+            write_title_state(d)
+
 PLUGINS_FILE = os.path.expanduser("~/.codewhale-gui/plugins.json")
 def _valid_plugin(p):
     return isinstance(p, dict) and isinstance(p.get("label"), str) and p.get("label") and isinstance(p.get("insert"), str)
@@ -680,6 +1041,666 @@ def write_plugins(plugins):
         json.dump(plugins, f, ensure_ascii=False)
     os.replace(tmp, PLUGINS_FILE)
     return plugins
+
+# Codex/CodeWhale 插件包目录。和上面的 PLUGINS_FILE 不同:PLUGINS_FILE 只是 + 菜单的文本快捷项;
+# 这里是真插件 manifest,支持 plugin.json 或 .codex-plugin/plugin.json,可携带 skills/sessionStart。
+# 也兼容旧式 CodeWhale 插件包:~/.codewhale/plugins/<id>/PLUGIN.md + SKILL.md。
+CODEX_PLUGIN_DIR = os.path.expanduser("~/.codewhale-gui/plugins")
+CODEWHALE_LEGACY_PLUGIN_DIR = os.path.expanduser("~/.codewhale/plugins")
+CODEX_PLUGIN_DIRS = [CODEX_PLUGIN_DIR, CODEWHALE_LEGACY_PLUGIN_DIR]
+CODEX_PLUGIN_STATE_FILE = os.path.expanduser("~/.codewhale-gui/plugin_state.json")
+CODEX_PLUGIN_SOURCES_FILE = os.path.expanduser("~/.codewhale-gui/plugin_sources.json")
+CODEWHALE_SKILLS_DIR = os.path.expanduser("~/.codewhale/skills")
+_PLUGIN_SOURCE_SEED = [
+    {"id": "ai-berkshire", "name": "AI Berkshire", "repo": "https://github.com/xbtlin/ai-berkshire", "path": "~/projects/ai-berkshire"},
+    {"id": "bottom-top-hunter", "name": "Bottom Top Hunter", "path": "~/.codewhale/plugins/bottom-top-hunter"},
+    {"id": "stocksight", "name": "stocksight", "path": "~/projects/stocksight"},
+    {"id": "superpowers", "name": "Superpowers", "repo": "https://github.com/obra/superpowers", "path": "~/projects/superpowers"},
+]
+def _plugin_state():
+    try:
+        d = json.load(open(CODEX_PLUGIN_STATE_FILE))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+def _write_plugin_state(d):
+    _atomic_write_json(CODEX_PLUGIN_STATE_FILE, d if isinstance(d, dict) else {})
+def _plugin_id(raw, fallback="plugin"):
+    s = re.sub(r'[^A-Za-z0-9_.-]+', '-', str(raw or fallback).strip()).strip(".-")
+    return s[:80] or fallback
+def _safe_plugin_path(root, rel):
+    if not isinstance(rel, str) or not rel.strip() or "\0" in rel:
+        return ""
+    root = os.path.realpath(root)
+    p = os.path.realpath(os.path.join(root, rel))
+    return p if p == root or p.startswith(root + os.sep) else ""
+def _plugin_manifest_path(root):
+    for rel in ("plugin.json", os.path.join(".codex-plugin", "plugin.json")):
+        p = os.path.join(root, rel)
+        if os.path.isfile(p):
+            return p
+    return ""
+def _plugin_repo_value(v):
+    if isinstance(v, dict):
+        v = v.get("url") or v.get("repository") or v.get("repo") or ""
+    s = str(v or "").strip()
+    if not s:
+        return ""
+    if re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", s):
+        return "https://github.com/" + s
+    if s.startswith("git@github.com:"):
+        return "https://github.com/" + s.split(":", 1)[1].removesuffix(".git")
+    return s
+def _plugin_repo_from_manifest(data, iface=None):
+    iface = iface if isinstance(iface, dict) else {}
+    for key in ("repository", "repo", "source", "homepage"):
+        repo = _plugin_repo_value((data or {}).get(key))
+        if repo:
+            return repo
+    for key in ("websiteURL", "sourceURL", "repository"):
+        repo = _plugin_repo_value(iface.get(key))
+        if repo:
+            return repo
+    return ""
+def _plugin_manifest_source(root, data, iface=None):
+    repo = _plugin_repo_from_manifest(data, iface)
+    src = {"repo": repo}
+    if repo:
+        src["source_url"] = repo
+    src["path"] = os.path.realpath(root)
+    return src
+def _frontmatter_fields(path):
+    out = {}
+    try:
+        txt = open(path, encoding="utf-8", errors="replace").read(5000)
+        if not txt.startswith("---"):
+            return out
+        fm = txt.split("---", 2)[1]
+        for key in ("name", "description"):
+            m = re.search(r'(?m)^' + re.escape(key) + r':\s*(.+?)\s*$', fm)
+            if m:
+                out[key] = m.group(1).strip().strip('"\'')
+    except Exception:
+        pass
+    return out
+def _skill_item_from_dir(path):
+    md = os.path.join(path, "SKILL.md")
+    name, desc = os.path.basename(path), ""
+    fm = _frontmatter_fields(md)
+    if fm.get("name"):
+        name = fm["name"]
+    if fm.get("description"):
+        desc = fm["description"]
+    return {"name": str(name)[:120], "description": str(desc)[:320]}
+def _count_skill_dirs(path):
+    try:
+        if os.path.isfile(os.path.join(path, "SKILL.md")):
+            return 1
+        return sum(1 for entry in os.listdir(path)
+                   if os.path.isfile(os.path.join(path, entry, "SKILL.md")))
+    except Exception:
+        return 0
+def _skill_dir_names(path):
+    try:
+        if os.path.isfile(os.path.join(path, "SKILL.md")):
+            return [_skill_item_from_dir(path).get("name") or os.path.basename(path)]
+        return [entry for entry in sorted(os.listdir(path))
+                if os.path.isfile(os.path.join(path, entry, "SKILL.md"))][:80]
+    except Exception:
+        return []
+def _skill_dir_items(path):
+    items = []
+    if os.path.isfile(os.path.join(path, "SKILL.md")):
+        return [_skill_item_from_dir(path)]
+    try:
+        entries = sorted(os.listdir(path))
+    except Exception:
+        return items
+    for entry in entries:
+        md = os.path.join(path, entry, "SKILL.md")
+        if not os.path.isfile(md):
+            continue
+        items.append(_skill_item_from_dir(os.path.join(path, entry)))
+    return items[:80]
+def _iter_skill_dirs(path):
+    if os.path.isfile(os.path.join(path, "SKILL.md")):
+        item = _skill_item_from_dir(path)
+        yield item.get("name") or os.path.basename(path), os.path.realpath(path)
+        return
+    try:
+        entries = sorted(os.listdir(path))
+    except Exception:
+        return
+    for entry in entries:
+        sub = os.path.join(path, entry)
+        if os.path.isdir(sub) and os.path.isfile(os.path.join(sub, "SKILL.md")):
+            item = _skill_item_from_dir(sub)
+            yield item.get("name") or entry, os.path.realpath(sub)
+def _migrate_legacy_plugin(root):
+    skill_md = os.path.join(root, "SKILL.md")
+    if not os.path.isfile(skill_md):
+        return ""
+    fm = _frontmatter_fields(os.path.join(root, "PLUGIN.md"))
+    item = _skill_item_from_dir(root)
+    skill_name = _plugin_id(item.get("name") or os.path.basename(root))
+    pid = _plugin_id(fm.get("name") or skill_name)
+    dest = os.path.join(CODEX_PLUGIN_DIR, pid)
+    manifest = os.path.join(dest, "plugin.json")
+    if os.path.isfile(manifest):
+        return dest
+    os.makedirs(os.path.join(dest, "skills", skill_name), exist_ok=True)
+    for name in os.listdir(root):
+        if name == "PLUGIN.md" or name.startswith("."):
+            continue
+        src = os.path.join(root, name)
+        dst = os.path.join(dest, "skills", skill_name, name)
+        try:
+            if os.path.isdir(src):
+                if not os.path.exists(dst):
+                    shutil.copytree(src, dst, symlinks=True)
+            elif os.path.isfile(src):
+                shutil.copy2(src, dst)
+        except Exception:
+            pass
+    display = fm.get("name") or item.get("name") or pid
+    desc = fm.get("description") or item.get("description") or ""
+    data = {
+        "id": pid,
+        "name": pid,
+        "version": "1.0.0",
+        "description": desc,
+        "skills": "./skills/",
+        "sessionStart": {"skill": skill_name},
+        "interface": {
+            "displayName": display,
+            "shortDescription": desc,
+            "category": "finance",
+        },
+        "migratedFrom": os.path.realpath(root),
+    }
+    _atomic_write_json(manifest, data, ensure_ascii=False)
+    return dest
+def _migrate_legacy_plugins():
+    try:
+        entries = sorted(os.listdir(CODEWHALE_LEGACY_PLUGIN_DIR))
+    except Exception:
+        return
+    for entry in entries:
+        if entry.startswith("."):
+            continue
+        root = os.path.join(CODEWHALE_LEGACY_PLUGIN_DIR, entry)
+        try:
+            if os.path.isdir(root):
+                _migrate_legacy_plugin(root)
+        except Exception:
+            pass
+def _sync_plugin_skill_links(plugins):
+    try:
+        os.makedirs(CODEWHALE_SKILLS_DIR, exist_ok=True)
+    except Exception:
+        return
+    for pl in plugins:
+        if not pl.get("enabled") or pl.get("error"):
+            continue
+        for sp in pl.get("skills") or []:
+            for name, src in _iter_skill_dirs(sp):
+                safe = _plugin_id(name)
+                dst = os.path.join(CODEWHALE_SKILLS_DIR, safe)
+                try:
+                    if os.path.lexists(dst):
+                        continue
+                    os.symlink(src, dst)
+                except Exception:
+                    pass
+def _clean_plugin_manifest(root, data, manifest_path, disabled):
+    if not isinstance(data, dict):
+        return None
+    pid = _plugin_id(data.get("id") or data.get("name") or os.path.basename(root))
+    iface = data.get("interface") if isinstance(data.get("interface"), dict) else {}
+    skills = data.get("skills")
+    if isinstance(skills, str):
+        skill_rels = [skills]
+    elif isinstance(skills, list):
+        skill_rels = []
+        for s in skills:
+            if isinstance(s, str):
+                skill_rels.append(s)
+            elif isinstance(s, dict):
+                p = s.get("path") or s.get("dir") or s.get("skill") or ""
+                if isinstance(p, str) and p:
+                    skill_rels.append(p)
+    else:
+        skill_rels = []
+    skill_paths = []
+    skill_names = []
+    skill_items = []
+    skill_count = 0
+    def add_skill_rel(rel):
+        sp = _safe_plugin_path(root, rel)
+        if sp and os.path.isfile(sp) and os.path.basename(sp) == "SKILL.md":
+            sp = os.path.dirname(sp)
+        if sp and os.path.isdir(sp):
+            skill_paths.append(sp)
+            return True
+        return False
+    for rel in skill_rels[:20]:
+        add_skill_rel(rel)
+    if not skill_paths:
+        for rel in ("skills", "."):
+            add_skill_rel(rel)
+            if skill_paths:
+                break
+    for sp in skill_paths:
+        try:
+            skill_count += _count_skill_dirs(sp)
+            items = _skill_dir_items(sp)
+            skill_items.extend(items)
+            skill_names.extend([x.get("name") or "" for x in items] or _skill_dir_names(sp))
+        except Exception:
+            pass
+    session = data.get("sessionStart") if isinstance(data.get("sessionStart"), dict) else {}
+    display = iface.get("displayName") or data.get("displayName") or data.get("name") or pid
+    desc = iface.get("shortDescription") or data.get("description") or ""
+    return {
+        "id": pid,
+        "name": str(data.get("name") or pid)[:80],
+        "version": str(data.get("version") or "")[:40],
+        "enabled": pid not in disabled,
+        "displayName": str(display)[:80],
+        "description": str(desc)[:240],
+        "path": os.path.realpath(root),
+        "manifest": os.path.realpath(manifest_path),
+        "skills": skill_paths,
+        "skill_names": skill_names[:80],
+        "skill_items": skill_items[:80],
+        "skill_count": skill_count,
+        "sessionStart": {"skill": str(session.get("skill") or "")[:120]} if session else {},
+        "skillInstructions": str(data.get("skillInstructions") or "")[:12000],
+        "homepage": str(data.get("homepage") or iface.get("websiteURL") or "")[:300],
+        **_plugin_manifest_source(root, data, iface),
+    }
+def _legacy_plugin_manifest(root, disabled):
+    skill_md = os.path.join(root, "SKILL.md")
+    plugin_md = os.path.join(root, "PLUGIN.md")
+    if not os.path.isfile(skill_md) and not os.path.isfile(plugin_md):
+        return None
+    fm = _frontmatter_fields(plugin_md if os.path.isfile(plugin_md) else skill_md)
+    skill_item = _skill_item_from_dir(root) if os.path.isfile(skill_md) else {"name": os.path.basename(root), "description": ""}
+    pid = _plugin_id(fm.get("name") or skill_item.get("name") or os.path.basename(root))
+    display = fm.get("name") or skill_item.get("name") or pid
+    desc = fm.get("description") or skill_item.get("description") or ""
+    return {
+        "id": pid,
+        "name": str(pid)[:80],
+        "version": "",
+        "enabled": pid not in disabled,
+        "displayName": str(display)[:80],
+        "description": str(desc)[:240],
+        "path": os.path.realpath(root),
+        "manifest": os.path.realpath(plugin_md if os.path.isfile(plugin_md) else skill_md),
+        "skills": [os.path.realpath(root)] if os.path.isfile(skill_md) else [],
+        "skill_names": [skill_item.get("name") or pid] if os.path.isfile(skill_md) else [],
+        "skill_items": [skill_item] if os.path.isfile(skill_md) else [],
+        "skill_count": 1 if os.path.isfile(skill_md) else 0,
+        "sessionStart": {"skill": str(skill_item.get("name") or pid)[:120]} if os.path.isfile(skill_md) else {},
+        "skillInstructions": "",
+        "homepage": "",
+        "legacy": True,
+    }
+def read_codex_plugins():
+    _migrate_legacy_plugins()
+    state = _plugin_state()
+    disabled = set(str(x) for x in state.get("disabled", []) if isinstance(x, str))
+    out = []
+    seen = set()
+    for base in CODEX_PLUGIN_DIRS:
+        try:
+            entries = sorted(os.listdir(base))
+        except Exception:
+            entries = []
+        for entry in entries:
+            if entry.startswith("."):
+                continue
+            root = os.path.join(base, entry)
+            if not os.path.isdir(root):
+                continue
+            mp = _plugin_manifest_path(root)
+            try:
+                if mp:
+                    data = json.load(open(mp, encoding="utf-8"))
+                    pl = _clean_plugin_manifest(root, data, mp, disabled)
+                else:
+                    pl = _legacy_plugin_manifest(root, disabled)
+                if pl and pl["id"] not in seen:
+                    seen.add(pl["id"]); out.append(pl)
+            except Exception as e:
+                pid = _plugin_id(entry)
+                if pid not in seen:
+                    seen.add(pid)
+                    out.append({"id": pid, "displayName": entry, "enabled": False,
+                                "path": os.path.realpath(root), "error": str(e)[:200], "skills": [], "skill_count": 0})
+    _sync_plugin_skill_links(out)
+    return out
+def _plugin_skill_roots():
+    roots = []
+    for pl in read_codex_plugins():
+        if not pl.get("enabled"):
+            continue
+        for sp in pl.get("skills") or []:
+            if os.path.isdir(sp):
+                roots.append((pl["id"], pl.get("displayName") or pl["id"], os.path.realpath(sp)))
+    return roots
+def _set_codex_plugin_enabled(pid, enabled):
+    pid = _plugin_id(pid)
+    state = _plugin_state()
+    disabled = [str(x) for x in state.get("disabled", []) if isinstance(x, str)]
+    if enabled:
+        disabled = [x for x in disabled if x != pid]
+    elif pid not in disabled:
+        disabled.append(pid)
+    state["disabled"] = disabled
+    _write_plugin_state(state)
+    return {"ok": True, "plugins": read_codex_plugins()}
+def _install_codex_plugin_from_path(src):
+    src = os.path.realpath(os.path.expanduser(str(src or "").strip()))
+    if os.path.isfile(src):
+        base = os.path.basename(src)
+        parent = os.path.dirname(src)
+        if base == "plugin.json":
+            src = os.path.dirname(parent) if os.path.basename(parent) == ".codex-plugin" else parent
+        elif base in ("SKILL.md", "PLUGIN.md"):
+            src = parent
+        else:
+            return {"error": "请选择插件根目录、plugin.json、.codex-plugin/plugin.json 或 SKILL.md"}
+    if not src or not os.path.isdir(src):
+        return {"error": "插件目录不存在"}
+    mp = _plugin_manifest_path(src)
+    if not mp:
+        dest = _migrate_legacy_plugin(src)
+        if dest:
+            return {"ok": True, "id": _plugin_id(os.path.basename(dest)), "plugins": read_codex_plugins(), "migrated": True}
+        return {"error": "未找到 plugin.json / .codex-plugin/plugin.json / SKILL.md"}
+    try:
+        data = json.load(open(mp, encoding="utf-8"))
+    except Exception as e:
+        return {"error": "manifest 读取失败:" + str(e)[:160]}
+    pid = _plugin_id(data.get("id") or data.get("name") or os.path.basename(src))
+    dest = os.path.join(CODEX_PLUGIN_DIR, pid)
+    os.makedirs(CODEX_PLUGIN_DIR, exist_ok=True)
+    if os.path.lexists(dest):
+        cur = os.path.realpath(dest)
+        if cur != src:
+            return {"error": f"已存在同名插件目录:{dest}"}
+    else:
+        os.symlink(src, dest)   # 本地开发插件用 symlink,修改立即生效;发布包可直接把目录复制进去
+    return {"ok": True, "id": pid, "plugins": read_codex_plugins()}
+def _clean_plugin_source(src):
+    if not isinstance(src, dict):
+        return None
+    pid = _plugin_id(src.get("id") or src.get("name") or os.path.basename(str(src.get("path") or "")))
+    name = str(src.get("name") or src.get("displayName") or pid)[:80]
+    repo = _plugin_repo_value(src.get("repo") or src.get("repository") or src.get("source_url"))
+    path = str(src.get("path") or "").strip()
+    if path:
+        path = os.path.realpath(os.path.expanduser(path))
+    if not pid or (not repo and not path):
+        return None
+    return {"id": pid, "name": name, "displayName": name, "repo": repo, "source_url": repo, "path": path,
+            "description": str(src.get("description") or "")[:240]}
+def _read_plugin_source_file():
+    try:
+        d = json.load(open(CODEX_PLUGIN_SOURCES_FILE, encoding="utf-8"))
+        arr = d.get("plugins") if isinstance(d, dict) else d
+        return [x for x in (_clean_plugin_source(s) for s in (arr or [])) if x]
+    except Exception:
+        return []
+def _write_seed_plugin_sources():
+    if os.path.exists(CODEX_PLUGIN_SOURCES_FILE):
+        return
+    try:
+        os.makedirs(os.path.dirname(CODEX_PLUGIN_SOURCES_FILE), exist_ok=True)
+        _atomic_write_json(CODEX_PLUGIN_SOURCES_FILE, {"plugins": _PLUGIN_SOURCE_SEED}, ensure_ascii=False)
+    except Exception:
+        pass
+def _scan_local_plugin_sources():
+    roots = [os.path.expanduser("~/projects"), CODEWHALE_LEGACY_PLUGIN_DIR]
+    out = []
+    for base in roots:
+        try:
+            entries = sorted(os.listdir(base))
+        except Exception:
+            continue
+        for entry in entries[:500]:
+            root = os.path.join(base, entry)
+            if not os.path.isdir(root):
+                continue
+            mp = _plugin_manifest_path(root)
+            try:
+                if mp:
+                    data = json.load(open(mp, encoding="utf-8"))
+                    iface = data.get("interface") if isinstance(data.get("interface"), dict) else {}
+                    pid = _plugin_id(data.get("id") or data.get("name") or entry)
+                    src = {"id": pid, "name": iface.get("displayName") or data.get("displayName") or data.get("name") or pid,
+                           "path": root, "repo": _plugin_repo_from_manifest(data, iface),
+                           "description": iface.get("shortDescription") or data.get("description") or ""}
+                elif os.path.isfile(os.path.join(root, "SKILL.md")):
+                    fm = _frontmatter_fields(os.path.join(root, "PLUGIN.md"))
+                    src = {"id": _plugin_id(fm.get("name") or entry), "name": fm.get("name") or entry,
+                           "path": root, "description": fm.get("description") or ""}
+                else:
+                    continue
+                c = _clean_plugin_source(src)
+                if c:
+                    out.append(c)
+            except Exception:
+                continue
+    return out
+def plugin_source_catalog():
+    _write_seed_plugin_sources()
+    merged = {}
+    def add(src):
+        c = _clean_plugin_source(src)
+        if not c:
+            return
+        old = merged.get(c["id"], {})
+        merged[c["id"]] = {**old, **{k: v for k, v in c.items() if v}}
+    for s in _PLUGIN_SOURCE_SEED:
+        add(s)
+    for s in _read_plugin_source_file():
+        add(s)
+    for s in _scan_local_plugin_sources():
+        add(s)
+    for pl in read_codex_plugins():
+        add({"id": pl.get("id"), "name": pl.get("displayName") or pl.get("name"),
+             "path": pl.get("path"), "repo": pl.get("repo") or pl.get("repository") or pl.get("source_url") or pl.get("homepage"),
+             "description": pl.get("description")})
+    return sorted(merged.values(), key=lambda x: (x.get("name") or x.get("id") or "").lower())
+def _plugin_source_for_id(pid):
+    pid = _plugin_id(pid)
+    for src in plugin_source_catalog():
+        if src.get("id") == pid:
+            return src
+    return {}
+def _trusted_plugin_owners():
+    owners = set()
+    for src in _PLUGIN_SOURCE_SEED:
+        repo = _plugin_repo_value(src.get("repo") or src.get("repository") or src.get("source_url"))
+        try:
+            parts = urllib.parse.urlparse(repo)
+        except Exception:
+            continue
+        if parts.scheme == "https" and parts.netloc.lower() == "github.com":
+            bits = [b for b in parts.path.strip("/").split("/") if b]
+            if len(bits) >= 2:
+                owners.add(bits[0].lower())
+    return owners
+def _normalize_git_url(url):
+    url = _plugin_repo_value(url)
+    if not url:
+        return ""
+    if url.startswith("https://github.com/"):
+        parts = urllib.parse.urlparse(url)
+        bits = [b for b in parts.path.strip("/").split("/") if b]
+        if len(bits) >= 2:
+            if bits[0].lower() not in _trusted_plugin_owners():
+                raise ValueError("仅支持从可信来源安装,如需新增请手动加入白名单")
+            return f"https://github.com/{bits[0]}/{bits[1].removesuffix('.git')}.git"
+    return ""
+def _replace_plugin_dir(dest, src):
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    backup = ""
+    if os.path.lexists(dest):
+        backup = dest + ".bak." + str(int(time.time()))
+        shutil.move(dest, backup)
+    try:
+        shutil.move(src, dest)
+    except Exception:
+        if backup and os.path.lexists(backup) and not os.path.lexists(dest):
+            shutil.move(backup, dest)
+        raise
+    return backup
+def _install_codex_plugin_from_url(url, pid_hint=""):
+    try:
+        git_url = _normalize_git_url(url)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    if not git_url:
+        return {"ok": False, "error": "仅支持 HTTPS GitHub 仓库 URL"}
+    tmp_parent = tempfile.mkdtemp(prefix="cw-plugin-clone-")
+    clone_dir = os.path.join(tmp_parent, "repo")
+    try:
+        code, out = _run(["git", "clone", "--depth", "1", git_url, clone_dir], timeout=240)
+        if code != 0:
+            return {"ok": False, "error": out[-1200:]}
+        mp = _plugin_manifest_path(clone_dir)
+        if not mp:
+            return {"ok": False, "error": "GitHub 仓库缺少 plugin.json / .codex-plugin/plugin.json"}
+        data = json.load(open(mp, encoding="utf-8"))
+        pid = _plugin_id(data.get("id") or data.get("name") or pid_hint or os.path.basename(git_url).removesuffix(".git"))
+        dest = os.path.join(CODEX_PLUGIN_DIR, pid)
+        _replace_plugin_dir(dest, clone_dir)
+        return {"ok": True, "id": pid, "plugins": read_codex_plugins(), "source": git_url}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:400]}
+    finally:
+        shutil.rmtree(tmp_parent, ignore_errors=True)
+def _install_codex_plugin_from_source(src):
+    src = src or {}
+    repo = src.get("repo") or src.get("source_url")
+    if repo:
+        return _install_codex_plugin_from_url(repo, src.get("id") or "")
+    path = src.get("path") or ""
+    if path:
+        return _install_codex_plugin_from_path(path)
+    return {"ok": False, "error": "缺少 GitHub 或本地插件来源"}
+
+def _install_codex_plugin_from_upload(data):
+    # 浏览器直传插件文件(同「添加附件」的思路,不再依赖系统文件选择器)。
+    # files=[{path:相对路径, b64:内容}];整树落到临时目录后走既有安装逻辑:
+    # 有 manifest → 整目录搬进 CODEX_PLUGIN_DIR;只有 SKILL.md → _migrate_legacy_plugin 包装成插件。
+    files = data.get("files") if isinstance(data, dict) else None
+    if not isinstance(files, list) or not files:
+        return {"error": "没有收到文件"}
+    if len(files) > 800:
+        return {"error": "文件太多(>800),请去掉 .git / node_modules 后重试"}
+    tmp_parent = tempfile.mkdtemp(prefix="cw_plugin_upload_")
+    try:
+        root = os.path.join(tmp_parent, "pkg")
+        os.makedirs(root)
+        total = 0
+        for f in files:
+            rel = str((f or {}).get("path") or "").replace("\\", "/")
+            parts = [x for x in rel.split("/") if x not in ("", ".")]
+            if not parts or ".." in parts:
+                return {"error": "非法文件路径: " + rel[:120]}
+            if any(x in (".git", "node_modules", "__pycache__") for x in parts) or parts[-1] == ".DS_Store":
+                continue
+            try:
+                raw = base64.b64decode(str(f.get("b64") or ""), validate=True)
+            except Exception:
+                return {"error": "文件内容解码失败: " + rel[:120]}
+            total += len(raw)
+            if total > 50 * 1024 * 1024:
+                return {"error": "总大小超过 50MB,请去掉无关文件"}
+            dest = os.path.join(root, *parts)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as fh:
+                fh.write(raw)
+        entries = os.listdir(root)
+        if not entries:
+            return {"error": "没有可导入的文件"}
+        # 目录选择器上传时所有文件都在同一个顶层文件夹下 → 用它当插件根
+        src = os.path.join(root, entries[0]) if len(entries) == 1 and os.path.isdir(os.path.join(root, entries[0])) else root
+        if not _plugin_manifest_path(src) and not os.path.isfile(os.path.join(src, "SKILL.md")):
+            # 单个任意名 .md(「选单个文件」选的下载 skill 文档)→ 视作 SKILL.md,目录名取 frontmatter name 或文件名
+            items = os.listdir(src)
+            if len(items) == 1 and items[0].lower().endswith(".md") and os.path.isfile(os.path.join(src, items[0])):
+                stem = os.path.splitext(items[0])[0]
+                fm = _frontmatter_fields(os.path.join(src, items[0]))
+                wrap = os.path.join(tmp_parent, _plugin_id(fm.get("name") or stem, "skill"))
+                os.makedirs(wrap)
+                shutil.move(os.path.join(src, items[0]), os.path.join(wrap, "SKILL.md"))
+                src = wrap
+        mp = _plugin_manifest_path(src)
+        if not mp:
+            dest = _migrate_legacy_plugin(src)
+            if dest:
+                return {"ok": True, "id": _plugin_id(os.path.basename(dest)), "plugins": read_codex_plugins(), "migrated": True}
+            return {"error": "未找到 plugin.json / .codex-plugin/plugin.json / SKILL.md"}
+        try:
+            meta = json.load(open(mp, encoding="utf-8"))
+        except Exception as e:
+            return {"error": "manifest 读取失败:" + str(e)[:160]}
+        pid = _plugin_id(meta.get("id") or meta.get("name") or data.get("name") or os.path.basename(src))
+        _replace_plugin_dir(os.path.join(CODEX_PLUGIN_DIR, pid), src)   # 重复导入=更新,旧目录自动留 .bak
+        return {"ok": True, "id": pid, "plugins": read_codex_plugins()}
+    except Exception as e:
+        return {"error": str(e)[:300]}
+    finally:
+        shutil.rmtree(tmp_parent, ignore_errors=True)
+
+def _choose_local_plugin_path():
+    # osascript 是后台进程:必须先把自己激活成前台 app 并抬高窗口层级,否则 NSOpenPanel
+    # 出现在所有窗口后面(用户看不到),runModal 一直阻塞到超时,前端就卡在「选择中…」。
+    jxa = r'''
+ObjC.import("AppKit");
+const app = $.NSApplication.sharedApplication;
+app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
+const panel = $.NSOpenPanel.openPanel;
+panel.setTitle($("选择插件文件或目录"));
+panel.setMessage($("选择插件根目录、plugin.json、.codex-plugin/plugin.json 或 SKILL.md"));
+panel.setPrompt($("选择"));
+panel.setCanChooseFiles(true);
+panel.setCanChooseDirectories(true);
+panel.setAllowsMultipleSelection(false);
+panel.setResolvesAliases(true);
+panel.setLevel($.NSModalPanelWindowLevel);
+app.activateIgnoringOtherApps(true);
+const res = panel.runModal();
+if (res == $.NSModalResponseOK || res == 1) {
+  console.log("PICKED:" + ObjC.unwrap(panel.URLs.objectAtIndex(0).path));
+} else {
+  console.log("CANCELLED");
+}
+'''
+    code, out = _run(["/usr/bin/osascript", "-l", "JavaScript", "-e", jxa], timeout=600)
+    for line in reversed(out.strip().splitlines()):
+        line = line.strip()
+        if line.startswith("PICKED:"):
+            return {"ok": True, "path": line[len("PICKED:"):]}
+        if line == "CANCELLED":   # 明确取消,不再落到 AppleScript 兜底(否则会弹第二个对话框)
+            return {"ok": False, "cancelled": True}
+    if "User canceled" in out or "用户已取消" in out or "-128" in out:
+        return {"ok": False, "cancelled": True}
+    # 兜底同理:经 System Events activate 把对话框带到前台,否则后台进程的 choose file 也会藏在窗口后面挂死
+    apple = 'tell application "System Events"\nactivate\nPOSIX path of (choose file with prompt "选择 plugin.json、.codex-plugin/plugin.json 或 SKILL.md")\nend tell'
+    code, out = _run(["/usr/bin/osascript", "-e", apple], timeout=600)
+    path = out.strip()
+    if code == 0 and path:
+        return {"ok": True, "path": path.splitlines()[-1]}
+    if "User canceled" in out or "用户已取消" in out or "-128" in out:
+        return {"ok": False, "cancelled": True}
+    return {"ok": False, "error": "打开文件选择器失败: " + out[-300:]}
 
 # 深度研究面板「我的方法论」引擎里可多选的研究 skill 注册表。种子=当前已装的研究方法 skill;
 # 用户后续新增独特研究方法 skill → 用 Claude Code 往这个 json 加一条即可,面板自动出现(不改界面代码)。
@@ -715,6 +1736,147 @@ def write_research_skills(items):
     _atomic_write_json(RESEARCH_SKILLS_FILE, items)
     return items
 
+RESEARCH_RECORDS_FILE = os.path.expanduser("~/.codewhale-gui/research_records.json")
+def read_research_records():
+    try:
+        d = json.load(open(RESEARCH_RECORDS_FILE))
+        return d if isinstance(d, list) else []
+    except Exception:
+        return []
+def _research_outdir(engine):
+    engine = (engine or "").strip()
+    if engine == "deerflow":
+        return os.path.expanduser("~/deerflow-output")
+    return os.path.expanduser((_HARNESS.get(engine) or {}).get("outdir") or "")
+def _status_like_research_output(text):
+    s = str(text or "").strip().lower()
+    return (not s) or s in {"ok", "done", "success", "completed", "complete", "finished"}
+def _safe_research_md(engine, file="", path=""):
+    odir = os.path.realpath(_research_outdir(engine) or "")
+    if not odir:
+        return ""
+    candidates = []
+    if path:
+        candidates.append(os.path.realpath(os.path.expanduser(str(path))))
+    if file:
+        candidates.append(os.path.realpath(os.path.join(odir, os.path.basename(str(file)))))
+    for fp in candidates:
+        if fp.startswith(odir + os.sep) and fp.endswith(".md") and os.path.isfile(fp):
+            return fp
+    return ""
+def _find_research_md(engine, tid=""):
+    odir = _research_outdir(engine)
+    if not odir or not os.path.isdir(odir):
+        return ""
+    try:
+        files = [os.path.join(odir, f) for f in os.listdir(odir) if f.endswith(".md")]
+        if not files:
+            return ""
+        tid = str(tid or "")
+        keys = [tid, tid[:12], tid[:8]]
+        keyed = [p for p in files if any(k and k in os.path.basename(p) for k in keys)]
+        if not keyed:
+            return ""
+        keyed.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        return keyed[0]
+    except Exception:
+        return ""
+def _research_md_payload(engine, tid="", data=None):
+    data = data if isinstance(data, dict) else {}
+    fp = _safe_research_md(engine, data.get("file", ""), data.get("path", ""))
+    if not fp:
+        fp = _find_research_md(engine, tid)
+    if not fp:
+        return {}
+    try:
+        content = open(fp, encoding="utf-8", errors="replace").read()[:220000]
+        return {"file": os.path.basename(fp), "path": fp, "output": content}
+    except Exception:
+        return {"file": os.path.basename(fp), "path": fp}
+def _hydrate_research_file_output(engine, tid, data):
+    if not isinstance(data, dict):
+        return data
+    payload = _research_md_payload(engine, tid, data)
+    if not payload:
+        return data
+    out = {**data}
+    out["file"] = out.get("file") or payload.get("file", "")
+    out["path"] = out.get("path") or payload.get("path", "")
+    if payload.get("output") and (_status_like_research_output(out.get("output")) or out.get("file")):
+        out["output"] = payload["output"]
+    return out
+def _research_record_id(rec):
+    seed = "|".join(str(rec.get(k) or "") for k in ("cw_thread_id", "engine", "external_thread_id"))
+    if not seed.strip("|"):
+        seed = str(rec.get("created_at") or time.time())
+    return hashlib.sha256(seed.encode()).hexdigest()[:20]
+def _clean_research_record(data):
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    rec = {
+        "cw_thread_id": str(data.get("cw_thread_id") or data.get("thread_id") or "")[:80],
+        "engine": re.sub(r'[^a-zA-Z0-9_-]', '', str(data.get("engine") or "research"))[:40] or "research",
+        "engine_name": str(data.get("engine_name") or data.get("engine") or "研究")[:80],
+        "engine_emo": str(data.get("engine_emo") or "")[:8],
+        "api": str(data.get("api") or "")[:80],
+        "provider": re.sub(r'[^a-zA-Z0-9._-]', '', str(data.get("provider") or ""))[:80],
+        "model": re.sub(r'[^a-zA-Z0-9._-]', '', str(data.get("model") or ""))[:120],
+        "provider_model": str(data.get("provider_model") or "")[:160],
+        "model_label": str(data.get("model_label") or "")[:200],
+        "external_thread_id": str(data.get("external_thread_id") or data.get("ext_thread_id") or "")[:120],
+        "prompt": str(data.get("prompt") or "")[:20000],
+        "status": str(data.get("status") or "running")[:40],
+        "stats": str(data.get("stats") or "")[:1000],
+        "output": str(data.get("output") or "")[:220000],
+        "file": os.path.basename(str(data.get("file") or ""))[:240],
+        "path": str(data.get("path") or "")[:1200],
+        "created_at": str(data.get("created_at") or now)[:40],
+        "updated_at": now,
+    }
+    try:
+        if not rec["model_label"]:
+            meta = _research_model_meta(rec["engine"], {**data, **rec})
+            rec["provider"] = rec["provider"] or meta.get("provider", "")
+            rec["model"] = rec["model"] or meta.get("model", "")
+            rec["provider_model"] = rec["provider_model"] or meta.get("provider_model", "")
+            rec["model_label"] = rec["model_label"] or meta.get("model_label", "")
+    except Exception:
+        pass
+    rec["id"] = str(data.get("id") or _research_record_id(rec))[:80]
+    return rec
+def upsert_research_record(data):
+    rec = _clean_research_record(data if isinstance(data, dict) else {})
+    if not rec["cw_thread_id"]:
+        return {"error": "cw_thread_id required"}
+    rows = read_research_records()
+    out, done = [], False
+    for old in rows:
+        if not isinstance(old, dict):
+            continue
+        same_id = old.get("id") == rec["id"]
+        same_ext = (old.get("cw_thread_id") == rec["cw_thread_id"]
+                    and old.get("engine") == rec["engine"]
+                    and old.get("external_thread_id")
+                    and old.get("external_thread_id") == rec["external_thread_id"])
+        if same_id or same_ext:
+            merged = {**old, **rec, "created_at": old.get("created_at") or rec["created_at"]}
+            for k in ("provider", "model", "provider_model", "model_label"):
+                if not rec.get(k) and old.get(k):
+                    merged[k] = old.get(k)
+            out.append(merged); done = True
+        else:
+            out.append(old)
+    if not done:
+        out.append(rec)
+    out = out[-300:]
+    os.makedirs(os.path.dirname(RESEARCH_RECORDS_FILE), exist_ok=True)
+    _atomic_write_json(RESEARCH_RECORDS_FILE, out, ensure_ascii=False)
+    return {"ok": True, "record": rec}
+def research_records_for_thread(tid):
+    rows = [r for r in read_research_records() if isinstance(r, dict) and r.get("cw_thread_id") == tid]
+    rows = [_hydrate_research_file_output(r.get("engine") or "deerflow", r.get("external_thread_id") or "", r) for r in rows]
+    rows.sort(key=lambda r: r.get("created_at") or r.get("updated_at") or "")
+    return rows
+
 def read_cmp_threads():   # 对比 thread 注册表(服务端共享一份,所有窗口/设备一致分组)
     try:
         d = json.load(open(CMP_THREADS_FILE))
@@ -722,13 +1884,401 @@ def read_cmp_threads():   # 对比 thread 注册表(服务端共享一份,所有
     except Exception:
         return []
 def write_cmp_threads(ids):
-    ids = [str(x) for x in ids if isinstance(x, (str, int))][:2000]   # 上限大些:对比每问建 N 条
+    try: single_set = set(read_single_threads())
+    except Exception: single_set = set()
+    ids = [str(x) for x in ids if isinstance(x, (str, int)) and str(x) not in single_set][:2000]   # 单聊优先:浏览器旧 localStorage 不能把普通 thread 写回对比注册表
     os.makedirs(os.path.dirname(CMP_THREADS_FILE), exist_ok=True)
     tmp = CMP_THREADS_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump(ids, f)
     os.replace(tmp, CMP_THREADS_FILE)
     return ids
+
+def read_cmp_thread_sessions():
+    try:
+        d = json.load(open(CMP_THREAD_SESSIONS_FILE))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+def write_cmp_thread_sessions(mapping):
+    cleaned = {}
+    for tid, rec in (mapping or {}).items():
+        if not re.match(r'^thr_[A-Za-z0-9_-]+$', str(tid)):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        sid = str(rec.get("session_id") or rec.get("sid") or "")
+        prov = str(rec.get("provider") or "")
+        if not re.match(r'^cmps_[A-Za-z0-9_-]+$', sid) or not re.match(r'^[A-Za-z0-9_-]+$', prov):
+            continue
+        cleaned[str(tid)] = {
+            "session_id": sid,
+            "provider": prov,
+            "topic": str(rec.get("topic") or "")[:200],
+            "ts": rec.get("ts") or 0,
+        }
+    os.makedirs(os.path.dirname(CMP_THREAD_SESSIONS_FILE), exist_ok=True)
+    _atomic_write_json(CMP_THREAD_SESSIONS_FILE, cleaned, ensure_ascii=False)
+    return cleaned
+def _sync_cmp_thread_session_map(sessions):
+    mapping = read_cmp_thread_sessions()
+    for s in sessions or []:
+        if not _valid_session(s):
+            continue
+        sid = s.get("id")
+        for prov, tid in (s.get("threads") or {}).items():
+            if tid:
+                mapping[str(tid)] = {"session_id": sid, "provider": str(prov), "topic": str(s.get("topic") or "")[:200], "ts": s.get("ts") or 0}
+    return write_cmp_thread_sessions(mapping)
+def cmp_session_by_id(sid):
+    if not re.match(r'^cmps_[A-Za-z0-9_-]+$', sid or ""):
+        return None
+    for s in read_cmp_sessions():
+        if isinstance(s, dict) and s.get("id") == sid:
+            return s
+    grouped = {}
+    topic = "对比"
+    ts = 0
+    for tid, rec in read_cmp_thread_sessions().items():
+        if isinstance(rec, dict) and rec.get("session_id") == sid:
+            prov = rec.get("provider")
+            if prov:
+                grouped[prov] = tid
+            topic = rec.get("topic") or topic
+            ts = max(ts, int(rec.get("ts") or 0))
+    if not grouped:
+        return None
+    return {"id": sid, "topic": topic, "ts": ts or int(time.time()*1000), "providers": list(grouped.keys()), "threads": grouped}
+
+def _runtime_json(kind, obj_id):
+    if kind not in ("threads", "turns", "items") or not re.match(r'^(thr|turn|item)_[A-Za-z0-9_-]+$', obj_id or ""):
+        return None
+    path = os.path.realpath(os.path.join(RUNTIME_DIR, kind, obj_id + ".json"))
+    root = os.path.realpath(os.path.join(RUNTIME_DIR, kind))
+    if not (path == root or path.startswith(root + os.sep)):
+        return None
+    try:
+        return json.load(open(path, encoding="utf-8"))
+    except Exception:
+        return None
+def _runtime_file(kind, obj_id):
+    if kind not in ("threads", "turns", "items") or not re.match(r'^(thr|turn|item)_[A-Za-z0-9_-]+$', obj_id or ""):
+        return ""
+    root = os.path.realpath(os.path.join(RUNTIME_DIR, kind))
+    path = os.path.realpath(os.path.join(root, obj_id + ".json"))
+    return path if path.startswith(root + os.sep) else ""
+def _short_text(s, limit=1200):
+    s = re.sub(r'\s+', ' ', str(s or "")).strip()
+    return s[:limit] + ("…" if len(s) > limit else "")
+def _display_project(workspace):
+    ws = str(workspace or "").strip()
+    if not ws:
+        return "未指定项目"
+    name = os.path.basename(ws.rstrip(os.sep)) or ws
+    return name if name else ws
+def _turn_index_for_threads(thread_ids):
+    ids = set(thread_ids or [])
+    idx = {}
+    if not ids:
+        return idx
+    root = os.path.join(RUNTIME_DIR, "turns")
+    try:
+        names = sorted(os.listdir(root))
+    except Exception:
+        return idx
+    for name in names:
+        if not name.startswith("turn_") or not name.endswith(".json"):
+            continue
+        d = _runtime_json("turns", name[:-5])
+        if not isinstance(d, dict):
+            continue
+        tid = d.get("thread_id")
+        if tid not in ids:
+            continue
+        rec = idx.get(tid)
+        key = (d.get("created_at") or "", d.get("id") or "")
+        if not rec or key < rec.get("_first_key", ("~", "~")):
+            idx[tid] = {
+                "_first_key": key,
+                "first_input": _short_text(d.get("input_summary"), 180),
+                "first_turn_at": d.get("created_at") or "",
+            }
+    return idx
+def archived_sessions():
+    root = os.path.join(RUNTIME_DIR, "threads")
+    rows = []
+    try:
+        names = sorted(os.listdir(root))
+    except Exception:
+        return {"items": [], "projects": [], "models": [], "total": 0}
+    for name in names:
+        if not name.startswith("thr_") or not name.endswith(".json"):
+            continue
+        tid = name[:-5]
+        th = _runtime_json("threads", tid)
+        if not isinstance(th, dict) or not th.get("archived"):
+            continue
+        rows.append(th)
+    turn_idx = _turn_index_for_threads([r.get("id") for r in rows])
+    cmp_map = read_cmp_thread_sessions()
+    out = []
+    dflt = _cfg_get("provider") or "deepseek"
+    for th in rows:
+        tid = th.get("id") or ""
+        workspace = th.get("workspace") or ""
+        title = str(th.get("title") or "").strip()
+        fallback = (turn_idx.get(tid) or {}).get("first_input") or ""
+        if not title:
+            title = fallback[:42] or "New Thread"
+        prov = _model_to_provider(th.get("model")) or _tprov.get(tid) or dflt
+        cm = cmp_map.get(tid) if isinstance(cmp_map, dict) else None
+        out.append({
+            "id": tid,
+            "title": title[:120],
+            "preview": fallback[:240],
+            "updated_at": th.get("updated_at") or (turn_idx.get(tid) or {}).get("first_turn_at") or "",
+            "created_at": th.get("created_at") or (turn_idx.get(tid) or {}).get("first_turn_at") or "",
+            "model": th.get("model") or "",
+            "provider": prov,
+            "workspace": workspace,
+            "project": _display_project(workspace),
+            "mode": th.get("mode") or "",
+            "compare": bool(cm),
+            "compare_session_id": (cm or {}).get("session_id") if isinstance(cm, dict) else "",
+            "compare_topic": (cm or {}).get("topic") if isinstance(cm, dict) else "",
+        })
+    out.sort(key=lambda x: (x.get("updated_at") or "", x.get("id") or ""), reverse=True)
+    projects = sorted({r["project"] for r in out if r.get("project")})
+    models = sorted({r["provider"] or r["model"] for r in out if r.get("provider") or r.get("model")})
+    return {"items": out, "projects": projects, "models": models, "total": len(out)}
+def delete_archived_sessions(ids):
+    target = []
+    seen = set()
+    for x in ids or []:
+        tid = str(x or "")
+        if re.match(r'^thr_[A-Za-z0-9_-]+$', tid) and tid not in seen:
+            seen.add(tid); target.append(tid)
+    if not target:
+        return {"ok": True, "deleted": [], "failed": [], "total": 0}
+    target_set = set(target)
+    failed = []
+    deletable = set()
+    for tid in target:
+        th = _runtime_json("threads", tid)
+        if not isinstance(th, dict):
+            failed.append({"id": tid, "error": "thread not found"})
+        elif not th.get("archived"):
+            failed.append({"id": tid, "error": "thread is not archived"})
+        else:
+            deletable.add(tid)
+    turn_ids = set()
+    item_ids = set()
+    turns_root = os.path.join(RUNTIME_DIR, "turns")
+    try:
+        turn_names = sorted(os.listdir(turns_root))
+    except Exception:
+        turn_names = []
+    for name in turn_names:
+        if not name.startswith("turn_") or not name.endswith(".json"):
+            continue
+        turn_id = name[:-5]
+        d = _runtime_json("turns", turn_id)
+        if isinstance(d, dict) and d.get("thread_id") in deletable:
+            turn_ids.add(turn_id)
+            for iid in d.get("item_ids") or []:
+                if re.match(r'^item_[A-Za-z0-9_-]+$', str(iid)):
+                    item_ids.add(str(iid))
+    items_root = os.path.join(RUNTIME_DIR, "items")
+    try:
+        item_names = sorted(os.listdir(items_root))
+    except Exception:
+        item_names = []
+    for name in item_names:
+        if not name.startswith("item_") or not name.endswith(".json"):
+            continue
+        item_id = name[:-5]
+        d = _runtime_json("items", item_id)
+        if isinstance(d, dict) and (d.get("turn_id") in turn_ids or d.get("thread_id") in deletable):
+            item_ids.add(item_id)
+    deleted = []
+    removed_files = 0
+    def rm(kind, obj_id):
+        nonlocal removed_files
+        path = _runtime_file(kind, obj_id)
+        if not path:
+            return
+        try:
+            os.remove(path)
+            removed_files += 1
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            failed.append({"id": obj_id, "error": str(e)[:160]})
+    for iid in item_ids:
+        rm("items", iid)
+    for turn_id in turn_ids:
+        rm("turns", turn_id)
+    for tid in list(deletable):
+        rm("threads", tid)
+        deleted.append(tid)
+    deleted_set = set(deleted)
+    if deleted_set:
+        try:
+            _ARCHIVED_TOMBSTONES.difference_update(deleted_set)
+        except Exception:
+            pass
+        try:
+            write_pins([x for x in read_pins() if x not in deleted_set])
+        except Exception:
+            pass
+        try:
+            write_cron_jobs([x for x in read_cron_jobs() if x not in deleted_set])
+        except Exception:
+            pass
+        try:
+            _atomic_write_json(SINGLE_THREADS_FILE, [x for x in read_single_threads() if x not in deleted_set])
+        except Exception:
+            pass
+        try:
+            write_cmp_threads([x for x in read_cmp_threads() if x not in deleted_set])
+        except Exception:
+            pass
+        try:
+            mapping = read_cmp_thread_sessions()
+            for tid in deleted_set:
+                mapping.pop(tid, None)
+            write_cmp_thread_sessions(mapping)
+        except Exception:
+            pass
+        try:
+            sessions = []
+            for s in read_cmp_sessions():
+                if not isinstance(s, dict):
+                    continue
+                threads = {k: v for k, v in (s.get("threads") or {}).items() if v not in deleted_set}
+                if threads:
+                    ss = dict(s); ss["threads"] = threads; ss["providers"] = [p for p in (ss.get("providers") or threads.keys()) if p in threads]
+                    sessions.append(ss)
+            write_cmp_sessions(sessions)
+        except Exception:
+            pass
+        try:
+            titles = read_title_state()
+            for tid in deleted_set:
+                titles.pop(tid, None)
+            write_title_state(titles)
+        except Exception:
+            pass
+        try:
+            recs = [r for r in read_research_records() if not (isinstance(r, dict) and r.get("cw_thread_id") in deleted_set)]
+            _atomic_write_json(RESEARCH_RECORDS_FILE, recs, ensure_ascii=False)
+        except Exception:
+            pass
+        try:
+            cur = _threads_cache["v"]
+            if isinstance(cur, list):
+                _threads_cache["v"] = [t for t in cur if not (isinstance(t, dict) and t.get("id") in deleted_set)]
+                _atomic_write_json(_THREADS_CACHE_FILE, _threads_cache["v"])
+        except Exception:
+            pass
+    return {"ok": True, "deleted": deleted, "failed": failed, "total": len(target), "files": removed_files,
+            "turns": len(turn_ids), "items": len(item_ids)}
+def cmp_thread_brief(provider, tid):
+    if not re.match(r'^[A-Za-z0-9_-]+$', provider or "") or not re.match(r'^thr_[A-Za-z0-9_-]+$', tid or ""):
+        return {"error": "invalid provider/thread_id"}
+    th = _runtime_json("threads", tid) or {}
+    turn = _runtime_json("turns", th.get("latest_turn_id") or "") or {}
+    user = agent = None
+    item_ids = list(turn.get("item_ids") or [])
+    for iid in reversed(item_ids[-24:]):   # 只看最新 turn 尾部,不扫完整历史;足够找到最后 user/agent
+        it = _runtime_json("items", str(iid))
+        if not isinstance(it, dict):
+            continue
+        kind = it.get("kind")
+        txt = it.get("detail") if it.get("detail") is not None else it.get("summary")
+        if kind == "agent_message" and agent is None:
+            agent = {"id": it.get("id"), "text": _short_text(txt, 1800)}
+        elif kind == "user_message" and user is None:
+            user = {"id": it.get("id"), "text": _short_text(txt or turn.get("input_summary"), 900)}
+        if user and agent:
+            break
+    if not user and turn.get("input_summary"):
+        user = {"text": _short_text(turn.get("input_summary"), 900)}
+    return {
+        "provider": provider,
+        "thread_id": tid,
+        "thread": {k: th.get(k) for k in ("id", "title", "updated_at", "model", "mode", "latest_turn_id", "archived")},
+        "turn": {k: turn.get(k) for k in ("id", "status", "input_summary", "created_at", "ended_at", "duration_ms")},
+        "latest": {"user": user, "agent": agent},
+        "has_more": bool(item_ids),
+        "item_count": len(item_ids),
+    }
+
+def _runtime_latest_seq():
+    try:
+        d = json.load(open(os.path.join(RUNTIME_DIR, "state.json"), encoding="utf-8"))
+        return max(0, int(d.get("next_seq") or 1) - 1)
+    except Exception:
+        return 0
+
+def _runtime_turns_for_thread(tid):
+    out = []
+    root = os.path.join(RUNTIME_DIR, "turns")
+    try:
+        names = sorted(os.listdir(root))
+    except Exception:
+        return out
+    for name in names:
+        if not name.startswith("turn_") or not name.endswith(".json"):
+            continue
+        d = _runtime_json("turns", name[:-5])
+        if isinstance(d, dict) and d.get("thread_id") == tid:
+            out.append(d)
+    out.sort(key=lambda x: (x.get("created_at") or "", x.get("id") or ""))
+    return out
+
+def thread_window(tid, start=None, limit=80):
+    if not re.match(r'^thr_[A-Za-z0-9_-]+$', tid or ""):
+        return {"error": "invalid thread_id"}
+    th = _runtime_json("threads", tid)
+    if not isinstance(th, dict):
+        return {"error": "thread not found"}
+    seq = _runtime_latest_seq()  # 先取 seq:之后发生的新事件会从 SSE 补上,避免漏
+    turns = _runtime_turns_for_thread(tid)
+    item_ids = []
+    for turn in turns:
+        item_ids.extend([str(x) for x in (turn.get("item_ids") or []) if str(x).startswith("item_")])
+    total = len(item_ids)
+    try:
+        limit = int(limit)
+    except Exception:
+        limit = 80
+    limit = max(1, min(1200, limit))
+    if start is None:
+        start = max(0, total - limit)
+    else:
+        try: start = int(start)
+        except Exception: start = max(0, total - limit)
+        start = max(0, min(total, start))
+    end = min(total, start + limit)
+    items = []
+    for iid in item_ids[start:end]:
+        it = _runtime_json("items", iid)
+        if isinstance(it, dict):
+            items.append(it)
+    latest_status = (turns[-1].get("status") if turns else "") or ""
+    thread = {k: th.get(k) for k in ("id", "title", "updated_at", "model", "workspace", "mode", "allow_shell", "auto_approve", "latest_turn_id", "archived")}
+    thread["latest_turn_status"] = latest_status
+    return {
+        "thread": thread,
+        "turns": turns,
+        "items": items,
+        "latest_seq": seq,
+        "total_items": total,
+        "window_start": start,
+        "window_end": end,
+        "windowed": True,
+    }
 
 def read_cmp_sessions():
     try:
@@ -740,46 +2290,94 @@ def _valid_session(s):
     return (isinstance(s, dict) and isinstance(s.get("id"), str) and s.get("id")
             and isinstance(s.get("threads"), dict))
 def write_cmp_sessions(sessions):
-    sessions = [s for s in sessions if _valid_session(s)][:500]
+    try: single_set = set(read_single_threads())
+    except Exception: single_set = set()
+    cleaned = []
+    for s in sessions:
+        if not _valid_session(s):
+            continue
+        threads = {str(k): str(v) for k, v in (s.get("threads") or {}).items()
+                   if v and str(v) not in single_set}
+        if not threads:
+            continue
+        ss = dict(s)
+        ss["threads"] = threads
+        ss["providers"] = [p for p in ss.get("providers", list(threads.keys())) if p in threads] or list(threads.keys())
+        cleaned.append(ss)
+    sessions = cleaned[:500]
     os.makedirs(os.path.dirname(CMP_SESSIONS_FILE), exist_ok=True)
     tmp = CMP_SESSIONS_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump(sessions, f, ensure_ascii=False)
     os.replace(tmp, CMP_SESSIONS_FILE)
+    try: _sync_cmp_thread_session_map(sessions)
+    except Exception as e: print("[cmp-session] sync map failed:", e, flush=True)
     return sessions
-def upsert_cmp_sessions(incoming):
-    """按 id 合并:同 id 取 thread 更全的那份(并发窗口不互相截断);thread 数平局比 topic_ts(重命名新者胜,防旧副本盖回名字);
-    传入列表中存在的保留,文件中残留但传入已不存在的视为已删除。"""
+def upsert_cmp_sessions(incoming, delete_ids=None):
+    """按 id 合并:同 id 取 thread 更全的那份(并发窗口不互相截断);thread 数平局比 topic_ts(重命名新者胜,防旧副本盖回名字)。
+    旧窗口可能只知道自己打开时的局部 session,所以普通保存只 upsert,不按缺失项删除;删除必须显式传 delete_ids。"""
     def _prefer(new, old, tie_ge=True):
         ln, lo = len(new.get("threads") or {}), len(old.get("threads") or {})
         if ln != lo:
             return ln > lo
         nt, ot = new.get("topic_ts") or 0, old.get("topic_ts") or 0
         return nt >= ot if tie_ge else nt > ot
+    deleted = {str(x) for x in (delete_ids or []) if isinstance(x, (str, int))}
     valid_incoming = [s for s in incoming if _valid_session(s)]
-    # 传入列表的 id 集合:只有这些 id 会被保留
-    keep_ids = {s["id"] for s in valid_incoming}
     by_id = {}
     order = []
-    # 先处理传入列表(新增/更新)
+    for s in read_cmp_sessions():
+        sid = s["id"]
+        if sid in deleted:
+            continue
+        order.append(sid); by_id[sid] = s
     for s in valid_incoming:
         sid = s["id"]
+        if sid in deleted:
+            continue
         if sid not in by_id:
             order.append(sid); by_id[sid] = s
         else:
             if _prefer(s, by_id[sid]):
                 by_id[sid] = s
-    # 再从文件中补充:仅对传入列表中已存在的 id,取更优版本(文件版要严格更优才替换)
-    for s in read_cmp_sessions():
-        sid = s["id"]
-        if sid not in keep_ids:
-            continue   # 文件中残留但传入列表已不包含 → 视为已删除,丢弃
-        cur = by_id.get(sid)
-        if cur and _prefer(s, cur, tie_ge=False):
-            by_id[sid] = s
     merged = [by_id[sid] for sid in order]
     merged.sort(key=lambda s: s.get("ts") or 0, reverse=True)
-    return write_cmp_sessions(merged)
+    out = write_cmp_sessions(merged)
+    if deleted:
+        try:
+            mapping = read_cmp_thread_sessions()
+            mapping = {tid: rec for tid, rec in mapping.items() if not (isinstance(rec, dict) and rec.get("session_id") in deleted)}
+            write_cmp_thread_sessions(mapping)
+        except Exception as e:
+            print("[cmp-session] delete map cleanup failed:", e, flush=True)
+    return out
+
+def upsert_cmp_session_thread(session_id, topic, provider, tid, title_seed="", ts=None):
+    if not re.match(r'^cmps_[A-Za-z0-9_-]+$', session_id or ""):
+        return None
+    if not re.match(r'^[A-Za-z0-9_-]+$', provider or ""):
+        return None
+    if not re.match(r'^thr_[A-Za-z0-9_-]+$', tid or ""):
+        return None
+    sessions = read_cmp_sessions()
+    rec = None
+    for s in sessions:
+        if isinstance(s, dict) and s.get("id") == session_id:
+            rec = s; break
+    if not rec:
+        rec = {"id": session_id, "topic": topic or "对比", "title_seed": title_seed or topic or "", "ts": ts or int(time.time()*1000), "providers": [], "threads": {}}
+        sessions.insert(0, rec)
+    rec["topic"] = rec.get("topic") or topic or "对比"
+    if title_seed and not rec.get("title_seed"):
+        rec["title_seed"] = title_seed
+    rec["ts"] = rec.get("ts") or ts or int(time.time()*1000)
+    threads = rec.get("threads") if isinstance(rec.get("threads"), dict) else {}
+    threads[provider] = tid
+    rec["threads"] = threads
+    rec["providers"] = [p for p in rec.get("providers", []) if p in threads]
+    if provider not in rec["providers"]:
+        rec["providers"].append(provider)
+    return write_cmp_sessions(sessions)
 
 def _seed_cmp_from_tprov():
     """一次性回溯迁移:本功能之前建的对比 thread 没登记 → 从 _tprov 反推。
@@ -819,7 +2417,473 @@ def save_upload(raw, filename, scope=None):
         dest = os.path.join(root, f"{base}-{n}{ext}"); n += 1
     with open(dest, "wb") as f:
         f.write(raw)
-    return {"path": dest, "name": os.path.basename(dest), "size": len(raw)}
+    out = {"path": dest, "name": os.path.basename(dest), "size": len(raw)}
+    if ext.lower() == ".pdf":
+        txt_path = _extract_pdf_upload_text(dest)
+        if txt_path:
+            out["text_path"] = txt_path
+            out["text_name"] = os.path.basename(txt_path)
+            out["text_kind"] = "pdf_text"
+    elif ext.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}:
+        txt_path = _extract_image_upload_text(dest)
+        if txt_path:
+            out["text_path"] = txt_path
+            out["text_name"] = os.path.basename(txt_path)
+            out["text_kind"] = "image_vision"
+    return out
+
+def _extract_pdf_upload_text(path):
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(path)
+        parts = []
+        for i, page in enumerate(reader.pages[:300], 1):
+            try:
+                txt = page.extract_text() or ""
+            except Exception:
+                txt = ""
+            txt = re.sub(r'\s+\n', '\n', txt).strip()
+            if txt:
+                parts.append(f"\n\n--- Page {i} ---\n{txt}")
+        if not parts:
+            return ""
+        out = path + ".txt"
+        with open(out, "w", encoding="utf-8") as f:
+            f.write("PDF text extracted from: " + path + "\n")
+            f.write("Pages extracted: " + str(min(len(reader.pages), 300)) + "\n")
+            f.write("Note: formatting/tables may be approximate; refer to original PDF for layout.\n")
+            f.write("".join(parts))
+        return out
+    except Exception as e:
+        print("[upload] pdf text extraction failed:", e, flush=True)
+        return ""
+
+def _extract_image_upload_text(path):
+    api_key = ""
+    temp_path = ""
+    try:
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}:
+            return ""
+
+        override = {}
+        vision_cfg = os.path.expanduser("~/.codewhale-gui/vision.json")
+        if os.path.exists(vision_cfg):
+            with open(vision_cfg, encoding="utf-8") as f:
+                override = json.load(f)
+            if not isinstance(override, dict):
+                raise ValueError("vision.json must contain an object")
+            if override.get("enabled") is False:
+                return ""
+
+        provider = str(override.get("provider") or "volcengine").strip()
+        model = str(override.get("model") or "doubao-seed-2-1-pro-260628").strip()
+        cfg = _load_config()
+        provider_cfg = cfg.get("providers", {}).get(provider, {})
+        if not isinstance(provider_cfg, dict):
+            provider_cfg = {}
+        base_url = str(override.get("base_url") or provider_cfg.get("base_url")
+                       or "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
+        api_key = provider_cfg.get("api_key") or ""
+        if not api_key and cfg.get("provider") == provider:
+            api_key = cfg.get("api_key") or ""
+        if not api_key:
+            cmp_path = os.path.expanduser(f"~/.codewhale-gui/cmp/{provider}.toml")
+            try:
+                with open(cmp_path, "rb") as f:
+                    cmp_cfg = tomllib.load(f)
+                cmp_provider_cfg = cmp_cfg.get("providers", {}).get(provider, {})
+                if isinstance(cmp_provider_cfg, dict):
+                    api_key = cmp_provider_cfg.get("api_key") or ""
+            except (OSError, tomllib.TOMLDecodeError):
+                pass
+        if not api_key:
+            return ""
+
+        send_path = path
+        send_ext = ext
+        if os.path.getsize(path) > 9 * 1024 * 1024:
+            fd, temp_path = tempfile.mkstemp(prefix="codewhale-vision-", suffix=".jpg")
+            os.close(fd)
+            try:
+                subprocess.run(["sips", "-s", "format", "jpeg", "-Z", "2048", path,
+                                "--out", temp_path], check=True, timeout=20,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
+                    raise ValueError("sips produced no image")
+                send_path, send_ext = temp_path, ".jpg"
+            except Exception as resize_error:
+                if os.path.getsize(path) > 9 * 1024 * 1024:
+                    raise RuntimeError("sips image resizing failed") from resize_error
+
+        mime = mimetypes.types_map.get(send_ext, "image/jpeg")
+        if send_ext == ".jpg":
+            mime = "image/jpeg"
+        with open(send_path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode("ascii")
+        prompt = ("请识别这张图片：①按视觉布局顺序完整转录所有可见文字（含数字、按钮、标签）；"
+                  "②描述界面或图表的结构与配色要点；③如是图表或表格，把关键数据整理成文本。")
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_data}"}},
+                {"type": "text", "text": prompt},
+            ]}],
+            "max_tokens": 4000,
+        }
+        # 推理型视觉模型(doubao-seed 系)默认思考会把单图耗时拉到 70s+ 超时;关思考后 ~18s 且转录完整。
+        # 其它 provider 不一定认识 thinking 字段,只对 volcengine 默认加;vision.json 可显式覆盖。
+        thinking = override.get("thinking", {"type": "disabled"} if provider == "volcengine" else None)
+        if thinking:
+            payload["thinking"] = thinking
+        req = urllib.request.Request(
+            base_url + "/chat/completions",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
+            method="POST")
+        with _open_url(req, 90) as resp:
+            result = json.load(resp)
+        content = ((result.get("choices") or [{}])[0].get("message") or {}).get("content", "")
+        if isinstance(content, list):
+            content = "\n".join(str(item.get("text") or "") for item in content
+                                if isinstance(item, dict) and item.get("text"))
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("vision model returned an empty reply")
+        out = path + ".txt"
+        with open(out, "w", encoding="utf-8") as f:
+            f.write("视觉模型识别结果\n")
+            f.write("原图: " + path + "\n")
+            f.write(f"模型: {model}；细节请以原图为准，必要时可对原图调用 image_ocr 复核\n")
+            f.write(content.strip() + "\n")
+        return out
+    except Exception as e:
+        message = str(e)
+        if api_key:
+            message = message.replace(str(api_key), "[redacted]")
+        print("[upload] image vision extraction failed:", message, flush=True)
+        return ""
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+DOWNLOAD_FILE_EXTS = {".pdf", ".md", ".markdown", ".txt", ".csv", ".tsv", ".json", ".html", ".htm",
+                      ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".zip",
+                      ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
+                      ".py", ".js", ".jsx", ".ts", ".tsx", ".css", ".xml", ".yaml", ".yml", ".toml"}
+EXECUTABLE_OPEN_EXTS = {".sh", ".command", ".py", ".applescript", ".scpt", ".app", ".jar", ".rb", ".pl"}
+EXECUTABLE_OPEN_ERROR = "该文件类型出于安全不支持直接打开,请在访达中查看"
+def _path_in_roots(fp, roots):
+    return any(fp == r or fp.startswith(r + os.sep) for r in roots if r)
+def _download_sensitive_roots():
+    home = os.path.expanduser("~")
+    return [os.path.realpath(os.path.join(home, p)) for p in (
+        ".codewhale", ".codewhale-gui", ".ssh", ".aws", ".config",
+    )] + [os.path.realpath(os.path.join(home, "agent-harnesses", "harness.env"))]
+def _sensitive_download_name(name):
+    name = str(name or "").lower()
+    return name.endswith(".pem") or name.endswith(".key") or name in {".env", "config.toml", "mcp.json", "token"}
+def _sensitive_download_path(fp, raw=""):
+    if _path_in_roots(fp, _download_sensitive_roots()):
+        return True
+    return _sensitive_download_name(os.path.basename(fp)) or _sensitive_download_name(os.path.basename(raw))
+def _safe_local_file(path, require_download_ext=True, allow_app_dir=False):
+    raw = os.path.expanduser(str(path or ""))
+    if not raw:
+        return ""
+    fp = os.path.realpath(raw)
+    roots = [
+        os.path.realpath(os.path.expanduser("~")),
+        os.path.realpath(tempfile.gettempdir()),
+        os.path.realpath("/tmp"),
+        os.path.realpath("/private/tmp"),
+    ]
+    if not _path_in_roots(fp, roots):
+        return ""
+    if _sensitive_download_path(fp, raw):
+        return ""
+    ext = os.path.splitext(fp)[1].lower()
+    is_allowed_app_dir = allow_app_dir and ext == ".app" and os.path.isdir(fp)
+    if not os.path.isfile(fp) and not is_allowed_app_dir:
+        return ""
+    if require_download_ext and ext not in DOWNLOAD_FILE_EXTS:
+        return ""
+    return fp
+def _safe_download_file(path):
+    return _safe_local_file(path, require_download_ext=True)
+def _safe_download_pdf(path):
+    fp = _safe_download_file(path)
+    return fp if fp.lower().endswith(".pdf") else ""
+
+def _file_app_name(app_url):
+    path = str(app_url.path())
+    name = os.path.splitext(os.path.basename(path))[0]
+    try:
+        from Foundation import NSBundle
+        b = NSBundle.bundleWithURL_(app_url)
+        if b:
+            name = str(b.objectForInfoDictionaryKey_("CFBundleDisplayName")
+                       or b.objectForInfoDictionaryKey_("CFBundleName")
+                       or name)
+    except Exception:
+        pass
+    return name
+def _file_extra_apps(target, seen=None):
+    seen = seen or set()
+    rows = []
+    ext = os.path.splitext(target)[1].lower()
+    if ext in (".md", ".markdown", ".txt", ".html", ".htm", ".doc", ".docx"):
+        for pages_path in ("/Applications/Pages.app", "/System/Applications/Pages.app"):
+            pages_real = os.path.realpath(pages_path)
+            if os.path.exists(pages_real) and "com.apple.iWork.Pages" not in seen and pages_real not in seen:
+                rows.append({
+                    "name": "Pages",
+                    "bundle_id": "com.apple.iWork.Pages",
+                    "path": pages_real,
+                    "default": False,
+                })
+                seen.add("com.apple.iWork.Pages")
+                break
+    return rows
+def _blocked_file_open_app(bundle_id="", app_path="", name=""):
+    bundle = str(bundle_id or "").lower()
+    if bundle in {"com.apple.terminal", "com.googlecode.iterm2", "com.apple.scripteditor2"}:
+        return True
+    return bundle.endswith(".iterm") or "terminal" in bundle or "iterm" in bundle
+def _file_open_apps(path):
+    target = _safe_download_file(path)
+    if not target:
+        return []
+    rows, seen = [], set()
+    try:
+        from AppKit import NSWorkspace
+        from Foundation import NSURL, NSBundle
+        url = NSURL.fileURLWithPath_(target)
+        ws = NSWorkspace.sharedWorkspace()
+        default_url = ws.URLForApplicationToOpenURL_(url)
+        default_path = os.path.realpath(str(default_url.path())) if default_url else ""
+        for app_url in (ws.URLsForApplicationsToOpenURL_(url) or []):
+            app_path = os.path.realpath(str(app_url.path()))
+            if "/Caches/" in app_path or "/.cache/" in app_path:
+                continue
+            b = NSBundle.bundleWithURL_(app_url)
+            bundle = str(b.bundleIdentifier() or "") if b else ""
+            name = _file_app_name(app_url)
+            if _blocked_file_open_app(bundle, app_path, name):
+                continue
+            key = bundle or app_path
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append({
+                "name": name,
+                "bundle_id": bundle,
+                "path": app_path,
+                "default": bool(default_path and app_path == default_path),
+            })
+    except Exception as e:
+        print("[file-open] list apps failed:", e, flush=True)
+    rows.extend(_file_extra_apps(target, seen))
+    rows.sort(key=lambda x: (not x.get("default"), 0 if x["path"].startswith("/System/Applications") else 1 if x["path"].startswith("/Applications") else 2, x["name"].lower()))
+    return rows[:16]
+def _open_local_file(path, action="open", bundle_id="", app_path=""):
+    action = (action or "open").strip()
+    ext = os.path.splitext(os.path.expanduser(str(path or "")))[1].lower()
+    if ext in EXECUTABLE_OPEN_EXTS:
+        target = _safe_local_file(path, require_download_ext=False, allow_app_dir=True)
+        if not target:
+            return {"ok": False, "error": "file not found or not allowed"}
+        if action != "reveal":
+            return {"ok": False, "error": EXECUTABLE_OPEN_ERROR}
+    else:
+        target = _safe_download_file(path)
+        if not target:
+            return {"ok": False, "error": "file not found or not allowed"}
+    if action == "reveal":
+        code, out = _run(["/usr/bin/open", "-R", target], timeout=15)
+    elif action == "app":
+        allowed = _file_open_apps(target)
+        app_path = os.path.realpath(app_path) if app_path else ""
+        bundle_id = (bundle_id or "").strip()
+        match = next((a for a in allowed if (bundle_id and a.get("bundle_id") == bundle_id) or (app_path and os.path.realpath(a.get("path") or "") == app_path)), None)
+        if not match:
+            return {"ok": False, "error": "app not allowed for this file"}
+        if match.get("bundle_id"):
+            code, out = _run(["/usr/bin/open", "-b", match["bundle_id"], target], timeout=15)
+        else:
+            code, out = _run(["/usr/bin/open", "-a", match["path"], target], timeout=15)
+    else:
+        code, out = _run(["/usr/bin/open", target], timeout=15)
+    return {"ok": code == 0, "error": "" if code == 0 else (out or "open failed")[:500]}
+
+def _preview_file_from_url(raw_url):
+    """Resolve a same-origin preview URL back to the local report/source file."""
+    raw = str(raw_url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urllib.parse.urlparse(raw)
+    except Exception:
+        return ""
+    path = parsed.path or raw
+    q = urllib.parse.parse_qs(parsed.query or "")
+    if path == "/api/file/download":
+        return _safe_download_file(q.get("path", [""])[0])
+    if path == "/api/deerflow/file":
+        name = os.path.basename((q.get("name", [""])[0] or ""))
+        fp = os.path.join(os.path.expanduser("~/deerflow-output"), name)
+        return fp if name.endswith(".md") and os.path.isfile(fp) else ""
+    m = re.match(r'^/api/harness/([a-z0-9_-]+)/file$', path)
+    if m and m.group(1) in _HARNESS:
+        name = os.path.basename((q.get("name", [""])[0] or ""))
+        fp = os.path.join(_HARNESS[m.group(1)]["outdir"], name)
+        return fp if name.endswith(".md") and os.path.isfile(fp) else ""
+    return ""
+
+def _download_url_for_file(path, inline=False):
+    return "/api/file/download?path=" + urllib.parse.quote(path, safe="") + ("&inline=1" if inline else "")
+
+def _content_disposition(kind, name):
+    """Build a latin-1-safe header while preserving Unicode via RFC 5987."""
+    kind = "inline" if kind == "inline" else "attachment"
+    name = os.path.basename(str(name or "download")).replace('"', "")
+    stem, ext = os.path.splitext(name)
+    fallback_stem = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_-") or "download"
+    fallback_ext = ext if re.match(r"^\.[A-Za-z0-9]{1,12}$", ext) else ""
+    fallback = fallback_stem + fallback_ext
+    return f'{kind}; filename="{fallback}"; filename*=UTF-8\'\'{urllib.parse.quote(name, safe="")}'
+
+def _export_source_text(path):
+    fp = _safe_download_file(path)
+    if not fp:
+        return ""
+    ext = os.path.splitext(fp)[1].lower()
+    try:
+        raw = open(fp, "rb").read(900_000)
+    except Exception:
+        return ""
+    text = raw.decode("utf-8", "replace")
+    if ext in (".html", ".htm"):
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(text, "html.parser")
+            for tag in soup(["script", "style", "noscript"]):
+                tag.decompose()
+            text = soup.get_text("\n")
+        except Exception:
+            text = re.sub(r"(?is)<(script|style).*?</\1>", "\n", text)
+            text = re.sub(r"(?s)<[^>]+>", "\n", text)
+    text = re.sub(r"\n{4,}", "\n\n\n", text).strip()
+    return text
+
+def _unique_export_path(outdir, filename):
+    base, ext = os.path.splitext(filename)
+    path = os.path.join(outdir, filename)
+    i = 2
+    while os.path.exists(path):
+        path = os.path.join(outdir, f"{base}-{i}{ext}")
+        i += 1
+    return path
+
+def _export_file_pdf(path):
+    fp = _safe_download_file(path)
+    if not fp:
+        return {"ok": False, "error": "file not found or not allowed"}
+    if fp.lower().endswith(".pdf"):
+        return {
+            "ok": True,
+            "existing": True,
+            "path": fp,
+            "name": os.path.basename(fp),
+            "download_url": _download_url_for_file(fp),
+            "inline_url": _download_url_for_file(fp, inline=True),
+        }
+    text = _export_source_text(fp)
+    if not text:
+        return {"ok": False, "error": "source file is empty or unsupported"}
+    try:
+        from html import escape as html_escape
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+        from reportlab.platypus import Paragraph, Preformatted, SimpleDocTemplate, Spacer
+        try:
+            pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+            font_name = "STSong-Light"
+        except Exception:
+            font_name = "Helvetica"
+        outdir = os.path.join(os.path.expanduser("~/Downloads"), "CodeWhale Exports")
+        os.makedirs(outdir, exist_ok=True)
+        stem = re.sub(r"[^0-9A-Za-z._\-\u4e00-\u9fff]+", "_", os.path.splitext(os.path.basename(fp))[0]).strip("._") or "codewhale-export"
+        out = _unique_export_path(outdir, stem + ".pdf")
+        styles = getSampleStyleSheet()
+        body = ParagraphStyle(
+            "CWBody", parent=styles["BodyText"], fontName=font_name, fontSize=10.5,
+            leading=16, wordWrap="CJK", spaceAfter=5,
+        )
+        h1 = ParagraphStyle(
+            "CWH1", parent=body, fontName=font_name, fontSize=20, leading=27,
+            spaceBefore=8, spaceAfter=12,
+        )
+        h2 = ParagraphStyle(
+            "CWH2", parent=body, fontName=font_name, fontSize=15, leading=22,
+            spaceBefore=8, spaceAfter=8,
+        )
+        meta = ParagraphStyle(
+            "CWMeta", parent=body, fontName=font_name, fontSize=9, leading=13,
+            textColor=colors.HexColor("#7a746c"), alignment=TA_CENTER, spaceAfter=10,
+        )
+        code_style = ParagraphStyle(
+            "CWCode", parent=body, fontName="Courier", fontSize=8.5, leading=11,
+            leftIndent=6, rightIndent=6, backColor=colors.HexColor("#f5f3ef"),
+            borderColor=colors.HexColor("#e5e0d8"), borderWidth=0.5, borderPadding=6,
+            spaceBefore=4, spaceAfter=8,
+        )
+        story = [
+            Paragraph(html_escape(os.path.basename(fp)), h1),
+            Paragraph("由 CodeWhale 预览导出", meta),
+        ]
+        in_code, code_lines = False, []
+        def flush_code():
+            if code_lines:
+                story.append(Preformatted("\n".join(code_lines)[:18000], code_style))
+                code_lines.clear()
+        for raw_line in text.splitlines():
+            line = raw_line.rstrip()
+            if line.strip().startswith("```"):
+                if in_code:
+                    in_code = False
+                    flush_code()
+                else:
+                    in_code = True
+                continue
+            if in_code:
+                code_lines.append(line)
+                if len(code_lines) >= 80:
+                    flush_code()
+                continue
+            stripped = line.strip()
+            if not stripped:
+                story.append(Spacer(1, 4))
+                continue
+            if stripped.startswith("#"):
+                level = len(stripped) - len(stripped.lstrip("#"))
+                content = stripped[level:].strip() or stripped
+                story.append(Paragraph(html_escape(content), h1 if level <= 1 else h2))
+            else:
+                story.append(Paragraph(html_escape(stripped), body))
+        flush_code()
+        doc = SimpleDocTemplate(out, pagesize=A4, leftMargin=18*mm, rightMargin=18*mm, topMargin=18*mm, bottomMargin=18*mm)
+        doc.build(story)
+        return {"ok": True, "path": out, "name": os.path.basename(out), "download_url": _download_url_for_file(out), "inline_url": _download_url_for_file(out, inline=True)}
+    except Exception as e:
+        return {"ok": False, "error": "export pdf failed: " + str(e)[:300]}
 
 # ── doctor --json:取 MCP server 健康 + skills 目录(带 3s 缓存)──
 MCP_FILE = os.path.expanduser("~/.codewhale/mcp.json")
@@ -929,6 +2993,24 @@ def list_skills():   # 扫各 skills 目录下含 SKILL.md 的子目录
                                    "has_templates": os.path.isdir(os.path.join(sub, "templates"))}
         except Exception:
             pass
+    for pid, display, root in _plugin_skill_roots():
+        try:
+            if os.path.isfile(os.path.join(root, "SKILL.md")):
+                item = _skill_item_from_dir(root)
+                entry = item.get("name") or os.path.basename(root)
+                name = f"{pid}:{entry}"
+                seen[name] = {"name": name, "path": root, "source": "plugin:" + display,
+                              "plugin": pid, "has_templates": os.path.isdir(os.path.join(root, "templates"))}
+                continue
+            for entry in sorted(os.listdir(root)):
+                sub = os.path.join(root, entry)
+                md = os.path.join(sub, "SKILL.md")
+                if os.path.isdir(sub) and os.path.isfile(md):
+                    name = f"{pid}:{entry}"
+                    seen[name] = {"name": name, "path": sub, "source": "plugin:" + display,
+                                  "plugin": pid, "has_templates": os.path.isdir(os.path.join(sub, "templates"))}
+        except Exception:
+            pass
     return sorted(seen.values(), key=lambda x: x["name"])
 def read_skill(path):   # 安全读 <skill dir>/SKILL.md
     rp = os.path.realpath(path)
@@ -936,7 +3018,8 @@ def read_skill(path):   # 安全读 <skill dir>/SKILL.md
     for info in (doctor().get("skills", {}) or {}).values():
         if isinstance(info, dict) and info.get("present") and info.get("path"):
             roots.append(os.path.realpath(info["path"]))
-    if not any(os.path.dirname(rp) == root for root in roots):
+    roots.extend(root for _, _, root in _plugin_skill_roots())
+    if not any(rp == root or os.path.dirname(rp) == root for root in roots):
         return {"error": "path not in registered skills dirs"}
     md = os.path.join(rp, "SKILL.md")
     try:
@@ -967,9 +3050,16 @@ def provider_key_status():   # 哪些 provider 已有凭证(含 OAuth)
         keyed["volcengine"] = True
     if _provider_key("longcat"):
         keyed["longcat"] = True
+    if _provider_key("qwen"):
+        keyed["qwen"] = True
     return keyed
 def _restart_appserver():
     _run(["/bin/launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.codewhale.appserver"], timeout=30)
+def _restart_litellm():
+    try:
+        _run(["/bin/launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.codewhale.litellm"], timeout=30)
+    except Exception:
+        pass
 def _appserver_healthy(tries=18, delay=0.6):
     for _ in range(tries):
         try:
@@ -1002,23 +3092,29 @@ def _set_custom_api_key(key):
             lines[ki] = newln
         else:
             lines.insert(start + 1, newln)
-    _atomic_write(CFG, "\n".join(lines), secret=True)   # 含 api_key → tmp 先 0600
+    s = "\n".join(lines)
+    # CodeWhale v0.9 requires custom endpoints to declare their protocol kind;
+    # without this, thread creation is rejected even when base_url/key/model are valid.
+    s = _toml_set_table_values(s, "providers.custom", {"kind": "openai-compatible"})
+    _atomic_write(CFG, s, secret=True)   # 含 api_key → tmp 先 0600
 
 def _set_provider_table_values(prov, values):
     prov = (prov or "").strip()
     if not re.match(r'^[a-zA-Z0-9_-]+$', prov):
         raise ValueError("非法 provider")
-    clean = {}
+    clean, raw = {}, {}
     for key, value in values.items():
         if not re.match(r'^[a-zA-Z0-9_-]+$', key or ""):
             raise ValueError("非法配置键")
         if isinstance(value, int):
             clean[key] = str(value)
+            raw[key] = value
             continue
         value = (value or "").strip()
         if not value or '"' in value or "\n" in value or "\\" in value:
             raise ValueError(f"{key} 含非法字符")
         clean[key] = f'"{value}"'
+        raw[key] = value
     lines = open(CFG, encoding="utf-8").read().split("\n")
     header = f"[providers.{prov}]"
     start = next((i for i, l in enumerate(lines) if l.strip() == header), None)
@@ -1043,6 +3139,7 @@ def _set_provider_table_values(prov, values):
             insert_at += 1
             end += 1
     _atomic_write(CFG, "\n".join(lines), secret=True)
+    _save_key_mirror(prov, raw)   # 镜像一份:CLI 重写抹掉该段后 _load_config 会自动恢复
 
 def _set_root_config_values(values):
     clean = {}
@@ -1116,6 +3213,27 @@ def set_model(provider, model, api_key):
             return {"error": "写入美团 LongCat 配置失败: " + str(e)[:150]}
         return {"ok": True, "provider": "longcat", "model": model,
                 "newchatCapable": True, "restarted": False, "note": "LongCat key 已保存"}
+    if provider == "qwen":
+        model = model if model and model != "auto" else _QWEN_DEFAULT_MODEL
+        try:
+            values = {
+                "kind": "openai-compatible",
+                "base_url": _QWEN_BASE_URL,
+                "model": model,
+            }
+            if api_key:
+                values["api_key"] = api_key
+            elif not _provider_key("qwen"):
+                return {"error": "千问 API key 未配置,请先在模型面板保存 DashScope/百炼 key"}
+            _set_provider_table_values("qwen", values)
+            _set_model_pref("qwen", model)
+            _cmp_reset("qwen")
+            if api_key:
+                _restart_litellm()
+        except Exception as e:
+            return {"error": "写入千问配置失败: " + str(e)[:150]}
+        return {"ok": True, "provider": "qwen", "model": model,
+                "newchatCapable": True, "restarted": False, "note": "千问 key 已保存"}
     prev_p = _cfg_get("provider") or "deepseek"          # 记下当前可用配置,失败回退用
     prev_m = _cfg_get("default_text_model") or "deepseek-v4-pro"
     if api_key:
@@ -1150,7 +3268,9 @@ def set_model(provider, model, api_key):
 
 # ── 对比模式后端:每个 provider 一个独立 app-server(派生配置设对 provider+model,不同端口,懒启动)──
 CMP_DIR = os.path.expanduser("~/.codewhale-gui/cmp")
+LITELLM_ROUTING_FILE = os.path.expanduser("~/.codewhale-gui/litellm_routing.json")
 CMP_PORTS = {}            # provider -> 已分配端口
+CMP_PROCS = {}            # provider -> subprocess.Popen;用于发现已退出/半死的 provider 后端
 _cmp_lock = threading.Lock()
 _cmp_launching = {}       # provider -> True(正在启动,避免重复 Popen 同端口)
 _PORT_UP = {}             # port -> 过期时间戳(缓存"活着",省去每次请求都探活的 HTTP 往返)
@@ -1164,13 +3284,22 @@ _VOLCENGINE_DEFAULT_MODEL = "doubao-seed-2-1-pro-260628"
 _LONGCAT_BASE_URL = "https://api.longcat.chat/openai"
 _LONGCAT_DEFAULT_MODEL = "LongCat-2.0"
 _LONGCAT_CONTEXT_WINDOW = 1048576
-_CMP_PIN_MODEL = {"zai": "GLM-5.2", "custom": "hy3-preview", "volcengine": _VOLCENGINE_DEFAULT_MODEL, "longcat": _LONGCAT_DEFAULT_MODEL}
+_QWEN_BASE_URL = "https://ws-zazex2z3400vhsxs.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+_QWEN_DEFAULT_MODEL = "qwen3.7-max-2026-06-08"
+_CMP_PIN_MODEL = {"zai": "GLM-5.2", "custom": "hy3-preview", "volcengine": _VOLCENGINE_DEFAULT_MODEL, "longcat": _LONGCAT_DEFAULT_MODEL, "qwen": _QWEN_DEFAULT_MODEL}
 # 真正生效的是「建线程时把 model 钉到 thread 级」——default_text_model="auto" 的自动路由会按 prompt 乱选模型、
 # 无视 provider 与 [providers].model;只有 thread.model 是具体 id 才压得住。建会话/对比建线程时注入这个。
 # claude-code 必须钉 thread.model="sonnet" 做**确定性路由**:default_text_model="auto" 会让 CodeWhale 逐轮自动路由、
 # 时不时把 claude 栏答成 deepseek。"sonnet" 是 claude-code 已注册的合法 wire model(钉它不会 400;钉 "opus" 这种未注册名才会被 deepseek 校验拒)。
 # 它只是"路由键",真正传给 `claude -p` 的模型由 _CLAUDE_CODE_MODEL 经 env 覆盖(见下)——所以钉 sonnet 路由、实际跑 opus 不矛盾。
-_CMP_FORCE_MODEL = {"deepseek": "deepseek-v4-pro", "zai": "GLM-5.2", "openai-codex": "gpt-5.5", "claude-code": "sonnet", "moonshot": "kimi-for-coding", "custom": "hy3-preview", "volcengine": _VOLCENGINE_DEFAULT_MODEL, "longcat": _LONGCAT_DEFAULT_MODEL}   # kimi-for-coding = Kimi Code 平台唯一/最新编码模型;custom 槽=腾讯混元(TokenHub OpenAI 兼容);volcengine=普通 Ark API 豆包模型;longcat=美团 LongCat OpenAI 兼容模型
+_CMP_FORCE_MODEL = {"deepseek": "deepseek-v4-pro", "zai": "GLM-5.2", "openai-codex": "gpt-5.5", "claude-code": "sonnet", "moonshot": "k3", "custom": "hy3-preview", "volcengine": _VOLCENGINE_DEFAULT_MODEL, "longcat": _LONGCAT_DEFAULT_MODEL, "qwen": _QWEN_DEFAULT_MODEL}   # k3 = Kimi Code 订阅 API 的 K3 模型;custom 槽=腾讯混元(TokenHub OpenAI 兼容);volcengine=普通 Ark API 豆包模型;longcat=美团 LongCat OpenAI 兼容模型;qwen=阿里云百炼千问 OpenAI 兼容模型
+_LITELLM_COMPARE_ALIASES = {
+    "zai": "glm",
+    "moonshot": "kimi",
+    "volcengine": "doubao",
+    "longcat": "longcat",
+    "qwen": "qwen",
+}
 _CLAUDE_CODE_MODEL = "opus"   # claude 订阅列实际调用的模型(显式钉 Opus 4.8;也可填 opus/sonnet/haiku 别名)。绕开注册表直传官方 CLI
 # claude -p 委派的模型常因训练截止误报旧版本(实测 claude-opus-4-8 自报 "Opus 4.6" 甚至否认 4.8 存在),
 # 注入一句权威身份纠正它。切模型时**同时**改这两行保持一致。
@@ -1201,6 +3330,184 @@ def _model_pref(prov):                                                # 用户�
     return _CLAUDE_CODE_MODEL if prov == "claude-code" else _CMP_FORCE_MODEL.get(prov)
 def _thread_model(prov):                                              # 建 thread 钉的"路由模型":claude-code 永远 sonnet(合法路由键),其它=所选模型
     return "sonnet" if prov == "claude-code" else _model_pref(prov)
+_PROVIDER_MODELS_CACHE = {}
+def _provider_model_bases(prov):
+    cfg = _provider_cfg(prov)
+    base = (cfg.get("base_url") or "").strip().rstrip("/")
+    defaults = {
+        "deepseek": "https://api.deepseek.com/v1",
+        "zai": "https://api.z.ai/api/paas/v4",
+        "moonshot": "https://api.kimi.com/coding/v1",
+        "custom": "https://tokenhub.tencentmaas.com/v1",
+        "volcengine": _VOLCENGINE_BASE_URL,
+        "longcat": _LONGCAT_BASE_URL,
+        "qwen": _QWEN_BASE_URL,
+    }
+    bases = [base or defaults.get(prov, "")]
+    if prov == "moonshot":
+        # Kimi Code key 只认 coding/v1；Moonshot 普通平台 key 通常认 moonshot.ai/v1。
+        # 逐个尝试,谁能返回 /models 就以谁为准。
+        bases += ["https://api.kimi.com/coding/v1", "https://api.moonshot.ai/v1", "https://api.moonshot.cn/v1"]
+    return list(dict.fromkeys(x.rstrip("/") for x in bases if x))
+def _normalize_provider_model_item(item):
+    if isinstance(item, str):
+        mid = item.strip()
+        return {"id": mid, "name": mid} if mid else None
+    if not isinstance(item, dict):
+        return None
+    mid = str(item.get("id") or item.get("model") or item.get("name") or "").strip()
+    if not mid:
+        return None
+    name = str(item.get("display_name") or item.get("label") or item.get("name") or mid).strip() or mid
+    return {"id": mid, "name": name, "owned_by": item.get("owned_by") or "", "created": item.get("created") or ""}
+def _provider_models(prov, force=False):
+    prov = re.sub(r'[^A-Za-z0-9._-]', '', str(prov or ""))
+    now = time.time()
+    ck = prov
+    if not force:
+        cached = _PROVIDER_MODELS_CACHE.get(ck)
+        if cached and now - cached.get("t", 0) < 600:
+            return dict(cached.get("data") or {})
+    if prov in ("openai-codex", "claude-code"):
+        return {"provider": prov, "ok": False, "reason": "oauth_or_cli", "models": []}
+    key = ((_provider_cfg(prov).get("api_key") if isinstance(_provider_cfg(prov), dict) else "") or _provider_key(prov) or "").strip()
+    if prov == "deepseek":
+        key = deepseek_key() or key
+    if not key:
+        return {"provider": prov, "ok": False, "reason": "no_key", "models": []}
+    last = ""
+    headers = {"Authorization": "Bearer " + key}
+    for base in _provider_model_bases(prov):
+        try:
+            data = _json_get(base + "/models", headers, 8)
+            raw = data.get("data") or data.get("models") or []
+            if isinstance(raw, dict):
+                raw = raw.get("data") or raw.get("models") or []
+            models = []
+            if isinstance(raw, list):
+                seen = set()
+                for item in raw:
+                    m = _normalize_provider_model_item(item)
+                    if not m or m["id"] in seen:
+                        continue
+                    seen.add(m["id"])
+                    models.append(m)
+            out = {"provider": prov, "ok": True, "source": base + "/models", "models": models, "count": len(models)}
+            _PROVIDER_MODELS_CACHE[ck] = {"t": now, "data": out}
+            return out
+        except Exception as e:
+            last = str(e)[:160]
+    out = {"provider": prov, "ok": False, "error": last or "models endpoint unavailable", "models": []}
+    _PROVIDER_MODELS_CACHE[ck] = {"t": now, "data": out}
+    return out
+def provider_models(providers=None, force=False):
+    ids = providers or ["deepseek", "zai", "moonshot", "custom", "volcengine", "longcat", "qwen"]
+    items = {}
+    threads = []
+    lock = threading.Lock()
+    def run(p):
+        d = _provider_models(p, force=force)
+        with lock:
+            items[p] = d
+    for p in ids:
+        t = threading.Thread(target=run, args=(p,), daemon=True)
+        t.start()
+        threads.append(t)
+    deadline = time.time() + 9
+    for t in threads:
+        t.join(max(0.05, deadline - time.time()))
+    for p in ids:
+        items.setdefault(p, {"provider": p, "ok": False, "error": "timeout", "models": []})
+    return {"items": items, "ts": int(time.time() * 1000)}
+def _litellm_routing():
+    d = {"compare": False, "harness": False, "single": False}
+    try:
+        cur = json.load(open(LITELLM_ROUTING_FILE))
+        if isinstance(cur, dict):
+            for k in d:
+                d[k] = bool(cur.get(k))
+    except Exception:
+        pass
+    return d
+def _set_litellm_routing(scope, enabled):
+    if scope not in ("compare", "harness", "single"):
+        raise ValueError("非法 LiteLLM routing scope")
+    d = _litellm_routing()
+    d[scope] = bool(enabled)
+    _atomic_write_json(LITELLM_ROUTING_FILE, d, secret=True)
+    return d
+def _litellm_route_enabled(scope):
+    return bool(_litellm_routing().get(scope))
+def _litellm_compare_alias(prov):
+    if not _litellm_route_enabled("compare"):
+        return ""
+    if (prov or "") == "qwen":
+        return "qwen-max" if "max" in (_model_pref("qwen") or "").lower() else "qwen"
+    return _LITELLM_COMPARE_ALIASES.get(prov or "", "")
+def _litellm_openai_base_and_key():
+    url, key, _installed = _litellm_config()
+    if not key:
+        raise RuntimeError("LiteLLM master key 未配置")
+    base = url.rstrip("/")
+    if not base.endswith("/v1"):
+        base += "/v1"
+    return base, key
+def _cmp_runtime_provider(prov):
+    if _litellm_compare_alias(prov):
+        return "openai"
+    return "openai" if prov in ("longcat", "qwen") else prov
+def _cmp_default_text_model(prov):
+    if (prov or "") == "qwen" and _litellm_compare_alias(prov):
+        return "auto"
+    return _litellm_compare_alias(prov) or (_model_pref(prov) if prov in ("longcat", "qwen") else _cmp_model(prov))
+def _cmp_thread_model(prov):
+    return _litellm_compare_alias(prov) or _thread_model(prov)
+def litellm_routing_status():
+    routing = _litellm_routing()
+    return {
+        "routing": routing,
+        "compare_enabled": bool(routing.get("compare")),
+        "compare_aliases": dict(_LITELLM_COMPARE_ALIASES),
+        "proxy": _litellm_proxy_summary("compare"),
+    }
+def _qwen_model_for_chat():
+    cfg_model = ((_provider_cfg("qwen") or {}).get("model") or "").strip()
+    model = (_model_pref("qwen") or cfg_model or _QWEN_DEFAULT_MODEL).strip()
+    if model in ("qwen-max", "qwen3.7-max"):
+        return _QWEN_DEFAULT_MODEL
+    return model
+
+def _qwen_chat_once(provider, prompt):
+    provider = re.sub(r'[^A-Za-z0-9_-]', '', str(provider or ""))
+    if provider != "qwen":
+        raise ValueError("当前轻量直连只开放 qwen")
+    qc = _provider_cfg("qwen")
+    key = (qc.get("api_key") or _provider_key("qwen") or "").strip()
+    base = (qc.get("base_url") or _QWEN_BASE_URL).rstrip("/")
+    if not key:
+        raise RuntimeError("千问 API key 未配置")
+    model = _qwen_model_for_chat()
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": str(prompt or "")}],
+        "temperature": 0.2,
+        "max_tokens": 3000,
+        "stream": False,
+    }
+    def call(m):
+        body = json.dumps({**payload, "model": m}, ensure_ascii=False).encode()
+        req = urllib.request.Request(base + "/chat/completions",
+                                     data=body, method="POST",
+                                     headers={"Authorization": "Bearer " + key,
+                                              "Content-Type": "application/json"})
+        data = json.load(_LOCAL.open(req, timeout=120))
+        msg = ((data.get("choices") or [{}])[0].get("message") or {})
+        text = msg.get("content") or msg.get("reasoning_content") or msg.get("reasoning") or data.get("text") or ""
+        return str(text or "").strip(), m
+    text, used = call(model)
+    if not text:
+        raise RuntimeError("千问返回为空")
+    return {"ok": True, "provider": provider, "model": used, "text": text}
 def _effort_pref(prov):                                               # 任意 provider 的推理 effort(low/medium/high/xhigh/max);空=不传
     e = (_model_prefs().get(prov + "__effort") or "").strip().lower()
     return e if e in ("low", "medium", "high", "xhigh", "max") else ""
@@ -1222,9 +3529,10 @@ _CW_PATCHED_TUI = _first_exist(
     os.path.expanduser("~/codewhale-src/target/release/codewhale-tui"),
 )
 def _cw_binary(prov):
-    # 补丁二进制是 v0.8.65 全功能(claude-code + OCR 中文增强);对 deepseek/zai/openai-codex 行为同 stock。
-    # 所有对比后端都用它 → 各列都吃到 image_ocr 的中文/小字增强(不止 claude 列)。缺失时回退官方。
-    if _CW_PATCHED:
+    # claude-code 是 GUI 的订阅桥接扩展,目前只有补丁二进制认识。普通 provider 必须使用
+    # 官方 CODEWHALE,这样主窗口和所有对比列会一起升级到 v0.9+。官方 v0.9 已内置
+    # macOS Vision/Tesseract OCR,不再需要为了 OCR 把其它列锁死在 v0.8 补丁上。
+    if prov == "claude-code" and _CW_PATCHED:
         return _CW_PATCHED
     return CODEWHALE
 # ── claude-code 补丁二进制 自动下载(lazy-fetch)──
@@ -1376,8 +3684,40 @@ def _refresh_native_app():
 # 桥接缺失 → 后台自动跑安装器(felix:"升级就把缺的都装上")。没放密钥则只留提示,绝不空跑。
 _HARNESS_DEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), "harness")
 _HARNESS_SHA_MARKER = os.path.expanduser("~/.codewhale-gui/.harnesssha")
+_HARNESS_VERSION_MARKER = os.path.expanduser("~/.codewhale-gui/.harnessversion")
 _HARNESS_ENVF = os.path.expanduser("~/agent-harnesses/harness.env")
 _harness_refresh_lock = threading.Lock()
+def _harness_asset_version(man, h):
+    return str((h or {}).get("version") or (man or {}).get("version") or "").strip()
+def _harness_installed_version():
+    for p in (os.path.join(_HARNESS_DEST, "VERSION"), _HARNESS_VERSION_MARKER):
+        try:
+            v = open(p).read().strip()
+            if v:
+                return v
+        except Exception:
+            pass
+    return ""
+def _assert_harness_upgrade(new_version):
+    if not new_version:
+        raise ValueError("发布清单缺少 harness 版本")
+    new_tuple = _strict_vtuple(new_version)
+    if new_tuple is None:
+        raise ValueError(f"发布清单 harness 版本无法解析:{new_version};拒绝自动更新")
+    cur = _harness_installed_version()
+    cur_tuple = _strict_vtuple(cur) if cur else None
+    if cur and cur_tuple is None:
+        raise ValueError(f"本地 harness 版本标记无法解析:{cur};拒绝自动更新,请手动处理")
+    if cur_tuple and new_tuple <= cur_tuple:
+        raise ValueError(f"已安装 harness {cur},拒绝安装 {new_version}(新版本必须高于已安装版本)")
+def _write_harness_markers(sha, version):
+    _atomic_write(_HARNESS_SHA_MARKER, str(sha or ""))
+    if version:
+        _atomic_write(_HARNESS_VERSION_MARKER, str(version))
+        try:
+            _atomic_write(os.path.join(_HARNESS_DEST, "VERSION"), str(version))
+        except Exception:
+            pass
 def _validate_harness_tar_members(members):
     for mem in members:
         name = mem.name.lstrip("./")
@@ -1411,13 +3751,14 @@ def _refresh_research_harness():
     if not _harness_refresh_lock.acquire(blocking=False):
         return
     try:
-        man = _get_manifest(cfg)
-        h = man.get("harness")
+        cfg, man, h = _harness_manifest(cfg)
+        version = _harness_asset_version(man, h)
         if h and h.get("name") and h.get("sha256"):
             sha = h["sha256"]
             try: marker = open(_HARNESS_SHA_MARKER).read().strip()
             except Exception: marker = ""
             if not (marker == sha and os.path.isdir(_HARNESS_DEST)):
+                _assert_harness_upgrade(version)
                 tmpf = os.path.join(tempfile.gettempdir(), "cw-harness.tar.gz")
                 _download_verified(_release_url(cfg, h["name"]), tmpf, sha, int(h.get("size") or 0))
                 tmpd = tempfile.mkdtemp(prefix="cw-harness-")
@@ -1431,7 +3772,7 @@ def _refresh_research_harness():
                     if os.path.exists(_HARNESS_DEST): shutil.move(_HARNESS_DEST, bak)
                     try:
                         shutil.move(newh, _HARNESS_DEST)
-                        open(_HARNESS_SHA_MARKER, "w").write(sha)
+                        _write_harness_markers(sha, version)
                         shutil.rmtree(bak, ignore_errors=True)
                         print("[harness] 安装器已更新 → " + _HARNESS_DEST, flush=True)
                     except Exception:
@@ -1441,13 +3782,253 @@ def _refresh_research_harness():
                     shutil.rmtree(tmpd, ignore_errors=True)
                     try: os.remove(tmpf)
                     except Exception: pass
+            elif not _harness_installed_version():
+                _write_harness_markers(sha, version)
         _maybe_autoinstall_harness()   # 与 SHA 无关也要跑:用户后放 harness.env 重启即触发安装
     except Exception as e:
         print(f"[harness] 刷新失败: {e}", flush=True)
     finally:
         _harness_refresh_lock.release()
+
+def _harness_marker():
+    try:
+        return open(_HARNESS_SHA_MARKER).read().strip()
+    except Exception:
+        return ""
+
+def _harness_manifest(cfg=None):
+    cfg = cfg or _asset_update_cfg()
+    if not (cfg.get("repo") or cfg.get("base_url")):
+        raise ValueError("未配置 GitHub release 更新源")
+    if not _HAVE_CRYPTO:
+        raise RuntimeError("缺 cryptography,无法验签 —— 拒绝更新")
+    man = _get_manifest(cfg)
+    h = man.get("harness")
+    if not h or not h.get("name") or not h.get("sha256"):
+        raise ValueError("发布清单里没有 harness 资产")
+    if not _harness_asset_version(man, h):
+        raise ValueError("发布清单缺少 harness 版本")
+    return cfg, man, h
+
+def harness_update_check():
+    cur = _harness_marker()
+    try:
+        cfg, man, h = _harness_manifest()
+        latest = str(h.get("sha256") or "")
+        installed_version = _harness_installed_version()
+        latest_version = _harness_asset_version(man, h)
+        installed_tuple = _strict_vtuple(installed_version) if installed_version else None
+        latest_tuple = _strict_vtuple(latest_version)
+        invalid_version = bool((installed_version and installed_tuple is None) or latest_tuple is None)
+        blocked = bool(invalid_version or (installed_tuple and latest_tuple and latest_tuple <= installed_tuple))
+        return {
+            "enabled": True,
+            "current": cur[:12] if cur else "",
+            "latest": latest[:12],
+            "available": bool(latest and latest != cur and not blocked),
+            "asset": h.get("name"),
+            "version": latest_version,
+            "current_version": installed_version,
+            "downgrade_blocked": blocked,
+            "version_error": ("harness 版本标记无法解析,拒绝自动更新" if invalid_version else ""),
+            "repo": cfg.get("repo") or cfg.get("base_url") or "",
+            "installed": os.path.isdir(_HARNESS_DEST),
+            "env": os.path.exists(_HARNESS_ENVF),
+        }
+    except Exception as e:
+        return {"enabled": False, "current": cur[:12] if cur else "", "error": str(e)[:180],
+                "installed": os.path.isdir(_HARNESS_DEST), "env": os.path.exists(_HARNESS_ENVF)}
+
+def _apply_harness_asset(cfg, h, version=""):
+    _assert_harness_upgrade(version)
+    sha = str(h["sha256"])
+    tmpf = os.path.join(tempfile.gettempdir(), "cw-harness.tar.gz")
+    _download_verified(_release_url(cfg, h["name"]), tmpf, sha, int(h.get("size") or 0))
+    tmpd = tempfile.mkdtemp(prefix="cw-harness-")
+    try:
+        with tarfile.open(tmpf, "r:gz") as tf:
+            _validate_harness_tar_members(tf.getmembers())
+            tf.extractall(tmpd)
+        newh = os.path.join(tmpd, "harness")
+        if not os.path.isdir(newh):
+            raise ValueError("包内无 harness/")
+        bak = _HARNESS_DEST + ".bak"
+        shutil.rmtree(bak, ignore_errors=True)
+        if os.path.exists(_HARNESS_DEST):
+            shutil.move(_HARNESS_DEST, bak)
+        try:
+            shutil.move(newh, _HARNESS_DEST)
+            _write_harness_markers(sha, version)
+            shutil.rmtree(bak, ignore_errors=True)
+            return {"sha": sha, "asset": h.get("name"), "version": version}
+        except Exception:
+            if os.path.exists(bak) and not os.path.exists(_HARNESS_DEST):
+                shutil.move(bak, _HARNESS_DEST)
+            raise
+    finally:
+        shutil.rmtree(tmpd, ignore_errors=True)
+        try:
+            os.remove(tmpf)
+        except Exception:
+            pass
+
+def _run_harness_installer():
+    inst = os.path.join(_HARNESS_DEST, "install_harnesses.sh")
+    if not os.path.exists(inst):
+        return {"ran": False, "ok": False, "warning": "缺 harness/install_harnesses.sh"}
+    if not os.path.exists(_HARNESS_ENVF):
+        return {"ran": False, "ok": True, "warning": "缺 ~/agent-harnesses/harness.env,已更新安装器;补齐密钥后重启或手动运行安装器"}
+    code, out = _run(["/bin/bash", inst], timeout=900)
+    return {"ran": True, "ok": code == 0, "output": out[-3000:]}
+
+def harness_update_apply():
+    if not _harness_refresh_lock.acquire(blocking=False):
+        return {"running": True}
+    try:
+        cfg, man, h = _harness_manifest()
+        version = _harness_asset_version(man, h)
+        res = _apply_harness_asset(cfg, h, version)
+        inst = _run_harness_installer()
+        ok = bool(inst.get("ok", True))
+        return {"ok": ok, "version": version, "current": res.get("sha", "")[:12],
+                "installer": inst, "output": inst.get("output") or inst.get("warning") or ""}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:220]}
+    finally:
+        _harness_refresh_lock.release()
+
+def _git_run(cwd, args, timeout=80):
+    try:
+        p = subprocess.run(["git"] + list(args), cwd=cwd, capture_output=True, text=True,
+                           timeout=timeout, env={**_proxy_env(), **os.environ, "PATH": _PATH})
+        return p.returncode, (p.stdout or "") + (p.stderr or "")
+    except Exception as e:
+        return -1, str(e)
+
+def _git_one(cwd, args, default=""):
+    code, out = _git_run(cwd, args, timeout=30)
+    return out.strip() if code == 0 else default
+
+def _installed_plugin_map():
+    return {p.get("id"): p for p in read_codex_plugins() if p.get("id")}
+def _merge_plugin_source(pl):
+    src = _plugin_source_for_id(pl.get("id") or "")
+    out = {**src, **{k: v for k, v in (pl or {}).items() if v or k in ("enabled", "skill_count")}}
+    out["repo"] = out.get("repo") or out.get("repository") or out.get("source_url")
+    out["source_url"] = out.get("source_url") or out.get("repo")
+    return out
+def _plugin_update_item(pl, do_fetch=True):
+    pl = _merge_plugin_source(pl)
+    root = pl.get("path") or ""
+    repo = pl.get("repo") or pl.get("source_url")
+    pl.setdefault("installed", bool(root and os.path.exists(root)))
+    pl.setdefault("source_kind", "github" if repo else ("local" if root else ""))
+    if not root or not os.path.isdir(root):
+        installable = bool(repo or root)
+        return {**pl, "installed": False, "git": False, "available": installable,
+                "installable": installable, "status": "not_installed",
+                "error": "" if installable else "插件未安装且缺少 GitHub/本地来源"}
+    if _git_run(root, ["rev-parse", "--is-inside-work-tree"], timeout=10)[0] != 0:
+        repairable = bool(repo)
+        installable = bool(repo or pl.get("path"))
+        msg = "不是 git 仓库"
+        if repairable:
+            msg = "本地目录不是 git 仓库，可从 GitHub 重新安装修复"
+        elif not repo:
+            msg = "本地插件未配置 GitHub 来源，只能本地安装，无法在线更新"
+        return {**pl, "installed": True, "git": False, "available": repairable,
+                "repairable": repairable, "installable": installable, "status": "local",
+                "error": msg}
+    fetch_error = ""
+    if do_fetch:
+        code, out = _git_run(root, ["fetch", "--tags", "--prune", "origin"], timeout=90)
+        if code != 0:
+            fetch_error = out[-1200:]
+    branch = _git_one(root, ["rev-parse", "--abbrev-ref", "HEAD"], "")
+    upstream = _git_one(root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], "")
+    local = _git_one(root, ["rev-parse", "--short", "HEAD"], "")
+    remote = _git_one(root, ["rev-parse", "--short", "@{u}"], "") if upstream else ""
+    cur = _git_one(root, ["describe", "--tags", "--always", "--dirty"], local)
+    latest = _git_one(root, ["describe", "--tags", "--always", "@{u}"], remote) if upstream else remote
+    ahead = behind = 0
+    if upstream:
+        counts = _git_one(root, ["rev-list", "--left-right", "--count", "HEAD...@{u}"], "0\t0").split()
+        if len(counts) >= 2:
+            try:
+                ahead, behind = int(counts[0]), int(counts[1])
+            except Exception:
+                ahead = behind = 0
+    dirty = bool(_git_one(root, ["status", "--porcelain"], ""))
+    remote_url = _git_one(root, ["config", "--get", "remote.origin.url"], "")
+    return {**pl, "installed": True, "git": True, "remote": remote_url, "branch": branch, "upstream": upstream,
+            "current": cur, "latest": latest, "local": local, "remote_head": remote,
+            "ahead": ahead, "behind": behind, "dirty": dirty, "available": behind > 0,
+            "installable": False, "repairable": False, "status": "git", "error": fetch_error}
+
+def plugin_updates_check():
+    installed = _installed_plugin_map()
+    rows = []
+    seen = set()
+    for pl in installed.values():
+        rows.append(_plugin_update_item(pl, do_fetch=True))
+        seen.add(pl.get("id"))
+    for src in plugin_source_catalog():
+        if src.get("id") in seen:
+            continue
+        rows.append(_plugin_update_item({**src, "installed": False}, do_fetch=False))
+    return rows
+
+def plugin_update_apply(pid):
+    pid = _plugin_id(pid)
+    installed = _installed_plugin_map()
+    pl = installed.get(pid) or _plugin_source_for_id(pid)
+    if not pl:
+        return {"ok": False, "error": "插件不存在且没有配置 GitHub/本地来源"}
+    root = pl.get("path") or ""
+    item = _plugin_update_item(pl, do_fetch=True)
+    if not item.get("git"):
+        if item.get("installable") or item.get("repairable"):
+            out = _install_codex_plugin_from_source(item)
+            if out.get("ok"):
+                fresh = _installed_plugin_map().get(out.get("id") or pid) or {"id": out.get("id") or pid}
+                return {"ok": True, "output": "插件已安装/修复", "plugin": _plugin_update_item(fresh, do_fetch=False)}
+            return {"ok": False, "error": out.get("error") or item.get("error") or "安装失败", "plugin": item}
+        return {"ok": False, "error": item.get("error") or "不是 git 插件", "plugin": item}
+    if item.get("dirty"):
+        return {"ok": False, "error": "插件目录有本地修改,拒绝自动更新", "plugin": item}
+    code, out = _git_run(root, ["pull", "--ff-only", "--tags"], timeout=180)
+    if code != 0:
+        return {"ok": False, "error": out[-600:]}
+    return {"ok": True, "output": out[-1200:], "plugin": _plugin_update_item(pl, do_fetch=False)}
 def _cmp_safe(prov):
     return re.sub(r'[^a-zA-Z0-9_-]', '_', prov)
+def _cmp_cfg_path(prov):
+    return os.path.join(CMP_DIR, _cmp_safe(prov) + ".toml")
+_CMP_LOG_MAX = 8 * 1024 * 1024
+_CMP_LOG_KEEP = 2 * 1024 * 1024
+def _rotate_cmp_log(path):
+    tmp = path + ".rotate"
+    try:
+        if os.path.getsize(path) <= _CMP_LOG_MAX:
+            return
+        with open(path, "rb") as src:
+            src.seek(0, os.SEEK_END)
+            src.seek(max(0, src.tell() - _CMP_LOG_KEEP))
+            tail = src.read()
+        with open(tmp, "wb") as dst:
+            dst.write(tail)
+            dst.flush()
+            os.fsync(dst.fileno())
+        os.replace(tmp, path)
+    except FileNotFoundError:
+        return
+    except OSError as e:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        print(f"[cmp] 日志轮转跳过 {path}: {e}", flush=True)
 def _kill_gracefully(pid, timeout=3):
     """先 SIGTERM 给进程清理机会(存状态/关文件/放锁),最多等 timeout 秒仍在则 SIGKILL。"""
     try:
@@ -1466,28 +4047,96 @@ def _kill_gracefully(pid, timeout=3):
             return
     try: os.kill(pid, signal.SIGKILL)
     except OSError: pass
+def _cmp_backend_pids(match=""):
+    try:
+        out = subprocess.run(["/bin/ps", "-axo", "pid=,command="],
+                             capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return []
+    pids = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid, cmd = parts
+        if pid == str(os.getpid()) or CMP_DIR not in cmd:
+            continue
+        if match and match not in cmd:
+            continue
+        if "--config" in cmd or "codewhale-tui" in cmd or "app-server" in cmd:
+            pids.append(pid)
+    return list(dict.fromkeys(pids))
+def _cmp_port_pids(port, match=""):
+    try:
+        out = subprocess.run(["lsof", "-nP", f"-iTCP:{int(port)}", "-sTCP:LISTEN", "-F", "pc"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return []
+    pids, cur = [], None
+    for line in out.splitlines():
+        if line.startswith("p"):
+            cur = line[1:].strip()
+        elif line.startswith("c") and cur:
+            cmd = line[1:].strip()
+            if cur == str(os.getpid()):
+                continue
+            if match:
+                try:
+                    full = subprocess.run(["/bin/ps", "-p", cur, "-o", "command="],
+                                          capture_output=True, text=True, timeout=3).stdout
+                    cmd = full or cmd
+                except Exception:
+                    pass
+            if CMP_DIR in cmd and (not match or match in cmd):
+                pids.append(cur)
+            cur = None
+    return list(dict.fromkeys(pids))
+def _port_cache_drop(port):
+    with _PORT_UP_LOCK:
+        _PORT_UP.pop(port, None)
+def _kill_cmp_provider(prov, port=None, remove_cfg=False):
+    cfg_path = _cmp_cfg_path(prov)
+    pids = []
+    if port:
+        pids += _cmp_port_pids(port, cfg_path)
+        _port_cache_drop(port)
+    pids += _cmp_backend_pids(cfg_path)
+    proc = CMP_PROCS.pop(prov, None)
+    if proc and proc.poll() is None:
+        pids.append(str(proc.pid))
+    killed = 0
+    for pid in list(dict.fromkeys(pids)):
+        _kill_gracefully(pid)
+        killed += 1
+    if remove_cfg:
+        try:
+            os.remove(cfg_path)
+        except Exception:
+            pass
+    return killed
 def _cmp_reset(prov):
     # 改 provider key/model 后,杀旧 per-provider 后端并删派生配置,下次请求用新配置重起。
     with _cmp_lock:
         port = CMP_PORTS.pop(prov, None)
-    if port:
-        _PORT_UP.pop(port, None)
-        try:
-            out = subprocess.run(["lsof", "-nP", "-tiTCP:%d" % port, "-sTCP:LISTEN"],
-                                 capture_output=True, text=True, timeout=5).stdout
-            for pid in out.split():
-                _kill_gracefully(pid)   # 先 SIGTERM 给清理机会,超时才 SIGKILL
-        except Exception: pass
-    try:
-        os.remove(os.path.join(CMP_DIR, _cmp_safe(prov) + ".toml"))
-    except Exception: pass
+    _kill_cmp_provider(prov, port=port, remove_cfg=True)
 def _provider_config_error(prov):
+    if prov == "openai-codex":
+        try:
+            if not provider_key_status().get("openai-codex"):
+                return "ChatGPT OAuth 未登录或已过期:请在终端运行 codex login 重新登录 ChatGPT 订阅后重试"
+        except Exception:
+            pass
     if prov == "custom" and not _provider_key("custom"):
         return "腾讯混元 API key 未配置:点击左下「🧠 模型」→「腾讯混元」→ 粘贴 TokenHub api_key →「保存并设为新对话模型」"
     if prov == "volcengine" and not _provider_key("volcengine"):
         return "火山 Ark API key 未配置:点击左下「🧠 模型」→「火山 Ark」→ 粘贴火山 Ark API key →「切换并应用到当前对话」"
     if prov == "longcat" and not _provider_key("longcat"):
         return "美团 LongCat API key 未配置:点击左下「🧠 模型」→「美团 LongCat」→ 粘贴 LongCat API key →「切换并应用到当前对话」"
+    if prov == "qwen" and not _provider_key("qwen"):
+        return "千问 API key 未配置:点击左下「🧠 模型」→「千问 / Qwen」→ 粘贴 DashScope/百炼 API key →「切换并应用到当前对话」"
     return None
 _COMPARE_SKILL_MD = """---
 name: compare-research
@@ -1507,16 +4156,32 @@ metadata:
 1. **行情 / 财务指标 / 估值** → MCP 的 `fmp` / `yfinance`;或开了 Shell 时 `exec_shell` 跑 Python `yfinance`(`t=yf.Ticker('GLW'); t.fast_info`)。**不要** `curl` 财经网页 HTML 回来硬解析。
 2. **SEC 文件 / 内幕(Form 4)/ 8-K / 重述** → MCP 的 `sec_edgar`;或 EDGAR 全文搜索 API 拿结构化 JSON(`https://efts.sec.gov/LATEST/search-index?q=...&forms=4`,带 User-Agent),**只取目标 filing 相关段落**,绝不把整份 >100KB 原文塞进上下文。
 3. **新闻 / 事件 / 催化剂** → MCP `searxng` 或内置 `web_search`,看标题+摘要定位即可。
+4. **X/Twitter(推文/KOL/散户情绪)** → **一律走 OpenTwitter 后端**:`twitter` MCP server、`load_skill opentwitter`,或开了 Shell 时直接 curl(token 在 `~/.codewhale/mcp.json` 的 `TWITTER_TOKEN`):
+   ```bash
+   TOKEN=$(python3 -c "import re;print(re.search(r'\\"TWITTER_TOKEN\\":\\s*\\"([^\\"]+)\\"',open('$HOME/.codewhale/mcp.json').read()).group(1))")
+   curl -s -X POST "https://ai.6551.io/open/twitter_search" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"keywords":"<查询词>","maxResults":20}'   # product 可选 "Top"|"Latest"
+   ```
+   **绝不用 `site:x.com`/`site:twitter.com` 网页搜索**(搜索引擎不索引 X,永远为空),**也绝不据此在报告里写"X/Twitter 层缺失/不可用"**。服务端 `minLikes` 会静默返回空——不带它,取回后本地按 `favoriteCount` 筛。
+5. **期权链 / PCR / IV(个股与 ETF)** → **走 FutuOpenD(SSH 远端,已验证 2026-07-14)**;IBKR 账户未批准,**不要用 ibkr CLI/插件**:`ssh test@100.83.251.25`(免密),远端 python3 有 futu-api,`OpenQuoteContext(host="127.0.0.1", port=11111)`(**只用 11111 行情口,绝不碰 11112 交易网关**)→ `get_option_expiration_date(code="US.SOXX")` → `get_option_chain(...)` → `get_market_snapshot(codes)`(每批≤100),按 PUT/CALL 分组求和成交量即 PCR。嵌套引号易炸:优先"写本地脚本→scp→远端跑"。
+6. **情绪指标直连**:CNN Fear & Greed → `curl -s "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"` 带浏览器 UA 和 `Referer: https://edition.cnn.com/markets/fear-and-greed`(缺一被拦),读 `fear_and_greed.score/rating`。AAII 用 `browser-use` 读官网。**不要在报告里写"期权 PCR/Fear & Greed 未直连"——两条都已验证可直连。**
 
 ## 铁律(避免又慢又烧 token)
 - 绝不重复抓同一文档;绝不 `curl` 整页 HTML 当数据(全是 CSS/JS,解析必炸);只取回答所需的最少数据;某命令失败就换更精准的查询,别重复同一条。
 - 本机 fake-ip 下内置 `fetch_url` 会被拦 → 用 `curl` 或 `web_search`,别卡在 fetch_url。
 
+## 深度调研的证据门槛(情绪/风险/来源覆盖类报告)
+- "又快又省"适用于常规问答;**写研究报告时完整性优先**:来源覆盖表里每一层,要么给出实际取数的数字,要么写明"跑了什么命令、什么报错"。**没跑过命令就写"缺一手/未直连/未现场拉"=不合格报告**。
+- 情绪/期权/风险偏好证据一键采集(X 多查询 + Futu 期权链 PCR + CNN Fear&Greed + Stocktwits 多空比 + AAII 周度多空 + NAAIM 仓位指数,输出 JSON 证据包):
+  ```bash
+  python3 ~/.codewhale/scripts/sentiment_harvest.py SOXX --keywords "semiconductor" --bears QTRResearch
+  ```
+  情绪类任务**先跑它再分析**。X 采样下限:cashtag+关键词 × Top/Latest,并补 1-2 个空头/保守 KOL 的 fromUser,防"只采到多头"。
+
 ## 深度投研
 若是「深度分析/研究某只票/给投资建议」,先 `load_skill value-investment-master`(用户的投研方法论),按其框架拆解(基本面/估值/催化剂/风险),再结合实时数据输出。
 
 ## 输出
-先给**结论 + 关键数据(带数字)**,再给推理;对比窗口讲究并排可比,别长篇铺垫。
+除非用户明确要求其他语言,最终答案默认用简体中文。先给**结论 + 关键数据(带数字)**,再给推理;对比窗口讲究并排可比,别长篇铺垫。
 """
 def _ensure_compare_skill():
     # 让 compare-research skill 跟着 server.py 走(GUI 在线更新即带上),任何机器更新后都能 always_load 到它
@@ -1529,6 +4194,202 @@ def _ensure_compare_skill():
             open(f, "w", encoding="utf-8").write(_COMPARE_SKILL_MD)
     except Exception:
         pass
+
+_DEFAULT_OUTPUT_SKILL = "codewhale-defaults"
+_DEFAULT_OUTPUT_SKILL_MD = """---
+name: codewhale-defaults
+description: CodeWhale 全局默认输出规范。除非用户明确要求其他语言,所有普通聊天、多模型对比、插件、harness 和研究报告默认用简体中文输出。
+metadata:
+  short-description: 全局中文输出默认值
+---
+
+# CodeWhale 全局默认输出规范
+
+你在 CodeWhale 中运行。请始终遵守以下默认行为:
+
+- 面向用户的最终回复、研究报告、插件输出、harness 输出、摘要、结论、行动清单和错误解释默认使用简体中文。
+- 除非用户明确要求英文或其他语言,不要因为 skill、插件模板、网页资料、工具日志或模型默认习惯而改成英文。
+- 代码、命令、路径、文件名、API 名、库名、英文专有名词、证券代码、引用标题和必要的原文摘录可以保留原文。
+- 如果上游工具或插件产出了英文中间结果,请先理解再用中文整理给用户;不要把大段英文原样作为最终答案。
+- 写投研/研究类输出时,结论先行,关键数字和来源时间点要保留清楚。
+- 遇到普通搜索、RSS、静态 HTML 或 API 拿不到的动态网页内容时,默认把 `browser-use` 当作只读网页行动层来补证据,再回到对应业务 skill 做判断。
+- 需要 X/Twitter 内容(搜索、推文、KOL 观点、情绪样本)时,一律走 OpenTwitter 后端(`twitter` MCP server / `load_skill opentwitter` / 直接 curl `https://ai.6551.io/open/twitter_search`,token 在 `~/.codewhale/mcp.json` 的 `TWITTER_TOKEN`)。**绝不用 `site:x.com` 网页搜索(搜索引擎不索引 X,永远为空),更不许据此在报告里写"X/Twitter 数据不可用/缺失"**。期权链/PCR 走 FutuOpenD SSH(见 compare-research 第5条;IBKR 未批准不用);CNN Fear & Greed 可直连(带浏览器 UA+Referer)。情绪/期权/风险证据可一键采集:`python3 ~/.codewhale/scripts/sentiment_harvest.py <TICKER>`(X/期权PCR/F&G/Stocktwits/AAII/NAAIM 六层)。Google Trends 的 API 被 429 硬封,要用 `browser-use` 开 trends.google.com 读。
+- 生成了本地图表/图片(png/jpg/svg)要给用户看时,最终回复里直接用 `![标题](/绝对路径.png)` 内嵌——GUI 会内联渲染成图;关键数据用 markdown 表格直接放正文。**不要用"下载链接/文件名清单"代替内容展示**,文件路径只作为正文末尾的补充信息。
+"""
+_DEFAULT_BROWSER_SKILL = "browser-use"
+_DEFAULT_BROWSER_SKILL_MD = """---
+name: browser-use
+description: Default read-only browser automation for CodeWhale. Use when a task needs opening, inspecting, clicking, scrolling, searching, or extracting information from live web pages, especially dynamic JavaScript pages, Google Trends, app rankings, social/community pages, dashboards, tables, forms that do not submit data, or when static HTTP/search/API/RSS sources fail. Also use as a support layer for other skills such as stocksight when they need browser-visible evidence.
+---
+
+# Browser Use
+
+Use this skill as CodeWhale's default web action layer. Treat it as a browser assistant, not a deep research framework.
+
+## Default Role
+
+- Use browser-use to reach information that normal search, RSS, static HTML, or API calls cannot reliably fetch.
+- Keep it read-only unless the user explicitly asks for an action and the action is low-risk.
+- Prefer browser-use for dynamic pages, infinite-scroll pages, charts, app-rank pages, Google Trends, Baidu Index pages, Seeking Alpha comment pages, Reddit threads, Stocktwits-like feeds, and market dashboards.
+- Prefer ordinary search or direct HTTP for static articles, documentation, simple news lookup, or pages that render cleanly without browser interaction.
+- Use it as supporting evidence for other skills; do not let a browser trace replace reasoning, source comparison, or price validation.
+
+## Workflow
+
+1. State the browser objective in one sentence.
+   - Good: "Open Google Trends and compare AMD vs MU search interest over the past 30 days."
+   - Good: "Open Seeking Alpha pages and check whether recent comments are bullish, bearish, or blocked."
+   - Bad: "Research everything about AMD."
+
+2. Run the local bridge when shell access is available.
+
+```bash
+python3 ~/scripts/browseruse_client.py submit "<browser task>" --model deepseek
+python3 ~/scripts/browseruse_client.py progress <job_id>
+python3 ~/scripts/browseruse_client.py result <job_id>
+```
+
+3. If CodeWhale exposes `/browser`, the user can run the same capability manually:
+
+```text
+/browser <browser task>
+```
+
+4. Summarize what was actually observed.
+   - Include the visited URLs or page names.
+   - Separate page facts from interpretation.
+   - Say when content was blocked, login-gated, captcha-gated, stale, or visually ambiguous.
+   - Do not invent values that the browser did not retrieve.
+
+## Safety Boundaries
+
+- Do not enter passwords, API keys, payment details, personal identity data, private tokens, or sensitive account information.
+- Do not buy, sell, subscribe, post, like, follow, vote, send messages, submit forms, place orders, change settings, or perform destructive actions unless the user explicitly requests the action and the risk is clearly low.
+- Do not bypass paywalls, captchas, anti-bot systems, or access controls.
+- Do not log in by default. If login is required, report the limitation and ask the user how they want to proceed.
+- Treat financial, medical, legal, and personal data pages as read-only evidence collection.
+
+## Use With Stocksight
+
+For stock sentiment work, use browser-use only to collect browser-visible evidence from dynamic or gated-by-JavaScript sources:
+
+- Google Trends, Baidu Index, app rankings, web traffic widgets, and search-interest pages.
+- Reddit, Seeking Alpha comments, Stocktwits, Xueqiu, Eastmoney, Futu/Moomoo, and other community pages.
+- Options/risk dashboards when public pages expose put-call, IV/skew, unusual-options summaries, VIX, AAII, CNN Fear & Greed, or similar background indicators.
+
+After collection, return control to `stocksight` for source weighting, sentiment scoring, price confirmation, and risk notes.
+"""
+_DEFAULT_BROWSER_OPENAI_YAML = """interface:
+  display_name: "Browser Use"
+  short_description: "Read-only browser automation for dynamic web evidence"
+  default_prompt: "Use browser-use to open, inspect, click, scroll, and extract facts from live web pages when static search or APIs are insufficient. Keep actions read-only unless the user explicitly asks otherwise."
+"""
+
+def _ensure_default_output_skill():
+    try:
+        d = os.path.expanduser(f"~/.codewhale/skills/{_DEFAULT_OUTPUT_SKILL}")
+        f = os.path.join(d, "SKILL.md")
+        cur = open(f, encoding="utf-8").read() if os.path.exists(f) else None
+        if cur != _DEFAULT_OUTPUT_SKILL_MD:
+            os.makedirs(d, exist_ok=True)
+            _atomic_write(f, _DEFAULT_OUTPUT_SKILL_MD)
+    except Exception:
+        pass
+
+def _ensure_default_browser_skill():
+    try:
+        d = os.path.expanduser(f"~/.codewhale/skills/{_DEFAULT_BROWSER_SKILL}")
+        f = os.path.join(d, "SKILL.md")
+        cur = open(f, encoding="utf-8").read() if os.path.exists(f) else None
+        if cur != _DEFAULT_BROWSER_SKILL_MD:
+            os.makedirs(d, exist_ok=True)
+            _atomic_write(f, _DEFAULT_BROWSER_SKILL_MD)
+        ad = os.path.join(d, "agents")
+        af = os.path.join(ad, "openai.yaml")
+        acur = open(af, encoding="utf-8").read() if os.path.exists(af) else None
+        if acur != _DEFAULT_BROWSER_OPENAI_YAML:
+            os.makedirs(ad, exist_ok=True)
+            _atomic_write(af, _DEFAULT_BROWSER_OPENAI_YAML)
+    except Exception:
+        pass
+
+def _toml_merge_always_load(s, names):
+    clean = []
+    for name in names:
+        name = (name or "").strip()
+        if name and re.match(r'^[A-Za-z0-9_.:-]+$', name) and name not in clean:
+            clean.append(name)
+    if not clean:
+        return s
+    lines = s.split("\n")
+    start = next((i for i, l in enumerate(lines) if l.strip() == "[skills]"), None)
+    if start is None:
+        return s.rstrip() + "\n\n[skills]\nalways_load = " + json.dumps(clean, ensure_ascii=False) + "\n"
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        if re.match(r'^\s*\[', lines[j]):
+            end = j
+            break
+    idxs = [j for j in range(start + 1, end) if re.match(r'^\s*always_load\s*=', lines[j])]
+    current = []
+    if idxs:
+        for item in re.findall(r'"([^"\\]*(?:\\.[^"\\]*)*)"', lines[idxs[0]]):
+            try:
+                item = json.loads('"' + item + '"')
+            except Exception:
+                pass
+            if item and item not in current:
+                current.append(item)
+    merged = current + [x for x in clean if x not in current]
+    newline = "always_load = " + json.dumps(merged, ensure_ascii=False)
+    if idxs:
+        lines[idxs[0]] = newline
+        for j in reversed(idxs[1:]):
+            del lines[j]
+    else:
+        lines.insert(start + 1, newline)
+    return "\n".join(lines)
+
+def _toml_set_always_load(s, names):
+    clean = []
+    for name in names:
+        name = (name or "").strip()
+        if name and re.match(r'^[A-Za-z0-9_.:-]+$', name) and name not in clean:
+            clean.append(name)
+    newline = "always_load = " + json.dumps(clean, ensure_ascii=False)
+    lines = s.split("\n")
+    start = next((i for i, l in enumerate(lines) if l.strip() == "[skills]"), None)
+    if start is None:
+        return s.rstrip() + "\n\n[skills]\n" + newline + "\n"
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        if re.match(r'^\s*\[', lines[j]):
+            end = j
+            break
+    idxs = [j for j in range(start + 1, end) if re.match(r'^\s*always_load\s*=', lines[j])]
+    if idxs:
+        lines[idxs[0]] = newline
+        for j in reversed(idxs[1:]):
+            del lines[j]
+    else:
+        lines.insert(start + 1, newline)
+    return "\n".join(lines)
+
+def _ensure_default_output_config():
+    _ensure_default_output_skill()
+    _ensure_default_browser_skill()
+    try:
+        if not os.path.exists(CFG):
+            return
+        cur = open(CFG, encoding="utf-8").read()
+        nxt = _toml_merge_always_load(cur, [_DEFAULT_OUTPUT_SKILL, _DEFAULT_BROWSER_SKILL])
+        if "[providers.custom]" in nxt:
+            nxt = _toml_set_table_values(nxt, "providers.custom", {"kind": "openai-compatible"})
+        if nxt != cur:
+            _atomic_write(CFG, nxt, secret=True)
+    except Exception:
+        pass
+
 def _strip_mcp(s):
     # 剥掉 [mcp_servers.*] 段:对比/per-provider 后端不需要 MCP(模型实际用 exec_shell + 内置 web_search + python),
     # 而起这些 npx/pip MCP 很慢——并发起 3 个后端时一起抢资源会把后端启动拖过超时(openai-codex「启动超时」根因)。
@@ -1545,7 +4406,7 @@ def _toml_literal(value):
     if isinstance(value, int):
         return str(value)
     value = (value or "").strip()
-    if not value or '"' in value or "\n" in value or "\\" in value:
+    if '"' in value or "\n" in value or "\\" in value:
         raise ValueError("配置值含非法字符")
     return f'"{value}"'
 
@@ -1577,48 +4438,119 @@ def _toml_set_table_values(s, table, values):
             end += 1
     return "\n".join(lines)
 
+def _toml_remove_top_keys(s, keys):
+    keys = {k for k in keys if re.match(r'^[A-Za-z0-9_-]+$', k or "")}
+    if not keys:
+        return s
+    out, in_top = [], True
+    pat = re.compile(r'^\s*(' + "|".join(re.escape(k) for k in sorted(keys)) + r')\s*=')
+    for ln in s.splitlines(keepends=True):
+        if ln.lstrip().startswith("["):
+            in_top = False
+        if in_top and pat.match(ln):
+            continue
+        out.append(ln)
+    return "".join(out)
+
+def _cmp_uses_oauth(prov):
+    return prov in ("openai-codex", "claude-code")
+
+def _cmp_provider_key_from_text(s, runtime_prov):
+    try:
+        cfg = tomllib.loads(s)
+        return ((cfg.get("providers") or {}).get(runtime_prov) or {}).get("api_key") or ""
+    except Exception:
+        return ""
+
+def _cmp_old_runtime_key(path, runtime_prov):
+    try:
+        with open(path, "rb") as f:
+            cfg = tomllib.load(f)
+        return (((cfg.get("providers") or {}).get(runtime_prov) or {}).get("api_key") or "").strip()
+    except Exception:
+        return ""
+
+def _cmp_preserve_old_runtime_key(s, path, runtime_prov, prov):
+    if (_cmp_provider_key_from_text(s, runtime_prov) or "").strip():
+        return s
+    old_key = _cmp_old_runtime_key(path, runtime_prov)
+    if not old_key:
+        return s
+    print(f"[cmp] warning: {prov} key 派生配置缺失,沿用 cmp 旧值", flush=True)
+    return _toml_set_table_values(s, f"providers.{runtime_prov}", {"api_key": old_key})
+
 def _cmp_write_config(prov):
     os.makedirs(CMP_DIR, exist_ok=True)
     _ensure_compare_skill()                                      # 保证高效取数 skill 存在,供 always_load 加载
+    _ensure_default_output_skill()                                # 普通/对比/插件输出默认中文
+    _ensure_default_browser_skill()                                # 动态网页默认只读浏览兜底
     s = open(CFG, encoding="utf-8").read()                       # 从主配置派生,带上所有 provider 的 key + 全部 MCP(对比要跟单窗口完全同能力:工具/MCP/skill 都在)。app-server /health 不阻塞 MCP(实测带 8 MCP 仍 1.6s 起),MCP 后台起;3 后端不再一次性并发(openCompare 预热 + 串行 /health 门控)避开早前并发起 24 个 MCP 的资源尖峰
-    if prov == "claude-code":
-        s = _strip_mcp(s)                                        # claude-code 把整个 turn 委派给 `claude -p`(claude 自带全套工具),完全不用 CodeWhale 的 MCP → 剥掉,免去 npx/pip 启动开销与资源争抢(当初"启动超时"的根因)
-    runtime_prov = "openai" if prov == "longcat" else prov
+    if prov in ("claude-code", "qwen"):
+        s = _strip_mcp(s)                                        # claude-code 把整个 turn 委派给 `claude -p`;qwen 作为 PK/轻量模型先不加载 MCP,避免工具 schema 触发上下文压缩误判。
+    runtime_prov = _cmp_runtime_provider(prov)
     if re.search(r'(?m)^provider\s*=', s):
         s = re.sub(r'(?m)^provider\s*=.*$', f'provider = "{runtime_prov}"', s, count=1)
     else:
         s = f'provider = "{runtime_prov}"\n' + s
-    default_model = _model_pref("longcat") if prov == "longcat" else _cmp_model(prov)
+    litellm_alias = _litellm_compare_alias(prov)
+    default_model = _cmp_default_text_model(prov)
     if re.search(r'(?m)^default_text_model\s*=', s):
         s = re.sub(r'(?m)^default_text_model\s*=.*$', f'default_text_model = "{default_model}"', s, count=1)
     else:
         s = f'default_text_model = "{default_model}"\n' + s
-    if prov == "longcat":
-        lc = _load_config().get("providers", {}).get("longcat", {})
+    path = os.path.join(CMP_DIR, _cmp_safe(prov) + ".toml")
+    if _cmp_uses_oauth(prov):
+        # ChatGPT/Claude 订阅后端必须走本地 OAuth/CLI 凭证,不能继承主配置的
+        # auth_mode/api_key;否则看起来是 OAuth,实际请求可能被带到 API-key 路径。
+        s = _toml_remove_top_keys(s, {"api_key", "auth_mode"})
+    if litellm_alias:
+        llm_base, llm_key = _litellm_openai_base_and_key()
         s = _toml_set_table_values(s, "providers.openai", {
-            "api_key": lc.get("api_key") or "",
+            "api_key": llm_key,
+            "base_url": llm_base,
+            "model": litellm_alias,
+            "context_window": 1048576,
+        })
+    elif prov == "longcat":
+        lc = _load_config().get("providers", {}).get("longcat", {})
+        longcat_key = (lc.get("api_key") or "").strip()
+        if not longcat_key:
+            longcat_key = _cmp_old_runtime_key(path, runtime_prov)
+            if longcat_key:
+                print("[cmp] warning: longcat key 主配置缺失,沿用 cmp 旧值", flush=True)
+        s = _toml_set_table_values(s, "providers.openai", {
+            "api_key": longcat_key,
             "base_url": lc.get("base_url") or _LONGCAT_BASE_URL,
             "model": _model_pref("longcat") or lc.get("model") or _LONGCAT_DEFAULT_MODEL,
             "context_window": int(lc.get("context_window") or _LONGCAT_CONTEXT_WINDOW),
         })
-    pin = None if prov == "longcat" else (_model_pref(prov) if prov in _CMP_PIN_MODEL else None)  # 固定 [providers.<prov>].model → 该栏稳定用用户选择的模型,不再被 auto 路由带跑
+    elif prov == "qwen":
+        qc = _load_config().get("providers", {}).get("qwen", {})
+        qwen_key = (qc.get("api_key") or "").strip()
+        if not qwen_key:
+            qwen_key = _cmp_old_runtime_key(path, runtime_prov)
+            if qwen_key:
+                print("[cmp] warning: qwen key 主配置缺失,沿用 cmp 旧值", flush=True)
+        s = _toml_set_table_values(s, "providers.openai", {
+            "api_key": qwen_key,
+            "base_url": qc.get("base_url") or _QWEN_BASE_URL,
+            "model": _model_pref("qwen") or qc.get("model") or _QWEN_DEFAULT_MODEL,
+            "context_window": 1048576,
+        })
+    elif prov == "custom":
+        s = _toml_set_table_values(s, "providers.custom", {"kind": "openai-compatible"})
+    pin = None if (litellm_alias or prov in ("longcat", "qwen")) else (_model_pref(prov) if prov in _CMP_PIN_MODEL else None)  # 固定 [providers.<prov>].model → 该栏稳定用用户选择的模型,不再被 auto 路由带跑
     if pin:
-        hdr = f"[providers.{runtime_prov}]"
-        if re.search(r'(?m)^' + re.escape(hdr) + r'\s*$', s):
-            # 替换该段紧跟 header 的 model 行;没有就插入(header 后通常是 api_key,不会误吞)
-            s = re.sub(r'(?m)^' + re.escape(hdr) + r'[ \t]*\n([ \t]*model[ \t]*=.*\n)?',
-                       hdr + "\n" + f'model = "{pin}"\n', s, count=1)
-        else:
-            s = s.rstrip() + f"\n\n{hdr}\nmodel = \"{pin}\"\n"
-    # 自动加载高效取数规范 skill(对比窗口所有模型都遵守,纠正 GPT 爱硬爬整页/重复抓的低效)
-    if re.search(r'(?m)^\[skills\]\s*$', s):
-        if re.search(r'(?m)^\s*always_load\s*=', s):
-            s = re.sub(r'(?m)^(\s*)always_load\s*=.*$', r'\1always_load = ["compare-research"]', s, count=1)
-        else:
-            s = re.sub(r'(?m)^(\[skills\]\s*\n)', r'\1always_load = ["compare-research"]\n', s, count=1)
+        # 用全段扫描的 set 工具替换:老写法只认紧跟 header 的 model 行,段内 model 排在
+        # api_key/base_url 之后时会插入重复键 → 严格 TOML 解析拒载,后端启动超时(2026-07-05 实翻车)
+        s = _toml_set_table_values(s, f"providers.{runtime_prov}", {"model": pin})
+    # 自动加载全局中文默认 + 高效取数规范 + 动态网页浏览兜底 skill。qwen 走轻量 PK 后端,只保留中文默认,避免上下文压缩误判。
+    if prov == "qwen":
+        s = _toml_set_always_load(s, [_DEFAULT_OUTPUT_SKILL])
     else:
-        s = s.rstrip() + '\n\n[skills]\nalways_load = ["compare-research"]\n'
-    path = os.path.join(CMP_DIR, _cmp_safe(prov) + ".toml")
+        s = _toml_merge_always_load(s, [_DEFAULT_OUTPUT_SKILL, "compare-research", _DEFAULT_BROWSER_SKILL])
+    if not litellm_alias:
+        s = _cmp_preserve_old_runtime_key(s, path, runtime_prov, prov)
     _atomic_write(path, s, secret=True)   # 派生 config 含 api_key → 原子写 + tmp 0600
     return path
 def _port_up(port):
@@ -1635,16 +4567,41 @@ def _port_up(port):
         with _PORT_UP_LOCK:
             _PORT_UP.pop(port, None)
         return False
+def _tcp_listening(port):
+    try:
+        socket.create_connection(("127.0.0.1", int(port)), timeout=0.25).close()
+        return True
+    except Exception:
+        return False
+def _kill_cmp_backends():
+    # 当前补丁版实际命令是 `codewhale-tui --config ~/.codewhale-gui/cmp/... serve`;
+    # 旧逻辑只 pkill app-server,会留下孤儿后端占端口。
+    for pid in _cmp_backend_pids():
+        _kill_gracefully(pid)
+    CMP_PROCS.clear()
+def _cmp_pick_port():
+    used = set(CMP_PORTS.values())
+    port = 7900
+    while port in used or _port_up(port) or _tcp_listening(port):
+        port += 1
+    return port
+def _cmp_startup_error(prov, log_path, reason):
+    tail = _tail_text(log_path, 1600).strip()
+    if tail:
+        tail = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', tail)
+        return f"{prov} app-server {reason}; 最近日志: {tail[-900:]}"
+    return f"{prov} app-server {reason}"
 def ensure_provider_server(prov):
     if not re.match(r'^[a-zA-Z0-9_-]+$', prov or ""):
         raise ValueError("非法 provider")
     err = _provider_config_error(prov)
     if err:
         raise RuntimeError(err)
-    if not _CW_PATCHED:                                          # 缺补丁二进制 → 先自动下载(同步,首次约几十秒)。所有对比列都靠它吃 OCR 增强
+    if prov == "claude-code" and not _CW_PATCHED:                # 仅 Claude 订阅桥接依赖补丁二进制;其它 provider 跟随官方 CodeWhale
         ok = _ensure_patched_binaries(block=True)
-        if not ok and prov == "claude-code":                    # claude-code 没补丁就跑不了(致命);其它列回退官方二进制(只是没 OCR 增强)
+        if not ok:
             raise RuntimeError("Claude 订阅引擎(补丁二进制)缺失且自动下载失败 —— 检查网络/在线更新配置,或重跑安装器")
+    log_path = os.path.expanduser(f"~/codewhale-gui/cmp-{_cmp_safe(prov)}.log")
     port = CMP_PORTS.get(prov)                                   # 快路径:已知端口且活着 → 立即返回(不进锁,热切换 ~0)
     if port and _port_up(port):
         return port
@@ -1654,22 +4611,41 @@ def ensure_provider_server(prov):
             port = CMP_PORTS.get(prov)
             if port and _port_up(port):
                 return port
+            proc = CMP_PROCS.get(prov)
+            if proc and proc.poll() is not None:
+                print(f"[cmp] warning: {prov} 旧后端已退出(code={proc.returncode}),准备重启", flush=True)
+                CMP_PROCS.pop(prov, None)
+                if port:
+                    CMP_PORTS.pop(prov, None)
+                    _port_cache_drop(port)
+                    port = None
+            if port and _tcp_listening(port) and not _cmp_launching.get(prov):
+                killed = _kill_cmp_provider(prov, port=port)
+                if killed:
+                    print(f"[cmp] warning: {prov} 端口 {port} 有非健康旧后端,已清理 {killed} 个进程", flush=True)
+                    time.sleep(0.2)
+                if _tcp_listening(port):
+                    print(f"[cmp] warning: {prov} 端口 {port} 仍被非 CodeWhale 进程占用,改用新端口", flush=True)
+                    CMP_PORTS.pop(prov, None)
+                    _port_cache_drop(port)
+                    port = None
             if not port:                                         # 分配一个空闲端口(从 7900 起)
-                used = set(CMP_PORTS.values())
-                port = 7900
-                while port in used or _port_up(port):
-                    port += 1
+                port = _cmp_pick_port()
                 CMP_PORTS[prov] = port
             if not _cmp_launching.get(prov):                     # 没有别的线程在启动它 → 这条线程负责 Popen
                 _cmp_launching[prov] = True
                 launched_here = True
                 cfg = _cmp_write_config(prov)
-                runtime_prov = "openai" if prov == "longcat" else prov
+                _kill_cmp_provider(prov, port=port)              # 生成新配置后清掉同 provider 孤儿进程,避免 Address already in use
+                if _tcp_listening(port):
+                    port = _cmp_pick_port()
+                    CMP_PORTS[prov] = port
+                runtime_prov = _cmp_runtime_provider(prov)
                 env = {**_proxy_env(), **os.environ, "PATH": _PATH, "CODEWHALE_PROVIDER": runtime_prov}
                 for _v in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"):
                     env.pop(_v, None)                                # claude-code 列会 spawn `claude -p`,带 CLAUDECODE 会被官方 CLI 拒绝嵌套;清掉(对其它 provider 无害)
-                if _CW_PATCHED_TUI:
-                    env["DEEPSEEK_TUI_BIN"] = _CW_PATCHED_TUI         # 所有对比后端都委派给 patched tui(含 OCR 中文增强 + claude spawn + env_remove)
+                if prov == "claude-code" and _CW_PATCHED_TUI:
+                    env["DEEPSEEK_TUI_BIN"] = _CW_PATCHED_TUI         # 仅 Claude 订阅桥接委派给 patched tui;普通列由官方 app-server 选择同版本 runtime
                 if prov == "claude-code":
                     _cm = _model_pref("claude-code")                  # 用户选的 claude 模型(默认 opus 4.8)
                     env["CODEWHALE_CLAUDE_MODEL"] = _cm               # 强制 `claude -p` 用的模型;绕开模型注册表,直传官方 CLI
@@ -1679,18 +4655,22 @@ def ensure_provider_server(prov):
                 else:
                     _re = _effort_pref(prov)                          # 非 claude:推理 effort 走 runtime env(apply_reasoning_effort 按 provider 映射;GPT→Responses reasoning.effort)
                     if _re: env["CODEWHALE_REASONING_EFFORT"] = _re
-                logf = open(os.path.expanduser(f"~/codewhale-gui/cmp-{_cmp_safe(prov)}.log"), "a")
-                subprocess.Popen([_cw_binary(prov), "app-server", "--config", cfg, "--http", "--host", "127.0.0.1",
-                                  "--port", str(port), "--insecure-no-auth"],
-                                 env=env, cwd=os.path.expanduser("~"), stdout=logf, stderr=subprocess.STDOUT)
+                _rotate_cmp_log(log_path)
+                logf = open(log_path, "a")
+                CMP_PROCS[prov] = subprocess.Popen([_cw_binary(prov), "app-server", "--config", cfg, "--http", "--host", "127.0.0.1",
+                                                    "--port", str(port), "--insecure-no-auth"],
+                                                   env=env, cwd=os.path.expanduser("~"), stdout=logf, stderr=subprocess.STDOUT)
         for _ in range(112):                                     # 就绪等待在锁外:启动 A 不再阻塞切到 B(消除连环卡顿),最多 ~45s(并发起多个后端时留足余量)
             if _port_up(port):
                 return port
+            proc = CMP_PROCS.get(prov)
+            if proc and proc.poll() is not None:
+                raise RuntimeError(_cmp_startup_error(prov, log_path, f"已退出(code={proc.returncode})"))
             time.sleep(0.4)
     finally:
         if launched_here:                                        # 无论成功/超时/Popen 抛错都清启动标志,避免该 provider 永久卡住
             _cmp_launching.pop(prov, None)
-    raise RuntimeError(f"{prov} app-server 启动超时")
+    raise RuntimeError(_cmp_startup_error(prov, log_path, "启动超时"))
 
 # ── 每对话锁模型(CodeWhale 会话是跨 app-server 共享存储,所以不能靠"谁有这会话"判 provider;
 #    用一张自维护、持久化的 tid->provider 锁定表,建会话时写定,路由按它走,聚合按它打标)──
@@ -1722,7 +4702,7 @@ def _mark_single_thread(tid):
         json.dump(ids, f)
     os.replace(tmp, SINGLE_THREADS_FILE)
 NEWCHAT_FILE = os.path.expanduser("~/.codewhale-gui/newchat.json")
-_NEWCHAT_REQUIRES_KEY = {"custom", "volcengine", "longcat"}   # custom=腾讯混元 OpenAI 兼容槽;volcengine=火山 Ark;longcat=美团 LongCat;三者可做单窗口新对话,但必须先有 api_key
+_NEWCHAT_REQUIRES_KEY = {"custom", "volcengine", "longcat", "qwen"}   # OpenAI 兼容侧车 provider 可做单窗口新对话,但必须先有 api_key
 def _missing_key_message(prov):
     if prov == "custom":
         return "腾讯混元 API key 未配置,请先在模型面板保存混元 key"
@@ -1730,6 +4710,8 @@ def _missing_key_message(prov):
         return "火山 Ark API key 未配置,请先在模型面板保存火山 Ark key"
     if prov == "longcat":
         return "美团 LongCat API key 未配置,请先在模型面板保存 LongCat key"
+    if prov == "qwen":
+        return "千问 API key 未配置,请先在模型面板保存 DashScope/百炼 key"
     return f"{prov} API key 未配置,请先在模型面板保存 key"
 def _newchat_provider():
     default = _cfg_get("provider") or "deepseek"
@@ -1753,13 +4735,70 @@ class _ProviderBackendDown(RuntimeError):
     """对话锁定了非默认 provider,但它的专属后端起不来。绝不能回退到 :7878(DeepSeek)——
     那会把该 provider 的模型名(如 gpt-5.5)发给 DeepSeek 后端,得到误导性的
     'supported API model names are deepseek-...' 400。每个模型平行独立,无兜底。"""
+
+# Kimi Code 的接口虽然兼容 OpenAI wire format,但 CodeWhale v0.9 的主 app-server
+# 在没有显式 CODEWHALE_PROVIDER 时会把新 thread 持久化成 provider=openai。
+# 随后的 turn 路由就会错误寻找 OPENAI_API_KEY。专属 sidecar 会同时带派生配置与
+# CODEWHALE_PROVIDER=moonshot,可让 thread 身份稳定写成 moonshot。
+_DEDICATED_RUNTIME_PROVIDERS = {"moonshot"}
+
+def _provider_runtime_base(prov, default_prov=None):
+    default_prov = default_prov or (_cfg_get("provider") or "deepseek")
+    if prov and (prov != default_prov or prov in _DEDICATED_RUNTIME_PROVIDERS):
+        return f"http://127.0.0.1:{ensure_provider_server(prov)}"
+    return UPSTREAM
+
+def _retarget_thread_provider(tid, prov, model):
+    """原子切换 thread 的默认 provider/model,历史 turn 保留各自 effective_provider。"""
+    th = _runtime_json("threads", tid)
+    if not isinstance(th, dict):
+        raise RuntimeError("找不到对话运行时记录,无法安全切换模型")
+    latest_id = (th.get("latest_turn_id") or "").strip()
+    latest = _runtime_json("turns", latest_id) if latest_id else None
+    if isinstance(latest, dict) and latest.get("status") in ("queued", "pending", "in_progress", "running"):
+        raise RuntimeError("当前模型仍在工作,请等待本轮结束或先停止后再切换")
+    path = _runtime_file("threads", tid)
+    if not path:
+        raise RuntimeError("对话运行时文件不存在,无法安全切换模型")
+    runtime_prov = _cmp_runtime_provider(prov)
+    persisted = (th.get("model_provider_id") or th.get("model_provider") or "").strip()
+    if persisted == runtime_prov and th.get("model") == model:
+        return None
+    original = dict(th)
+    th["model"] = model
+    th["model_provider"] = runtime_prov
+    th["model_provider_id"] = runtime_prov
+    th["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime())
+    _atomic_write_json(path, th)
+    return path, original
+
+def _runtime_provider_from_thread(th):
+    if not isinstance(th, dict):
+        return None
+    runtime_prov = (th.get("model_provider_id") or th.get("model_provider") or "").strip()
+    # longcat/qwen use the OpenAI-compatible runtime and are distinguished by
+    # their concrete model IDs.  Other v0.9 provider identities are exact.
+    if runtime_prov and runtime_prov != "openai":
+        return runtime_prov
+    return _model_to_provider(th.get("model")) or (runtime_prov or None)
+def _thread_route_provider(tid):
+    """路由层兜底:优先使用 v0.9 持久化的 provider 身份,再由 model 反推旧线程。"""
+    prov = _tprov.get(tid)
+    if prov:
+        return prov
+    th = _runtime_json("threads", tid)
+    prov = _runtime_provider_from_thread(th)
+    if prov:
+        _pin_thread(tid, prov)  # 自愈历史/漏登记线程,避免下一轮又落回默认后端
+    return prov
+
 def _route_base(path):       # /v1/threads/<tid>/* 路由到该对话锁定的 provider 后端;未锁定或锁定=当前默认→:7878
     m = re.match(r'^/v1/threads/(thr_[a-zA-Z0-9_-]+)', path or "")
     if m:
-        prov = _tprov.get(m.group(1))
-        if prov and prov != (_cfg_get("provider") or "deepseek"):
+        prov = _thread_route_provider(m.group(1))
+        if prov and (prov != (_cfg_get("provider") or "deepseek") or prov in _DEDICATED_RUNTIME_PROVIDERS):
             try:
-                return f"http://127.0.0.1:{ensure_provider_server(prov)}"
+                return _provider_runtime_base(prov)
             except Exception as e:
                 raise _ProviderBackendDown(f"{prov} 后端未就绪: {str(e)[:160]}")
     return UPSTREAM
@@ -1769,26 +4808,46 @@ def _switch_single_thread_provider(tid, prov, model=None):
     if model:
         _set_model_pref(prov, model)
     default_prov = _cfg_get("provider") or "deepseek"
-    base = UPSTREAM if prov == default_prov else f"http://127.0.0.1:{ensure_provider_server(prov)}"
     fm = _thread_model(prov) if _CMP_FORCE_MODEL.get(prov) else (model or None)
-    if fm:
-        body = json.dumps({"model": fm}).encode()
-        req = urllib.request.Request(f"{base}/v1/threads/{tid}", data=body, method="PATCH", headers={"Content-Type": "application/json"})
-        _LOCAL.open(req, timeout=30).read()
+    base = _provider_runtime_base(prov, default_prov)
+    changed = _retarget_thread_provider(tid, prov, fm) if fm else None
+    try:
+        if fm:
+            body = json.dumps({"model": fm}).encode()
+            req = urllib.request.Request(f"{base}/v1/threads/{tid}", data=body, method="PATCH", headers={"Content-Type": "application/json"})
+            _LOCAL.open(req, timeout=30).read()
+    except Exception:
+        if changed:
+            path, original = changed
+            _atomic_write_json(path, original)
+        raise
     _pin_thread(tid, prov)
     _mark_single_thread(tid)
+    try:   # 立即修补 SWR 缓存里这条的 provider/model;否则要等下一轮后台刷新(120s+),刷新页面会显示切换前的旧模型
+        arr = _threads_cache.get("v") or []
+        for t in arr:
+            if isinstance(t, dict) and t.get("id") == tid:
+                t["provider"] = prov
+                if fm or model:
+                    t["model"] = fm or model
+                break
+        if arr:
+            _atomic_write_json(_THREADS_CACHE_FILE, arr)
+    except Exception:
+        pass
     return {"ok": True, "thread_id": tid, "provider": prov, "model": fm or model or ""}
 def _model_to_provider(model):   # 从会话真实 model 反推 provider(thread.model 已被钉准,比 _tprov 锁定表可靠)→ 侧栏标签必和模型一致
     m = (model or "").lower()
     if not m or m == "auto":
         return None
     if "longcat" in m: return "longcat"
+    if "qwen" in m or "dashscope" in m: return "qwen"
     if "doubao" in m or "volcengine" in m: return "volcengine"
     if "deepseek" in m: return "deepseek"
     if "glm" in m:      return "zai"
     if "gpt" in m:      return "openai-codex"
     if "claude" in m:   return "anthropic"
-    if "kimi" in m or "moonshot" in m: return "moonshot"
+    if m == "k3" or "kimi" in m or "moonshot" in m: return "moonshot"
     if "hunyuan" in m or "hy3" in m or m.startswith("hy-"): return "custom"
     if "gemini" in m:   return "openrouter"
     return None
@@ -1835,7 +4894,7 @@ def _fetch_threads_now():
         pass
     for t in arr:
         if isinstance(t, dict):
-            t["provider"] = _model_to_provider(t.get("model")) or _tprov.get(t.get("id")) or dflt
+            t["provider"] = _tprov.get(t.get("id")) or _runtime_provider_from_thread(t) or dflt
     try: arr.sort(key=lambda t: (t.get("updated_at") or "") if isinstance(t, dict) else "", reverse=True)   # 合并后按更新时间排,新对话回到顶部
     except Exception: pass
     arr = _drop_tombstoned(arr)   # 抓取期间刚归档的对话别再写回缓存
@@ -1859,7 +4918,9 @@ def _tag_compare(arr):
     for t in arr:
         if isinstance(t, dict):
             tid = t.get("id")
-            t["compare"] = (tid in cmp_set) or (tid in _tprov and tid not in single_set and _tprov.get(tid) != single_prov)
+            is_single = tid in single_set
+            t["single"] = is_single
+            t["compare"] = False if is_single else ((tid in cmp_set) or (tid in _tprov and _tprov.get(tid) != single_prov))
     return arr
 def aggregate_threads():     # SWR:有缓存立刻返回,过期只后台刷新,绝不阻塞请求(开程序不再干等 8s)
     cached = _threads_cache["v"]
@@ -1871,6 +4932,606 @@ def aggregate_threads():     # SWR:有缓存立刻返回,过期只后台刷新,�
                     threading.Thread(target=_bg_refresh_threads, daemon=True).start()
         return _tag_compare(_drop_tombstoned([t for t in cached if not t.get("archived")]))   # 兜底:归档标记 + 墓碑都过滤
     return _tag_compare(_fetch_threads_now() or [])   # 从没成功 + 无落盘 → 只能同步取一次(尽量快;失败返回空)
+
+# ── macOS 对话结束通知 ──
+# 不依赖当前浏览器是否停留在线程里:服务端只跟踪新建 turn 和启动时尚未结束的 turn。
+# 历史终态在首次启动时仅作为基线,不会补发;已通知 turn 持久化去重,刷新/重启也不会重复弹。
+_NOTIFICATION_TERMINAL = {"completed", "failed", "interrupted", "cancelled", "canceled", "error"}
+_NOTIFICATION_STATE_LOCK = threading.Lock()
+
+def _notification_enabled():
+    return str(os.environ.get("CODEWHALE_MAC_NOTIFICATIONS", "1")).strip().lower() not in ("0", "false", "off", "no")
+
+def _notification_read_seen():
+    try:
+        data = json.load(open(NOTIFICATION_STATE_FILE, encoding="utf-8"))
+        vals = data.get("seen", []) if isinstance(data, dict) else []
+        return [x for x in vals if isinstance(x, str) and x.startswith("turn_")][-2000:]
+    except Exception:
+        return []
+
+def _notification_write_seen(order):
+    try:
+        _atomic_write_json(NOTIFICATION_STATE_FILE, {
+            "schema_version": 1,
+            "seen": list(order)[-2000:],
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        })
+    except Exception:
+        pass
+
+def _notification_thread_title(thread_id, turn):
+    try:
+        for row in (_threads_cache.get("v") or []):
+            if isinstance(row, dict) and row.get("id") == thread_id:
+                title = _short_text(row.get("title"), 70)
+                if title and title.lower() != "new thread":
+                    return title
+    except Exception:
+        pass
+    # 缓存可能正在刷新或该会话来自另一个 provider sidecar;本轮输入比裸 thread id 更有用。
+    return _short_text((turn or {}).get("input_summary"), 70) or "CodeWhale 对话"
+
+def _notification_provider_label(turn):
+    provider = str((turn or {}).get("effective_provider") or "").strip().lower()
+    model = _short_text((turn or {}).get("effective_model"), 36)
+    labels = {
+        "deepseek": "DeepSeek", "moonshot": "Kimi", "openai-codex": "ChatGPT",
+        "anthropic": "Claude", "zai": "GLM", "longcat": "LongCat",
+        "volcengine": "火山", "custom": "混元", "qwen": "千问",
+    }
+    label = labels.get(provider, provider or "CodeWhale")
+    return f"{label} · {model}" if model and model.lower() not in label.lower() else label
+
+def _send_macos_notification(subtitle, body, sound="Glass"):
+    """调用 macOS Standard Additions；参数经 argv 传入，避免标题/正文破坏 AppleScript。"""
+    if os.uname().sysname != "Darwin" or not _notification_enabled():
+        return False
+    subtitle = _short_text(subtitle, 80) or "CodeWhale 对话"
+    body = _short_text(body, 220) or "本轮对话已结束"
+    script = (
+        "on run argv\n"
+        "set noteSubtitle to item 1 of argv\n"
+        "set noteBody to item 2 of argv\n"
+        "set noteSound to item 3 of argv\n"
+        "display notification noteBody with title \"CodeWhale\" subtitle noteSubtitle sound name noteSound\n"
+        "end run"
+    )
+    try:
+        result = subprocess.run(
+            ["/usr/bin/osascript", "-e", script, "--", subtitle, body, sound],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=8,
+        )
+        if result.returncode:
+            print(f"[notifications] osascript failed: {_short_text(result.stderr, 180)}")
+            return False
+        return True
+    except Exception as exc:
+        print(f"[notifications] send failed: {_short_text(exc, 180)}")
+        return False
+
+def _notify_terminal_turn(turn):
+    status = str((turn or {}).get("status") or "").lower()
+    title = _notification_thread_title((turn or {}).get("thread_id"), turn)
+    provider = _notification_provider_label(turn)
+    if status == "completed":
+        body, sound = f"{provider} · 已完成", "Glass"
+    elif status in ("interrupted", "cancelled", "canceled"):
+        body, sound = f"{provider} · 已停止", "Basso"
+    else:
+        error = _short_text((turn or {}).get("error"), 130)
+        body, sound = f"{provider} · 执行失败" + (f"：{error}" if error else ""), "Basso"
+    return _send_macos_notification(title, body, sound)
+
+def _watch_turn_notifications():
+    if not _notification_enabled() or os.uname().sysname != "Darwin":
+        return
+    root = os.path.join(RUNTIME_DIR, "turns")
+    os.makedirs(root, exist_ok=True)
+    seen_order = _notification_read_seen()
+    seen = set(seen_order)
+    active = set()
+    try:
+        known = {n for n in os.listdir(root) if re.match(r'^turn_[A-Za-z0-9_-]+\.json$', n)}
+    except Exception:
+        known = set()
+
+    # 首次启动不轰炸历史通知；但正在跑的 turn 要接管，结束时正常通知。
+    for name in known:
+        turn_id = name[:-5]
+        turn = _runtime_json("turns", turn_id) or {}
+        if str(turn.get("status") or "").lower() not in _NOTIFICATION_TERMINAL:
+            active.add(turn_id)
+    try:
+        last_dir_mtime = os.stat(root).st_mtime_ns
+    except Exception:
+        last_dir_mtime = 0
+    last_full_scan = time.monotonic()
+    print(f"[notifications] macOS watcher ready (active={len(active)}, baseline={len(known)})", flush=True)
+
+    while True:
+        try:
+            now_mono = time.monotonic()
+            try:
+                dir_mtime = os.stat(root).st_mtime_ns
+            except Exception:
+                dir_mtime = last_dir_mtime
+            # 新 turn 创建会改变目录 mtime；每 30 秒全量比对一次只是防文件系统漏事件。
+            if dir_mtime != last_dir_mtime or now_mono - last_full_scan >= 30:
+                names = {n for n in os.listdir(root) if re.match(r'^turn_[A-Za-z0-9_-]+\.json$', n)}
+                for name in names - known:
+                    active.add(name[:-5])
+                known = names
+                last_dir_mtime = dir_mtime
+                last_full_scan = now_mono
+
+            changed_seen = False
+            for turn_id in tuple(active):
+                turn = _runtime_json("turns", turn_id) or {}
+                status = str(turn.get("status") or "").lower()
+                if status not in _NOTIFICATION_TERMINAL:
+                    continue
+                active.discard(turn_id)
+                if turn_id in seen:
+                    continue
+                _notify_terminal_turn(turn)
+                seen.add(turn_id)
+                seen_order.append(turn_id)
+                if len(seen_order) > 2000:
+                    removed = seen_order[:-2000]
+                    seen_order = seen_order[-2000:]
+                    seen.difference_update(removed)
+                changed_seen = True
+            if changed_seen:
+                with _NOTIFICATION_STATE_LOCK:
+                    _notification_write_seen(seen_order)
+        except Exception as exc:
+            # 通知属于附加体验，任何异常都不能拖垮聊天服务。
+            print(f"[notifications] watcher error: {_short_text(exc, 180)}")
+        time.sleep(1.0)
+
+def _research_provider_from_data(data):
+    data = data or {}
+    prov = re.sub(r'[^a-zA-Z0-9._-]', '', str(data.get("provider") or ""))[:80]
+    if prov:
+        return prov
+    tid = str(data.get("cw_thread_id") or data.get("thread_id") or "")[:80]
+    if tid:
+        try:
+            if _tprov.get(tid):
+                return _tprov.get(tid)
+        except Exception:
+            pass
+        try:
+            for t in (_threads_cache.get("v") or []):
+                if isinstance(t, dict) and t.get("id") == tid and t.get("provider"):
+                    return str(t.get("provider"))
+        except Exception:
+            pass
+    try:
+        return _newchat_provider()
+    except Exception:
+        return _cfg_get("provider") or "deepseek"
+
+def _research_provider_model(prov):
+    prov = (prov or "").strip()
+    cfg = _load_config().get("providers", {})
+    if prov == "longcat":
+        return _model_pref("longcat") or (cfg.get("longcat") or {}).get("model") or _LONGCAT_DEFAULT_MODEL
+    if prov == "volcengine":
+        return _model_pref("volcengine") or (cfg.get("volcengine") or {}).get("model") or _VOLCENGINE_DEFAULT_MODEL
+    if prov == "qwen":
+        return _model_pref("qwen") or (cfg.get("qwen") or {}).get("model") or _QWEN_DEFAULT_MODEL
+    if prov == "custom":
+        return _model_pref("custom") or (cfg.get("custom") or {}).get("model") or "hy3-preview"
+    if prov == "zai":
+        return _model_pref("zai") or (cfg.get("zai") or {}).get("model") or "GLM-5.2"
+    if prov == "moonshot":
+        return _model_pref("moonshot") or (cfg.get("moonshot") or {}).get("model") or "k3"
+    if prov == "deepseek":
+        return _model_pref("deepseek") or (cfg.get("deepseek") or {}).get("model") or "deepseek-v4-pro"
+    return _model_pref(prov) or (cfg.get(prov) or {}).get("model") or ""
+
+def _research_job_model(engine, tid):
+    engine = (engine or "").strip()
+    tid = re.sub(r'[^A-Za-z0-9_-]', '', str(tid or ""))[:120]
+    if not tid or engine not in ("gptr", "storm"):
+        return None
+    path = os.path.expanduser(f"~/harness-output/{engine}/jobs/{tid}.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        job = json.load(open(path))
+        return (job.get("model") or "").strip() or "deepseek"
+    except Exception:
+        return None
+
+def _research_provider_for_model_key(model):
+    m = (model or "").strip().lower()
+    if m in ("deepseek", "deepseek-v4-pro", "deepseek-v4-flash") or "deepseek" in m:
+        return "deepseek"
+    if m in ("zai", "glm", "glm-5.2", "glm-5.2-air") or "glm" in m:
+        return "zai"
+    if m in ("kimi", "moonshot", "k3", "kimi-for-coding", "moonshot-v1-128k") or "kimi" in m or "moonshot" in m:
+        return "moonshot"
+    if m in ("hunyuan", "custom", "hy3-preview") or "hy3" in m or "hunyuan" in m:
+        return "custom"
+    if m in ("longcat", "longcat-2.0") or "longcat" in m:
+        return "longcat"
+    if m in ("qwen", "qwen-plus", "qwen-max", "qwen3.7-max", "dashscope", "tongyi", "qianwen") or "qwen" in m:
+        return "qwen"
+    if m in ("volcengine", "doubao", "doubao-seed-2-1-pro-260628") or "doubao" in m:
+        return "volcengine"
+    return ""
+
+def _research_model_meta(engine, data=None):
+    data = data or {}
+    engine = (engine or "").strip()
+    job_model = _research_job_model(engine, data.get("external_thread_id") or data.get("ext_thread_id"))
+    requested = re.sub(r'[^a-zA-Z0-9._-]', '', str(data.get("model") or job_model or ""))[:120]
+    provider = _research_provider_for_model_key(requested) or _research_provider_from_data(data)
+    raw = str(data.get("provider_model") or _research_provider_model(provider) or "")[:160]
+    harness = {
+        "deepseek": ("deepseek", "DeepSeek"),
+        "zai": ("zai", "GLM"),
+        "moonshot": ("kimi", "Kimi"),
+        "custom": ("hunyuan", "混元"),
+        "longcat": ("longcat", "LongCat"),
+        "qwen": ("qwen", "千问"),
+        "volcengine": ("volcengine", "豆包"),
+    }
+    deerflow = {
+        "deepseek": ("deepseek", "DeepSeek"),
+        "zai": ("glm", "GLM"),
+        "moonshot": ("kimi", "Kimi"),
+        "custom": ("hunyuan", "混元"),
+    }
+    table = deerflow if engine == "deerflow" else harness
+    model, name = table.get(provider, (None, None))
+    if requested:
+        model = requested
+    if not model:
+        if engine == "deerflow":
+            provider, model, name, raw = "moonshot", "kimi", "Kimi", "k3"
+        else:
+            provider, model, name, raw = "deepseek", "deepseek", "DeepSeek", raw or "deepseek-v4-pro"
+    label = str(data.get("model_label") or "").strip()
+    if not label:
+        label = name + ((" · " + raw) if raw and raw != "auto" else "")
+    return {"provider": provider, "model": model, "provider_model": raw, "model_label": label}
+
+def _provider_chat_config(prov):
+    prov = (prov or "").strip() or (_cfg_get("provider") or "deepseek")
+    providers = _load_config().get("providers", {})
+    cfg = providers.get(prov) if isinstance(providers, dict) else {}
+    cfg = cfg if isinstance(cfg, dict) else {}
+    if prov == "deepseek":
+        return {
+            "provider": "deepseek",
+            "key": cfg.get("api_key") or deepseek_key(),
+            "base": (cfg.get("base_url") or "https://api.deepseek.com/v1").rstrip("/"),
+            "model": _research_provider_model("deepseek") or "deepseek-v4-pro",
+        }
+    if prov == "custom":
+        return {
+            "provider": "custom",
+            "key": cfg.get("api_key") or _provider_key("custom"),
+            "base": (cfg.get("base_url") or "https://tokenhub.tencentmaas.com/v1").rstrip("/"),
+            "model": _research_provider_model("custom") or "hy3-preview",
+        }
+    if prov == "zai":
+        return {
+            "provider": "zai",
+            "key": cfg.get("api_key") or _provider_key("zai"),
+            "base": (cfg.get("base_url") or "https://api.z.ai/api/paas/v4").rstrip("/"),
+            "model": _research_provider_model("zai") or "GLM-5.2",
+        }
+    if prov == "moonshot":
+        return {
+            "provider": "moonshot",
+            "key": cfg.get("api_key") or _provider_key("moonshot"),
+            "base": (cfg.get("base_url") or "https://api.kimi.com/coding/v1").rstrip("/"),
+            "model": _research_provider_model("moonshot") or "k3",
+        }
+    if prov == "volcengine":
+        return {
+            "provider": "volcengine",
+            "key": cfg.get("api_key") or _provider_key("volcengine"),
+            "base": (cfg.get("base_url") or _VOLCENGINE_BASE_URL).rstrip("/"),
+            "model": _research_provider_model("volcengine") or _VOLCENGINE_DEFAULT_MODEL,
+        }
+    if prov == "longcat":
+        return {
+            "provider": "longcat",
+            "key": cfg.get("api_key") or _provider_key("longcat"),
+            "base": (cfg.get("base_url") or _LONGCAT_BASE_URL).rstrip("/"),
+            "model": _research_provider_model("longcat") or _LONGCAT_DEFAULT_MODEL,
+        }
+    if prov == "qwen":
+        return {
+            "provider": "qwen",
+            "key": cfg.get("api_key") or _provider_key("qwen"),
+            "base": (cfg.get("base_url") or _QWEN_BASE_URL).rstrip("/"),
+            "model": _research_provider_model("qwen") or _QWEN_DEFAULT_MODEL,
+        }
+    return _provider_chat_config("deepseek")
+
+def _chat_title_once(messages, prov):
+    cfg = _provider_chat_config(prov)
+    if not cfg.get("key"):
+        cfg = _provider_chat_config("deepseek")
+    if not cfg.get("key"):
+        raise RuntimeError("没有可用的标题生成 API key")
+    cfg = dict(cfg)
+    if cfg.get("provider") == "deepseek":
+        cfg["model"] = "deepseek-chat"   # 命名固定用非思考快模型:v4-pro 等思考模型会把 max_tokens=28 全烧在 reasoning 上,返回空标题(2026-07-11 实测)
+    payload = json.dumps({
+        "model": cfg["model"],
+        "messages": messages,
+        "temperature": 0.05,
+        "max_tokens": 28,
+        "stream": False,
+    }, ensure_ascii=False).encode()
+    req = urllib.request.Request(cfg["base"].rstrip("/") + "/chat/completions",
+                                 data=payload, method="POST",
+                                 headers={"Authorization": "Bearer " + cfg["key"],
+                                          "Content-Type": "application/json"})
+    with _open_url(req, 45) as r:
+        data = json.loads(r.read().decode("utf-8", "replace"))
+    title = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    return title, cfg
+
+def _title_provider(fallback=""):
+    """Use a stable Chinese-capable model for naming instead of whatever model ran the thread."""
+    for prov in ("deepseek", _cfg_get("provider") or "", fallback or "", "volcengine"):
+        if not prov:
+            continue
+        try:
+            if _provider_chat_config(prov).get("key"):
+                return prov
+        except Exception:
+            pass
+    return fallback or _cfg_get("provider") or "deepseek"
+
+def _clean_title_seed_text(text):
+    """Strip UI/plugin/attachment scaffolding before title generation."""
+    s = str(text or "").replace("\r", "\n").strip()
+    s = re.sub(r'^我上传了以下文件,请先用\s*read_file\s*读取再回答[:：]\s*', '', s, flags=re.I)
+    lines = []
+    for line in s.split("\n"):
+        file_line = re.match(r'^\s*-\s*(?:/|~/|[A-Za-z]:\\)\S+\s*(.*)$', line)
+        if file_line:
+            rest = file_line.group(1).strip()
+            if rest:
+                lines.append(rest)
+            continue
+        lines.append(line)
+    s = " ".join(lines)
+    s = re.sub(r'\s+', ' ', s).strip()
+    s = re.sub(r'\s*📎.*$', '', s).strip()
+    drop = [
+        r'(?:^|[。.!！?？]\s*)请?使用\s*`?[A-Za-z][A-Za-z0-9 _-]{2,}`?\s*(?:插件|plugin|skill)[^。.!！?？]*',
+        r'(?:^|[。.!！?？]\s*)需要时自动选择这些\s*skill\s*[:：][^。.!！?？]*',
+        r'(?:^|[。.!！?？]\s*)(?:除非我明确要求英文或其他语言|最终回复一律用中文|默认用中文|全程用中文)[^。.!！?？]*',
+        r'(?:^|[。.!！?？]\s*)请根据任务自动判断是否需要(?:调用|加载)[^。.!！?？]*',
+        r'(?:^|[。.!！?？]\s*)优先调用/加载\s*`?[^。.!！?？`]+`?\s*(?:skill|插件)?[^。.!！?？]*',
+        r'(?:^|[。.!！?？]\s*)菜单路径\s*`?[^。.!！?？`]+`?[^。.!！?？]*',
+        r'[A-Za-z][A-Za-z0-9 _-]{1,80}\s*(?:插件|plugin|skill)[，,、\s]*',
+        r'(?:先|请先)?(?:读取|加载|调用)并(?:遵循|使用)\s*',
+        r'`[A-Za-z][A-Za-z0-9_-]{2,}`\s*',
+        r'(?:先|请先)?(?:读取|加载|调用)\s*`?[^。.!！?？`]{2,80}`?\s*(?:文件|skill|插件)?',
+    ]
+    for pat in drop:
+        s = re.sub(pat, ' ', s, flags=re.I)
+    s = re.sub(r'[。!！?？,，;；:：、\s]+', ' ', s).strip()
+    return s
+
+def _title_seed_heuristic(text):
+    s = _clean_title_seed_text(text)
+    if not s:
+        return ""
+    domain = re.search(r'\b(?:https?://)?(?:www\.)?(?!www\.)([a-z0-9-]+)(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?![a-z0-9.-])', s, flags=re.I)
+    if domain and re.search(r'是什么|查询|介绍|分析|网站|公司|干嘛|做什么|资料|背景', s, flags=re.I):
+        name = domain.group(1)[:1].upper() + domain.group(1)[1:]
+        return (name + "网站查询")[:18]
+    stock_action = re.search(r'(抄底|买入|卖出|估值|财报|趋势|风险|机会)', s)
+    if stock_action:
+        before = s[:stock_action.start()]
+        before = re.sub(r'.*(?:分析|研究|看|判断)\s*', '', before).strip()
+        before = re.sub(r'(?:(?:是否|能否|能不能|可以|可不可以)\s*)+$', '', before).strip()
+        m = re.search(r'([A-Za-z0-9.]{2,12}|[\u4e00-\u9fa5]{2,8})$', before)
+        if m:
+            return (m.group(1) + stock_action.group(1) + "分析")[:18]
+    if re.search(r'codex', s, flags=re.I) and re.search(r'效率|优化|simplif|efficient|workflow|work more', s, flags=re.I):
+        return "优化Codex效率"
+    if re.search(r'codewhale', s, flags=re.I) and re.search(r'gui|界面|ui|前端|窗口', s, flags=re.I):
+        return "CodeWhale界面优化"
+    if re.search(r'多模型|compare', s, flags=re.I) and re.search(r'cpu|性能|卡|慢|占用', s, flags=re.I):
+        return "多模型性能优化"
+    return ""
+
+def _thread_title_context(rec):
+    items = (rec or {}).get("items") or []
+    chunks = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        kind = it.get("kind") or ""
+        role = "用户" if kind == "user_message" else ("助手" if kind == "agent_message" else "")
+        if not role:
+            continue
+        txt = (it.get("detail") or it.get("summary") or "").strip()
+        if not txt:
+            continue
+        if kind == "user_message":
+            txt = _clean_title_seed_text(txt)
+            if not txt:
+                continue
+        txt = re.sub(r'\s+', ' ', txt)
+        chunks.append(f"{role}: {txt[:900]}")
+        if len(chunks) >= 8:
+            break
+    return "\n".join(chunks)[:6000]
+
+def _clean_thread_title(title):
+    t = re.sub(r'^[\s"“”‘’`「『【\[]+|[\s"“”‘’`」』】\]]+$', '', str(title or "").strip())
+    t = re.sub(r'^(标题|对话标题|名称)\s*[:：]\s*', '', t, flags=re.I)
+    t = re.sub(r'[\r\n\t]+', ' ', t)
+    t = re.sub(r'\s{2,}', ' ', t).strip()
+    heuristic = _title_seed_heuristic(t)
+    if heuristic:
+        return heuristic
+    t = _clean_title_seed_text(t)
+    t = re.sub(r'^[。.!！?？,，;；:：、\s]+', '', t).strip()
+    t = re.sub(r'需要时自动选择这些\s*skill\s*[:：][^。.!！?？]*', '', t, flags=re.I).strip()
+    t = re.sub(r'^(请|帮我|帮忙|麻烦你?|能不能|能否|可以)\s*', '', t)
+    t = re.sub(r'^(关于|讨论|处理|解决|查看|检查|分析|研究|看看|检查下?|研究下?|分析下?|修一下)\s+', '', t)
+    if re.match(r'^优化一下[，,、\s]*(看看)?', t):
+        t = "优化建议"
+    t = re.sub(r'(?:用中文回复|中文回答|说中文|全程用中文给出结果)$', '', t, flags=re.I).strip()
+    t = re.sub(r'[。.!！?？,，;；:：]+$', '', t).strip()
+    m = re.fullmatch(r'(?:使用|调用)?\s*`?([A-Za-z][A-Za-z0-9 _-]{2,}?)`?\s*(?:插件|plugin|skill)?', t, flags=re.I)
+    if m:
+        name = re.sub(r'\s+', '', m.group(1))
+        t = name[:1].upper() + name[1:] + "研究"
+    t = re.sub(r'\s*(?:插件|plugin|skill)\s*$', '', t, flags=re.I).strip()
+    if len(t) > 18:
+        t = t[:18].rstrip()
+    return t
+
+def _bad_auto_title(title):
+    t = str(title or "").strip()
+    if not t:
+        return False
+    if re.search(r'^[。.!！?？,，;；:：、]', t):
+        return True
+    if re.search(r'请使用|需要时自动选择|除非我明确要求|read_file|我上传了以下文件|优先调用/加载|菜单路径|插件|skill', t, flags=re.I):
+        return True
+    if re.search(r'\b(?:www\.)?[a-z0-9-]+\.[a-z]{2,}(?:\.[a-z]{2,})?\b.*(?:是什么|干嘛|做什么)', t, flags=re.I):
+        return True
+    if len(t) > 18 and re.search(r'请|帮|使用|分析|研究|检查|看看|可以|需要', t):
+        return True
+    return False
+
+def _placeholder_thread_title(title):
+    return str(title or "").strip() in ("", "New Thread", "新对话", "未命名", "对话")
+
+def _auto_title_thread(tid, expected_title="", seed_text=""):
+    if not re.match(r'^thr_[a-zA-Z0-9_-]+$', tid or ""):
+        return {"ok": False, "error": "非法 thread_id"}
+    rec = json.loads(_LOCAL.open(urllib.request.Request(_route_base(f"/v1/threads/{tid}") + f"/v1/threads/{tid}"),
+                                 timeout=30).read())
+    current_title = str((rec or {}).get("title") or "")
+    provider = _tprov.get(tid) or None
+    try:
+        for t in (_threads_cache.get("v") or []):
+            if isinstance(t, dict) and t.get("id") == tid:
+                provider = t.get("provider") or provider
+                if not current_title:
+                    current_title = t.get("title") or ""
+                break
+    except Exception:
+        pass
+    lock = _title_lock_rec(tid)
+    if lock.get("locked"):
+        return {"ok": False, "skipped": True, "reason": "title_locked", "title": current_title, "lock": lock.get("kind") or "locked"}
+    if expected_title and current_title and current_title != expected_title and not _bad_auto_title(current_title) and not _placeholder_thread_title(current_title):
+        return {"ok": False, "skipped": True, "reason": "title_changed", "title": current_title}
+    ctx = _thread_title_context(rec)
+    seed = _clean_title_seed_text(seed_text)
+    if len(ctx) < 8 and len(seed) >= 4:
+        ctx = f"用户: {seed[:1200]}"
+    if len(ctx) < 8:
+        return {"ok": False, "skipped": True, "reason": "not_enough_context"}
+    fallback_title = _title_seed_heuristic(seed) or _title_seed_heuristic(ctx) or _title_seed_heuristic(current_title) or _title_seed_heuristic(expected_title)
+    begun, lock, reason = _begin_title_auto(tid, current_title)
+    if not begun:
+        return {"ok": False, "skipped": True, "reason": reason or "title_locked", "title": current_title, "lock": lock.get("kind") or reason}
+    provider = provider or _cfg_get("provider") or "deepseek"
+    success = False
+    try:
+        prompt = (
+            "请像 Codex 侧栏一样,给下面聊天起一个短、准、好扫视的中文标题。\n"
+            "命名规则:\n"
+            "- 优先 4 到 10 个汉字;有英文产品名/股票代码时最多 18 字符\n"
+            "- 用“对象 + 任务/意图”的名词短语,不要写完整句子\n"
+            "- 保留真正对象:产品名、项目名、股票名、文件名、bug 类型\n"
+            "- 去掉客套和入口词:请使用/帮我/看看/可以/需要时/用中文/插件/skill\n"
+            "- 不要照抄用户首句,不要出现“关于/讨论/问题/帮助/聊天/对话/总结”等空泛词\n"
+            "- 不要加引号、冒号、句号,只输出标题本身\n\n"
+            "好例子:\n"
+            "用户: Look across my threads and projects... simplify Codex efficiency → 用子代理优化Codex效率\n"
+            "用户: 请使用 stocksight 插件分析腾讯是否可以抄底 → 腾讯抄底分析\n"
+            "用户: 打开多模型对话 CPU 占用高 → 多模型性能优化\n"
+            "用户: www.oneworld.com是什么 → Oneworld网站查询\n"
+            "用户: 这种看不到工作进展是什么情况 → 工作进展显示\n\n"
+            f"当前粗标题: {current_title or expected_title}\n\n聊天内容:\n{ctx}"
+        )
+        title, used = _chat_title_once([
+            {"role": "system", "content": "你是产品里的智能对话命名器。输出必须短,像侧栏标签,只输出标题。"},
+            {"role": "user", "content": prompt},
+        ], _title_provider(provider))
+        title = _clean_thread_title(title)
+        if _bad_auto_title(title) and fallback_title:
+            title = fallback_title
+        if len(title) < 2:
+            title = fallback_title
+        if len(title) < 2:
+            return {"ok": False, "error": "标题生成为空"}
+        body = json.dumps({"title": title}, ensure_ascii=False).encode()
+        req = urllib.request.Request(_route_base(f"/v1/threads/{tid}") + f"/v1/threads/{tid}",
+                                     data=body, method="PATCH",
+                                     headers={"Content-Type": "application/json"})
+        _LOCAL.open(req, timeout=30).read()
+        _mark_title_locked(tid, title, "auto")
+        success = True
+        cur = _threads_cache["v"]
+        if isinstance(cur, list):
+            hit = False
+            for x in cur:
+                if isinstance(x, dict) and x.get("id") == tid:
+                    x["title"] = title; hit = True
+            if hit:
+                try: _atomic_write_json(_THREADS_CACHE_FILE, cur)
+                except Exception: pass
+        return {"ok": True, "title": title, "provider": used.get("provider"), "model": used.get("model")}
+    finally:
+        if not success:
+            _clear_title_pending(tid)
+
+def _auto_compare_title(prompt, expected_topic=""):
+    text = _clean_title_seed_text(prompt)
+    if len(text) < 4:
+        return {"ok": False, "skipped": True, "reason": "not_enough_context"}
+    cur = str(expected_topic or text[:80]).strip()
+    fallback_title = _title_seed_heuristic(text) or _title_seed_heuristic(cur)
+    task = (
+        "请像 Codex 侧栏一样,给这个多模型会话起一个统一短标题。标题概括用户发给所有模型的共同目的,不要概括某一个模型的回答。\n"
+        "命名规则:\n"
+        "- 优先 4 到 10 个汉字;有英文产品名/股票代码时最多 18 字符\n"
+        "- 用“对象 + 任务/意图”的名词短语,不要写完整句子\n"
+        "- 去掉客套和入口词:请使用/帮我/看看/可以/需要时/用中文/插件/skill\n"
+        "- 不要照抄开头句子\n"
+        "- 不要出现“关于/讨论/问题/帮助/聊天/对话/总结/多模型/对比”等空泛词\n"
+        "- 不要加引号、冒号、句号,只输出标题本身\n\n"
+        "好例子:\n"
+        "如果问题是优化 CodeWhale GUI → CodeWhale界面优化\n"
+        "如果问题是检查最新版本 → 版本更新检查\n"
+        "如果问题是研究某股票是否抄底 → 股票抄底分析\n\n"
+        f"当前粗标题: {cur}\n\n用户原始问题:\n{text[:3000]}"
+    )
+    title, used = _chat_title_once([
+        {"role": "system", "content": "你是产品里的对话命名器。输出必须短,像侧栏标签,只输出标题。"},
+        {"role": "user", "content": task},
+    ], _title_provider(_cfg_get("provider") or "deepseek"))
+    title = _clean_thread_title(title)
+    if _bad_auto_title(title) and fallback_title:
+        title = fallback_title
+    if len(title) < 2:
+        title = fallback_title
+    if len(title) < 2:
+        return {"ok": False, "error": "标题生成为空"}
+    return {"ok": True, "title": title, "provider": used.get("provider"), "model": used.get("model")}
 
 # ── fake-ip 环境自动探测 ──
 # 本机若挂 fake-ip 模式代理(Clash/Surge/MacPacket…),DNS 把公网域名解析成保留地址
@@ -1932,7 +5593,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "connect-src 'self'; "
                 "frame-src 'self' http://localhost:* http://127.0.0.1:* https:; "
                 "object-src 'none'; base-uri 'none'; form-action 'self'")
-        if p == "/" or p.endswith(".html"):
+        if p == "/" or p.endswith(".html") or p.endswith(".js") or p.endswith(".css"):
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             self.send_header("Pragma", "no-cache")
         super().end_headers()
@@ -2064,7 +5725,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 bd = json.loads(raw or b"{}")
                 if not bd.get("model"):
-                    bd["model"] = _thread_model(prov)
+                    bd["model"] = _cmp_thread_model(prov)
                 body = json.dumps(bd).encode()
             except Exception:
                 body = raw
@@ -2119,6 +5780,62 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         p = urllib.parse.urlparse(self.path).path
         if p.startswith("/preview/static/"):
             return self._serve_preview_static(p)
+        if p == "/api/file/download":
+            if not self._authed():
+                return self._deny()
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            target = _safe_download_file(q.get("path", [""])[0])
+            if not target:
+                return self._json({"error": "file not found or not allowed"}, 404)
+            name = os.path.basename(target).replace('"', '')
+            ctype = mimetypes.guess_type(target)[0] or "application/octet-stream"
+            disp_kind = "inline" if q.get("inline", [""])[0] == "1" else "attachment"
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Disposition", _content_disposition(disp_kind, name))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(os.path.getsize(target)))
+            self.end_headers()
+            try:
+                with open(target, "rb") as f:
+                    shutil.copyfileobj(f, self.wfile)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            return
+        if p == "/api/file/stat":   # 文件卡片用:校验路径存在且在允许范围,支持相对 base 解析
+            if not self._authed():
+                return self._deny()
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            raw = (q.get("path", [""])[0] or "").strip()
+            base = (q.get("base", [""])[0] or "").strip()
+            if raw and not raw.startswith(("/", "~")) and base.startswith("/"):
+                raw = base.rstrip("/") + "/" + raw.lstrip("./")
+            target = _safe_download_file(raw)
+            return self._json({"exists": bool(target), "path": target or ""})
+        if p == "/api/file/apps":
+            if not self._authed():
+                return self._deny()
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            target = _safe_download_file(q.get("path", [""])[0])
+            if not target:
+                return self._json({"error": "file not found or not allowed"}, 404)
+            return self._json({"ok": True, "apps": _file_open_apps(target)})
+        if p == "/api/preview/file-info":
+            if not self._authed():
+                return self._deny()
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            target = _safe_download_file(q.get("path", [""])[0]) or _preview_file_from_url(q.get("url", [""])[0])
+            if not target:
+                return self._json({"ok": False, "error": "preview file not found or not supported"}, 404)
+            return self._json({
+                "ok": True,
+                "path": target,
+                "name": os.path.basename(target),
+                "ext": os.path.splitext(target)[1].lower().lstrip("."),
+                "download_url": _download_url_for_file(target),
+                "inline_url": _download_url_for_file(target, inline=True),
+                "apps": _file_open_apps(target),
+            })
         if p == "/api/reload":
             if not self._authed():
                 return self._deny()
@@ -2142,6 +5859,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception as e:
                 out = []
             return self._json(out)
+        if p == "/api/settings/archived-sessions":
+            if not self._authed():
+                return self._deny()
+            try:
+                return self._json(archived_sessions())
+            except Exception as e:
+                return self._json({"items": [], "projects": [], "models": [], "total": 0, "error": str(e)[:300]}, 200)
         if p == "/api/newchat-provider":
             if not self._authed():
                 return self._deny()
@@ -2157,7 +5881,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not self._authed():
                 return self._deny()
             try:
-                out = balance()
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                out = balance(q.get("provider", [""])[0], q.get("all", [""])[0] == "1")
             except Exception as e:
                 out = {"error": str(e)[:200]}
             b = json.dumps(out).encode()
@@ -2168,6 +5893,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p == "/api/litellm-routing":
+            if not self._authed():
+                return self._deny()
+            try:
+                out = litellm_routing_status()
+            except Exception as e:
+                out = {"error": str(e)[:200]}
+            return self._json(out)
         if p == "/api/update/check":
             if not self._authed():
                 return self._deny()
@@ -2202,6 +5935,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not self._authed():
                 return self._deny()
             return self._json(gui_update_progress())
+        if p == "/api/update/harness/check":
+            if not self._authed():
+                return self._deny()
+            return self._json(harness_update_check())
+        if p == "/api/update/plugins/check":
+            if not self._authed():
+                return self._deny()
+            try:
+                out = plugin_updates_check()
+            except Exception as e:
+                out = {"error": str(e)[:200]}
+            return self._json(out)
         if p == "/api/app-refresh-status":    # 原生 App 是否被后台刷新了(前端据此提示退出重开)
             if not self._authed():
                 return self._deny()
@@ -2212,6 +5957,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             prefs = _model_prefs()
             out = {pv: (prefs.get(pv) or _model_pref(pv)) for pv in list(_CMP_FORCE_MODEL.keys()) + ["claude-code", "moonshot"]}
             return self._json({"prefs": out, "effort": {pv: _effort_pref(pv) for pv in ("claude-code", "openai-codex", "deepseek", "zai")}})
+        if p == "/api/provider-models":       # provider /models 动态目录:只返回模型名,不暴露 key
+            if not self._authed():
+                return self._deny()
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            raw = ",".join(q.get("providers", []) or q.get("provider", []))
+            providers = [re.sub(r'[^A-Za-z0-9._-]', '', x) for x in raw.split(",") if x.strip()] or None
+            force = (q.get("force", ["0"])[0] or "0").lower() in ("1", "true", "yes", "on")
+            return self._json(provider_models(providers, force=force))
         if p == "/api/pins":
             if not self._authed():
                 return self._deny()
@@ -2227,6 +5980,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p == "/api/cron-jobs":
+            if not self._authed():
+                return self._deny()
+            try:
+                out = read_cron_jobs()
+            except Exception:
+                out = []
+            return self._json(out)
         if p == "/api/plugins":   # + 菜单自定义插件列表
             if not self._authed():
                 return self._deny()
@@ -2242,6 +6003,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p == "/api/codex-plugins":   # 已安装的 Codex/CodeWhale 插件 manifest
+            if not self._authed():
+                return self._deny()
+            try:
+                out = read_codex_plugins()
+            except Exception as e:
+                out = {"error": str(e)[:200]}
+            return self._json(out)
+        if p == "/api/harnesses":   # 已安装/可用的外部研究 harness,供 + 菜单快速调用
+            if not self._authed():
+                return self._deny()
+            try:
+                out = read_harnesses()
+            except Exception as e:
+                out = {"error": str(e)[:200]}
+            return self._json(out)
         if p == "/api/research-skills":   # 深度研究「我的方法论」引擎可多选的研究 skill 注册表
             if not self._authed():
                 return self._deny()
@@ -2257,6 +6034,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p == "/api/research-records":   # 外部研究引擎结果:按 CodeWhale thread 持久化,刷新/切回可恢复
+            if not self._authed():
+                return self._deny()
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            tid = (q.get("thread_id", [""])[0] or "").strip()
+            out = research_records_for_thread(tid) if tid else read_research_records()
+            return self._json(out)
+        if p == "/api/thread-window":   # 单聊首屏分页快照:本地 runtime 只读当前窗口,避免前端解析完整大 thread JSON
+            if not self._authed():
+                return self._deny()
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            tid = (q.get("thread_id", [""])[0] or "").strip()
+            start_raw = q.get("start", [None])[0]
+            limit_raw = q.get("limit", ["80"])[0]
+            start = None if start_raw in (None, "") else start_raw
+            try:
+                out = thread_window(tid, start=start, limit=limit_raw)
+            except Exception as e:
+                out = {"error": str(e)[:200]}
+            return self._json(out)
         if p == "/api/cmp-threads":   # 对比 thread 注册表(侧栏分组用)
             if not self._authed():
                 return self._deny()
@@ -2287,6 +6084,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p == "/api/cmp-session":   # 按唯一 session_id 取单个对比会话;新窗口恢复时不用猜 localStorage
+            if not self._authed():
+                return self._deny()
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            sid = (q.get("id", [""])[0] or q.get("session_id", [""])[0] or "").strip()
+            out = cmp_session_by_id(sid) if sid else None
+            return self._json(out or {"error": "session not found"}, 404 if not out else 200)
+        if p == "/api/cmp-thread-brief":   # 多模型窗口首屏轻量摘要:本地读最新 turn,不启动/拉全量 provider 后端
+            if not self._authed():
+                return self._deny()
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            prov = (q.get("provider", [""])[0] or "").strip()
+            tid = (q.get("thread_id", [""])[0] or q.get("tid", [""])[0] or "").strip()
+            return self._json(cmp_thread_brief(prov, tid))
         if p in ("/api/mcp", "/api/skills", "/api/model") or p == "/api/skills/read":
             if not self._authed():
                 return self._deny()
@@ -2363,7 +6174,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             else:
                 body_bytes = data
                 ctype = "text/markdown; charset=utf-8" if inline else "application/octet-stream"
-                disp = ("inline" if inline else "attachment") + '; filename="%s"' % name.replace('"', '')
+                disp = _content_disposition("inline" if inline else "attachment", name)
             self.send_response(200)
             self.send_header("Content-Type", ctype)
             if disp:
@@ -2395,6 +6206,37 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
     def do_POST(self):
         p = urllib.parse.urlparse(self.path).path
+        if p == "/api/local/plugin-path":
+            if not self._authed():
+                return self._deny()
+            try:
+                return self._json(_choose_local_plugin_path())
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:300]})
+        if p == "/api/file/open":
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                out = _open_local_file(data.get("path", ""),
+                                       data.get("action", "open"),
+                                       data.get("bundle_id", ""),
+                                       data.get("app_path", ""))
+                return self._json(out, 200 if out.get("ok") else 400)
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:300]}, 400)
+        if p == "/api/preview/export-pdf":
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                target = _safe_download_file(data.get("path", "")) or _preview_file_from_url(data.get("url", ""))
+                out = _export_file_pdf(target)
+                return self._json(out, 200 if out.get("ok") else 400)
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:300]}, 400)
         if p == "/api/preview/detect":
             if not self._authed():
                 return self._deny()
@@ -2432,6 +6274,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json(_switch_single_thread_provider(tid, prov, model or None))
             except Exception as e:
                 return self._json({"error": str(e)[:200]}, 502)
+        if p == "/api/thread-title/auto":   # 首条消息发出后很快用 LLM 按对话目的生成更自然标题;成功后锁定,不反复改
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                tid = (data.get("thread_id") or data.get("tid") or "").strip()
+                expected = str(data.get("expected_title") or "")[:80]
+                seed = str(data.get("seed") or data.get("prompt") or data.get("text") or "")[:6000]
+                return self._json(_auto_title_thread(tid, expected, seed))
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:300]}, 200)
+        if p == "/api/cmp-title/auto":   # 多模型对比:按同一用户问题生成一个 session 级统一标题
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                prompt = str(data.get("prompt") or data.get("text") or "")[:6000]
+                expected = str(data.get("expected_topic") or "")[:120]
+                return self._json(_auto_compare_title(prompt, expected))
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:300]}, 200)
         if p == "/api/model-pref":   # 设置某 provider 选用的模型变体(单窗口 + 对比共用)
             if not self._authed():
                 return self._deny()
@@ -2468,6 +6333,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             _pin_thread(tid, prov)
             try: write_cmp_threads(list(dict.fromkeys(read_cmp_threads() + [tid])))   # 本端点只被对比 cmpRun 调用(单窗口走 _pin_thread() 函数直连不经此)→ 顺带登记为对比 thread,侧栏分组,老前端也生效、compare-claude 也对
             except Exception: pass
+            sid = (data.get("session_id") or data.get("cmp_session_id") or "").strip()
+            if sid:
+                try:
+                    upsert_cmp_session_thread(
+                        sid,
+                        str(data.get("topic") or "对比")[:160],
+                        prov,
+                        tid,
+                        str(data.get("title_seed") or "")[:2000],
+                    )
+                except Exception as e:
+                    print("[cmp-session] pin-thread upsert failed:", e, flush=True)
             return self._json({"ok": True})
         if p == "/v1/threads":   # 新对话:建在"新对话默认 provider"的独立后端,并记 tid->port(每对话锁模型)
             if not self._authed():
@@ -2486,16 +6363,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 except Exception:
                     pass
             try:
-                # ★ 默认 provider → 建在主后端 :7878(UPSTREAM);_route_base 对默认 provider 的 thread 也走 UPSTREAM,
+                # ★ 默认 provider 通常建在主后端 :7878(UPSTREAM);Kimi 等专属 provider 例外,始终走带
+                #   CODEWHALE_PROVIDER 的 sidecar,避免 OpenAI-compatible 模型被持久化成 provider=openai。
+                #   _route_base 对默认 provider 的普通 thread 也走 UPSTREAM,
                 #   "建会话的后端"="后续 turns/events 路由的后端",一致。否则建在 per-provider 后端却把 turns/events 路由到
                 #   :7878 → 跨后端 seq 不一致 → 单窗口实时 SSE 只收到 thread.started、收不到 turn 事件 → 消息不显示
                 #   (快照 GET 因 thread 存储跨后端共享仍能加载历史,极具迷惑性)。非默认 provider 才建在 per-provider 后端 + pin。
-                base = UPSTREAM if prov == default_prov else f"http://127.0.0.1:{ensure_provider_server(prov)}"
+                base = _provider_runtime_base(prov, default_prov)
                 req = urllib.request.Request(f"{base}/v1/threads", data=body, method="POST", headers={"Content-Type": "application/json"})
                 d = json.loads(_LOCAL.open(req, timeout=30).read())   # 必须用关键字 timeout!位置传 30 会被当成 data=30(int)→ http.client "message_body got int"→ 新建对话 502
-                if d.get("id") and prov != default_prov:
-                    _pin_thread(d["id"], prov)                       # 默认 provider 不 pin(本就走 UPSTREAM,pin 反而触发跨后端不一致)
-                    _mark_single_thread(d["id"])
+                if d.get("id"):
+                    if prov != default_prov or prov in _DEDICATED_RUNTIME_PROVIDERS:
+                        _pin_thread(d["id"], prov)                   # 专属 provider 也必须 pin,确保 turns/events 始终回到建 thread 的 sidecar
+                    _mark_single_thread(d["id"])                     # 所有经单窗口新建的 thread 都登记为普通单聊,避免被 provider 兜底/旧 cmp 注册误归到对比组
                 # ★ 新 thread 立刻插进聚合缓存 → 所有窗口 4s 轮询即刻可见,不等 ~43s/120s 的 summary 刷新。
                 #   否则首轮没跑完就切走/刷新,新对话会从侧栏消失几分钟(felix 反复撞到);真实 summary 刷新后同 id 自然覆盖。
                 try:
@@ -2525,13 +6405,35 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 except Exception as e:
                     out[prov] = {"ok": False, "error": str(e)[:160]}
             return self._json(out)
-        if p == "/api/compare/reset":   # 杀掉所有 per-provider 后端 + 清端口表 → 下次按需用当前配置/key 重启,杜绝残留旧后端答错模型(三栏都答 DeepSeek 的根治)
+        if p == "/api/litellm-routing":
+            if not self._authed():
+                return self._deny()
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            scope = (data.get("scope") or "compare").strip()
+            prev = _litellm_routing()
+            try:
+                routing = _set_litellm_routing(scope, bool(data.get("enabled")))
+                if scope == "compare" and bool(prev.get("compare")) != bool(routing.get("compare")):
+                    _kill_cmp_backends()
+                    with _cmp_lock:
+                        CMP_PORTS.clear(); _cmp_launching.clear(); _PORT_UP.clear()
+                return self._json({"ok": True, **litellm_routing_status()})
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:200]}, 400)
+        if p == "/api/qwen-chat":
             if not self._authed():
                 return self._deny()
             try:
-                subprocess.run(["/usr/bin/pkill", "-f", "app-server --config " + CMP_DIR], timeout=5)
-            except Exception:
-                pass
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                return self._json(_qwen_chat_once(data.get("provider"), data.get("prompt")))
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:240]}, 500)
+        if p == "/api/compare/reset":   # 杀掉所有 per-provider 后端 + 清端口表 → 下次按需用当前配置/key 重启,杜绝残留旧后端答错模型(三栏都答 DeepSeek 的根治)
+            if not self._authed():
+                return self._deny()
+            _kill_cmp_backends()
             with _cmp_lock:
                 CMP_PORTS.clear(); _cmp_launching.clear(); _PORT_UP.clear()
             return self._json({"ok": True})
@@ -2551,6 +6453,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p == "/api/settings/archived-sessions/delete":
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                ids = data.get("ids", []) if isinstance(data, dict) else []
+                out = delete_archived_sessions(ids if isinstance(ids, list) else [])
+            except Exception as e:
+                out = {"ok": False, "error": str(e)[:300]}
+            return self._json(out)
         if p == "/api/update/gui/apply":
             if not self._authed():
                 return self._deny()
@@ -2565,6 +6478,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p == "/api/update/harness/apply":
+            if not self._authed():
+                return self._deny()
+            return self._json(harness_update_apply())
+        if p == "/api/update/plugins/apply":
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                out = plugin_update_apply(data.get("id", ""))
+            except Exception as e:
+                out = {"ok": False, "error": str(e)[:200]}
+            return self._json(out)
         if p == "/api/pins":
             if not self._authed():
                 return self._deny()
@@ -2583,6 +6510,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p == "/api/cron-jobs":
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                raw = self.rfile.read(length) if length else b"[]"
+                data = json.loads(raw or b"[]")
+                ids = data.get("ids", []) if isinstance(data, dict) else data
+                out = write_cron_jobs(ids if isinstance(ids, list) else [])
+            except Exception as e:
+                out = {"error": str(e)[:200]}
+            return self._json(out)
         if p == "/api/plugins":   # 保存 + 菜单自定义插件(传入列表直接替换)
             if not self._authed():
                 return self._deny()
@@ -2601,6 +6540,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p == "/api/codex-plugins":   # 启停/安装本地 Codex/CodeWhale 插件目录
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                action = data.get("action")
+                if action == "toggle":
+                    out = _set_codex_plugin_enabled(data.get("id", ""), bool(data.get("enabled")))
+                elif action == "install_path":
+                    out = _install_codex_plugin_from_path(data.get("path", ""))
+                elif action == "install_upload":
+                    out = _install_codex_plugin_from_upload(data)
+                elif action == "install_url":
+                    out = _install_codex_plugin_from_url(data.get("url", ""), data.get("id", ""))
+                elif action == "install_source":
+                    out = _install_codex_plugin_from_source(_plugin_source_for_id(data.get("id", "")))
+                else:
+                    out = {"error": "unknown action"}
+            except Exception as e:
+                out = {"error": str(e)[:200]}
+            return self._json(out)
         if p == "/api/research-skills":   # 保存研究 skill 注册表(传入列表直接替换)
             if not self._authed():
                 return self._deny()
@@ -2619,6 +6580,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p == "/api/research-records":   # 保存/更新外部研究引擎结果
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                raw = self.rfile.read(length) if length else b"{}"
+                data = json.loads(raw or b"{}")
+                out = upsert_research_record(data if isinstance(data, dict) else {})
+            except Exception as e:
+                out = {"error": str(e)[:200]}
+            return self._json(out)
         if p == "/api/cmp-threads":   # 前端登记对比建的 thread id:传入列表直接替换(文件中残留但传入已不存在的视为已删除)
             if not self._authed():
                 return self._deny()
@@ -2647,7 +6619,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 raw = self.rfile.read(length) if length else b"{}"
                 data = json.loads(raw or b"{}")
                 sessions = data.get("sessions", []) if isinstance(data, dict) else data
-                out = upsert_cmp_sessions(sessions if isinstance(sessions, list) else [])
+                delete_ids = data.get("delete_ids", []) if isinstance(data, dict) else []
+                out = upsert_cmp_sessions(sessions if isinstance(sessions, list) else [], delete_ids=delete_ids if isinstance(delete_ids, list) else [])
             except Exception as e:
                 out = {"error": str(e)[:200]}
             b = json.dumps(out, ensure_ascii=False).encode()
@@ -2696,15 +6669,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     length = int(self.headers.get("Content-Length", 0) or 0)
                     data = json.loads(self.rfile.read(length) or b"{}") if length else {}
                     prompt = (data.get("prompt") or "").strip()
+                    model = (data.get("model") or "").strip()
+                    meta = _research_model_meta(m_h.group(1), data)
+                    if not model:
+                        model = meta.get("model", "")
                     if not prompt or len(prompt) > 8000:
                         out = {"ok": False, "error": "prompt 不能为空且不超过8000字符"}
+                    elif model and not re.match(r'^[A-Za-z0-9._-]+$', model):
+                        out = {"ok": False, "error": "非法 model"}
                     else:
                         # odr 的 submit 可能要先拉起 langgraph dev(~90s),放宽超时
-                        r = subprocess.run(["python3", client, "submit", prompt], capture_output=True, text=True, timeout=150)
+                        cmd = ["python3", client, "submit", prompt]
+                        if model:
+                            cmd += ["--model", model]
+                        r = subprocess.run(cmd, capture_output=True, text=True, timeout=150)
                         try:
                             out = json.loads((r.stdout or "").strip().splitlines()[-1])
                         except Exception:
-                            out = {"ok": False, "error": (r.stderr or r.stdout or "提交无输出")[:300]}
+                            out = {"ok": False, "error": (r.stderr or r.stdout or "提交无输出")[-1200:]}
+                        if isinstance(out, dict) and model:
+                            out.setdefault("model", model)
+                        if isinstance(out, dict):
+                            out.setdefault("provider", meta.get("provider", ""))
+                            out.setdefault("provider_model", meta.get("provider_model", ""))
+                            out.setdefault("model_label", meta.get("model_label", ""))
                 else:
                     q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                     tid = (q.get("thread_id", [""])[0] or "").strip()
@@ -2719,6 +6707,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                             out = parsed if parsed.get("ok") is False else {"ok": True, **parsed}
                         except Exception:
                             out = {"ok": False, "error": (r.stderr or r.stdout or "无输出")[:300]}
+                        if full and isinstance(out, dict) and out.get("ok") is not False:
+                            out = _hydrate_research_file_output(m_h.group(1), tid, out)
             except Exception as e:
                 out = {"ok": False, "error": str(e)[:300]}
             return self._json(out)
@@ -2730,6 +6720,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 data = json.loads(self.rfile.read(length) or b"{}") if length else {}
                 prompt = (data.get("prompt") or "").strip()
                 model = (data.get("model") or "").strip()
+                meta = _research_model_meta("deerflow", data)
+                if not model:
+                    model = meta.get("model", "")
                 use_fw = data.get("framework", True)   # 默认套价值投资框架;前端可传 framework:false 关掉
                 if not prompt or len(prompt) > 5000:
                     out = {"error": "prompt 不能为空且不超过5000字符"}
@@ -2740,18 +6733,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                            "submit", submit_prompt, "--name", prompt[:40]]   # --name 用原始 prompt,标题干净
                     if model:
                         cmd += ["--model", model]
-                    r = subprocess.run(cmd,
-                        capture_output=True, text=True, timeout=30)
+                    try:
+                        r = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+                    except subprocess.TimeoutExpired:
+                        log_tail = _tail_text("~/deer-flow-tmp/logs/gateway.log", 1800)
+                        out = {"ok": False, "error": "DeerFlow 提交超时。Gateway 日志尾部:\n" + (log_tail or "(无日志)")}
+                        return self._json(out)
                     lines = (r.stdout or "").strip().split("\n")
                     tid = ""; rid = ""
                     for ln in lines:
                         ls = ln.strip()   # deerflow_client 输出是「   Thread: <id>」带前导空格,必须先 strip 再匹配
                         if ls.startswith("Thread:"): tid = ls.split(":",1)[1].strip()
                         if ls.startswith("Run:"): rid = ls.split(":",1)[1].strip()
-                    if not tid:   # 没解析到 thread_id → 把 stderr/stdout 带回前端便于排查,而不是回 ok 却空 id
-                        out = {"ok": False, "error": ((r.stderr or r.stdout or "提交无输出")[:300])}
+                    if not tid:   # 没解析到 thread_id → 把 stderr/stdout + gateway 日志尾部带回前端便于排查,而不是回 ok 却空 id
+                        detail = (r.stderr or r.stdout or "提交无输出")
+                        log_tail = _tail_text("~/deer-flow-tmp/logs/gateway.log", 1400)
+                        out = {"ok": False, "error": (detail[-1800:] + (("\n\nGateway 日志尾部:\n" + log_tail) if log_tail else ""))[:3200]}
                     else:
                         out = {"ok": True, "thread_id": tid, "run_id": rid}
+                        if model:
+                            out["model"] = model
+                        out.setdefault("provider", meta.get("provider", ""))
+                        out.setdefault("provider_model", meta.get("provider_model", ""))
+                        out.setdefault("model_label", meta.get("model_label", ""))
             except Exception as e:
                 out = {"ok": False, "error": str(e)[:200]}
             b = json.dumps(out, ensure_ascii=False).encode()
@@ -2784,7 +6788,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     cmd = ["python3", os.path.expanduser("~/scripts/deerflow_client.py")]
                     cmd += (["result", tid] if full else ["poll", tid, "--timeout", "30"])
                     r = subprocess.run(cmd, capture_output=True, text=True, timeout=(60 if full else 45))
-                    out = {"ok": True, "output": (r.stdout or r.stderr or "").strip()[:8000]}
+                    # DeerFlow/STORM-style long reports can exceed a short preview; keep enough
+                    # text for the UI to show the finished report instead of a clipped summary.
+                    limit = 60000 if full else 12000
+                    out = {"ok": True, "output": (r.stdout or r.stderr or "").strip()[:limit]}
                     if full:   # 附上刚保存的报告文件(供前端下载/打开)
                         odir = os.path.expanduser("~/deerflow-output")
                         try:
@@ -2794,6 +6801,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                 out["file"] = mds[0]; out["path"] = os.path.join(odir, mds[0])
                         except Exception:
                             pass
+                        out = _hydrate_research_file_output("deerflow", tid, out)
             except Exception as e:
                 out = {"ok": False, "error": str(e)[:200]}
             b = json.dumps(out, ensure_ascii=False).encode()
@@ -2864,18 +6872,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if p.startswith("/v1/"):
             body = None
             arch_tid = None
+            restore_tid = None
             new_title = None
+            title_user = False
             m = re.match(r'^/v1/threads/(thr_[a-zA-Z0-9_-]+)$', p)
             if m:
                 length = int(self.headers.get("Content-Length", 0) or 0)
                 body = self.rfile.read(length) if length else b"{}"
                 try:
                     bd = json.loads(body)
+                    title_user = bool(bd.pop("title_user", False))
+                    if title_user:
+                        body = json.dumps(bd, ensure_ascii=False).encode()
                     av = bd.get("archived")
                     if av is True:
                         arch_tid = m.group(1)
                     elif av is False:
-                        _ARCHIVED_TOMBSTONES.discard(m.group(1))   # 取消归档 → 撤墓碑,恢复的对话不能再被过滤
+                        restore_tid = m.group(1)
                     if isinstance(bd.get("title"), str) and bd.get("title"):
                         new_title = bd["title"]
                 except Exception:
@@ -2892,6 +6905,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     if hit:
                         try: _atomic_write_json(_THREADS_CACHE_FILE, cur)
                         except Exception: pass
+                if title_user:
+                    _mark_title_locked(m.group(1), new_title, "manual")
             # 归档:必须先转发、确认上游成功,再登记墓碑 + 从缓存外科摘除。不清空缓存(清了下个请求会同步抓 ~43s 的 summary)。
             # 旧实现"先清缓存、起后台刷新、后转发"有竞态:刷新赶在归档生效前把旧列表写回 → 对话在侧栏复活(点了删不掉的根因)。
             if arch_tid and isinstance(st, int) and st < 400:
@@ -2900,6 +6915,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if cur:
                     _threads_cache["v"] = [t for t in cur if not (isinstance(t, dict) and t.get("id") == arch_tid)]
                     try: _atomic_write_json(_THREADS_CACHE_FILE, _threads_cache["v"])
+                    except Exception: pass
+            if restore_tid and isinstance(st, int) and st < 400:
+                _ARCHIVED_TOMBSTONES.discard(restore_tid)   # 取消归档 → 撤墓碑,恢复的对话不能再被过滤
+                th = _runtime_json("threads", restore_tid) or {}
+                if isinstance(th, dict) and th.get("id") and not th.get("archived"):
+                    th["provider"] = _model_to_provider(th.get("model")) or _tprov.get(restore_tid) or (_cfg_get("provider") or "deepseek")
+                    cur = _threads_cache["v"] if isinstance(_threads_cache["v"], list) else []
+                    cur = [x for x in cur if not (isinstance(x, dict) and x.get("id") == restore_tid)]
+                    cur.insert(0, th)
+                    try: cur.sort(key=lambda x: (x.get("updated_at") or "") if isinstance(x, dict) else "", reverse=True)
+                    except Exception: pass
+                    _threads_cache["v"] = cur
+                    try: _atomic_write_json(_THREADS_CACHE_FILE, cur)
                     except Exception: pass
             return
         self.send_error(404)
@@ -2916,9 +6944,10 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = True
 
 if __name__ == "__main__":
+    _ensure_default_output_config()   # 新线程/插件/harness 默认中文输出;含 api_key 的主配置用 0600 tmp 原子写
     # 清理可能残留的旧对比 app-server(老版本无代理 env 会答错模型 / 复用旧后端)→ 下次按需重启为带修复的
     try:
-        subprocess.run(["/usr/bin/pkill", "-f", "app-server --config " + CMP_DIR], timeout=5)
+        _kill_cmp_backends()
     except Exception:
         pass
     # 后台检查补丁二进制 + 原生 App:缺则下载,SHA 变了则刷新(OCR/二进制/原生壳 升级经此自动传播);不阻塞启动
@@ -2926,6 +6955,7 @@ if __name__ == "__main__":
     threading.Thread(target=_refresh_native_app, daemon=True).start()
     threading.Thread(target=_refresh_research_harness, daemon=True).start()   # harness 安装器刷新 + 有密钥即自动装引擎
     threading.Thread(target=_fetch_threads_now, daemon=True).start()   # 启动即后台预热线程列表缓存(落盘)→ 首个请求秒命中,不阻塞启动
+    threading.Thread(target=_watch_turn_notifications, daemon=True, name="turn-notifications").start()
     _seed_cmp_from_tprov()   # 一次性回溯:把历史对比对话登记进侧栏分组
     print(f"CodeWhale GUI server on {BIND}:{PORT}  (token {'ENABLED' if TOKEN else 'off'})")
     Server((BIND, PORT), Handler).serve_forever()

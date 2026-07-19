@@ -1,0 +1,68 @@
+:root{
+  /* Surface */
+  --bg:#F4F6F8; --side:#E9EDF1; --panel:#FFFFFF; --surface-muted:#F8FAFB; --surface-strong:#E1E6EB;
+  /* Ink */
+  --ink:#171A1F; --ink-2:#4E5965; --ink-3:#7C8793;
+  /* Lines */
+  --line:#CBD3DC; --line-soft:#E1E6EB;
+  /* Accent */
+  --accent:#C2410C; --accent-deep:#9A3412;
+  --accent-tint:rgba(194,65,12,.09); --accent-tint-2:rgba(194,65,12,.17);
+  --accent-line:#D07A47;
+  /* Semantic */
+  --ok:#3D8168; --warn:#B45309; --err:#B3261E;
+  --ok-tint:rgba(61,129,104,.12); --warn-tint:#FDF8F0; --err-tint:rgba(179,38,30,.08);
+  /* Shadows */
+  --sh-1:0 1px 3px rgba(23,26,31,.11);
+  --sh-2:0 5px 16px rgba(23,26,31,.12);
+  --sh-3:0 18px 48px rgba(23,26,31,.20);
+  --sh-none:none;
+  /* Radius */
+  --r-s:6px; --r-m:10px; --r-l:14px; --r-full:99px;
+  /* Type */
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro SC","PingFang SC","Helvetica Neue",sans-serif;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+  --fs-caption:11px; --fs-ui:12.5px; --fs-body:14px; --fs-title:16px; --fs-h2:20px; --fs-h1:24px;
+  /* Motion */
+  --t-fast:120ms ease-out; --t-slow:200ms ease-out;
+
+  --sidebar-w:268px;
+
+  /* Precomputed colors and effects. */
+  --white:#FFFFFF;
+  --syntax-bg:#EEF2F5;
+  --switch-off:#AEB8C2;
+  --line-strong:#AAB5C0;
+  --idle-dot:rgba(124,135,147,.55);
+  --ink-hover:rgba(31,45,61,.075);
+  --ink-hover-2:rgba(31,45,61,.11);
+  --backdrop:rgba(42,37,32,.32);
+  --backdrop-strong:rgba(42,37,32,.35);
+  --warn-border:rgba(180,83,9,.35);
+  --term-bg:#26211C;
+  --term-ink:#F7F2EA;
+  --pv-body:#D8D5CF;
+  --pv-error-bg:#FFF1EF;
+  --pv-error-line:#EFC8C3;
+  --focus-ring:0 0 0 3px var(--accent-tint);
+  --sh-preview:0 0 0 1px rgba(42,37,32,.12),0 8px 28px rgba(42,37,32,.18);
+  --sh-sidebar:2px 0 18px rgba(42,37,32,.18);
+  --sh-dropdown:0 8px 30px rgba(42,37,32,.14);
+  --sh-toast:0 6px 24px rgba(42,37,32,.18);
+  --sh-card-hairline:0 1px 0 rgba(0,0,0,.02);
+  --image-overlay:linear-gradient(to bottom,rgba(42,37,32,0),rgba(42,37,32,.68));
+  --image-close:rgba(42,37,32,.86);
+  --spinner-track:rgba(255,255,255,.35);
+  --compare-ok-line:rgba(57,126,102,.28);
+  --compare-ok-bg:rgba(57,126,102,.1);
+  --cron:#2563EB;
+  --cron-ink:#1D4ED8;
+  --cron-bg:rgba(37,99,235,.08);
+  --cron-line:rgba(37,99,235,.30);
+  --file-pdf:#ff5a5f;
+  --file-md:#6b7280;
+  --file-xls:#16a34a;
+  --file-doc:#2563eb;
+  --file-ppt:#ea580c;
+  --file-img:#8b5cf6;
+}

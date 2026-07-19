@@ -1,6 +1,6 @@
 #!/bin/bash
 # CodeWhale GUI 研究 harness 一键安装(幂等,可重复跑)
-# 装齐深度研究面板 5 引擎的本机侧依赖:桥接脚本 + GPT Researcher + STORM + Open Deep Research + DeerFlow(gateway)
+# 装齐深度研究面板 10 引擎的本机侧依赖:桥接脚本 + GPT Researcher + STORM + Open Deep Research + DeerFlow(gateway) + Agent Loop + Pydantic AI + browser-use + CrewAI + LlamaIndex/Obsidian
 #
 # 用法:
 #   1) cp harness.env.example ~/agent-harnesses/harness.env 并填入你的 API key
@@ -12,13 +12,13 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ENVF="$HOME/agent-harnesses/harness.env"
 say(){ printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 
-say "0/6 前置检查"
+say "0/11 前置检查"
 PY312="$(command -v python3.12 || true)"
 [ -z "$PY312" ] && [ -x /opt/homebrew/bin/python3.12 ] && PY312=/opt/homebrew/bin/python3.12
 [ -z "$PY312" ] && { echo "✗ 缺 python3.12 → brew install python@3.12"; exit 1; }
 command -v git >/dev/null || { echo "✗ 缺 git → xcode-select --install"; exit 1; }
 command -v uv  >/dev/null || { echo "✗ 缺 uv → brew install uv"; exit 1; }
-mkdir -p ~/agent-harnesses ~/harness-output/gptr ~/harness-output/odr ~/harness-output/storm ~/scripts ~/deerflow-output
+mkdir -p ~/agent-harnesses ~/harness-output/gptr ~/harness-output/odr ~/harness-output/storm ~/harness-output/agentloop ~/harness-output/pydai ~/harness-output/browseruse ~/harness-output/crewai ~/harness-output/obsidian ~/scripts ~/deerflow-output
 if [ ! -f "$ENVF" ]; then
   if [ -f "$HERE/harness.env" ]; then cp "$HERE/harness.env" "$ENVF";   # 私密移植包场景:env 随包携带
   else echo "✗ 缺 $ENVF → cp $HERE/harness.env.example $ENVF 然后填入你的 key"; exit 1; fi
@@ -29,12 +29,12 @@ set -a; . "$ENVF"; set +a
 [ -n "$KIMI_API_KEY" ]    || echo "  ⚠ 无 KIMI_API_KEY:GPT Researcher 的 embedding 需要它(deepseek 无 embeddings 接口)"
 echo "  python3.12 / git / uv / harness.env ✓"
 
-say "1/6 桥接脚本 → ~/scripts"
-cp "$HERE"/bridge/deerflow_client.py "$HERE"/bridge/gptr_client.py "$HERE"/bridge/odr_client.py "$HERE"/bridge/storm_client.py ~/scripts/
-chmod +x ~/scripts/deerflow_client.py ~/scripts/gptr_client.py ~/scripts/odr_client.py ~/scripts/storm_client.py
-echo "  4 个桥接脚本 ✓(密钥统一读 ~/agent-harnesses/harness.env,脚本本身无 key)"
+say "1/11 桥接脚本 → ~/scripts"
+cp "$HERE"/bridge/*.py ~/scripts/
+chmod +x ~/scripts/deerflow_client.py ~/scripts/gptr_client.py ~/scripts/odr_client.py ~/scripts/storm_client.py ~/scripts/agentloop_client.py ~/scripts/pydai_client.py ~/scripts/browseruse_client.py ~/scripts/crewai_client.py ~/scripts/obsidian_client.py
+echo "  桥接脚本 + common_llm ✓(密钥统一读 ~/agent-harnesses/harness.env,脚本本身无 key)"
 
-say "2/6 GPT Researcher"
+say "2/11 GPT Researcher"
 if [ ! -x ~/agent-harnesses/gptr-venv/bin/python ]; then
   "$PY312" -m venv ~/agent-harnesses/gptr-venv
   ~/agent-harnesses/gptr-venv/bin/pip install -q --upgrade pip
@@ -55,7 +55,7 @@ LANGUAGE=chinese
 EOF
 ~/agent-harnesses/gptr-venv/bin/python -c "from gpt_researcher import GPTResearcher" && echo "  gpt-researcher ✓"
 
-say "3/6 STORM"
+say "3/11 STORM"
 if [ ! -x ~/agent-harnesses/storm-venv/bin/python ]; then
   "$PY312" -m venv ~/agent-harnesses/storm-venv
   ~/agent-harnesses/storm-venv/bin/pip install -q --upgrade pip
@@ -63,7 +63,7 @@ fi
 ~/agent-harnesses/storm-venv/bin/pip install -q knowledge-storm tavily-python   # 坑:tavily-python 不在 knowledge-storm 依赖里,必须显式装
 ~/agent-harnesses/storm-venv/bin/python -c "import knowledge_storm" && echo "  knowledge-storm ✓"
 
-say "4/6 Open Deep Research (LangGraph)"
+say "4/11 Open Deep Research (LangGraph)"
 if [ ! -d ~/agent-harnesses/open_deep_research ]; then
   git clone -q --depth 1 https://github.com/langchain-ai/open_deep_research.git ~/agent-harnesses/open_deep_research
 fi
@@ -104,7 +104,7 @@ else:
 PY
 echo "  open_deep_research ✓(首次调用由 odr_client 自动拉起 langgraph dev :2024)"
 
-say "5/6 DeerFlow (gateway :8002)"
+say "5/11 DeerFlow (gateway :8002)"
 if [ ! -d ~/deer-flow-tmp ]; then
   git clone -q https://github.com/bytedance/deer-flow.git ~/deer-flow-tmp
   PIN="$(cat "$HERE"/deerflow/PINNED_COMMIT 2>/dev/null || true)"
@@ -139,8 +139,54 @@ if ! curl -s -o /dev/null http://127.0.0.1:8002/health; then
 fi
 curl -s -o /dev/null http://127.0.0.1:8002/health && echo "  DeerFlow gateway :8002 ✓" || echo "  ⚠ gateway 没起来,查 ~/deer-flow-tmp/logs/gateway.log"
 
-say "6/6 冒烟自检"
+say "6/11 Agent Loop (LangGraph-lite)"
+if [ ! -x ~/agent-harnesses/agentloop-venv/bin/python ]; then
+  "$PY312" -m venv ~/agent-harnesses/agentloop-venv
+  ~/agent-harnesses/agentloop-venv/bin/pip install -q --upgrade pip
+fi
+~/agent-harnesses/agentloop-venv/bin/pip install -q openai tavily-python langgraph
+~/agent-harnesses/agentloop-venv/bin/python -c "import openai, langgraph" && echo "  agent-loop ✓"
+
+say "7/11 Pydantic AI"
+if [ ! -x ~/agent-harnesses/pydai-venv/bin/python ]; then
+  "$PY312" -m venv ~/agent-harnesses/pydai-venv
+  ~/agent-harnesses/pydai-venv/bin/pip install -q --upgrade pip
+fi
+~/agent-harnesses/pydai-venv/bin/pip install -q "pydantic-ai-slim[openai]" tavily-python
+~/agent-harnesses/pydai-venv/bin/python -c "import pydantic_ai" && echo "  pydantic-ai ✓"
+
+say "8/11 browser-use"
+if [ ! -x ~/agent-harnesses/browseruse-venv/bin/python ]; then
+  "$PY312" -m venv ~/agent-harnesses/browseruse-venv
+  ~/agent-harnesses/browseruse-venv/bin/pip install -q --upgrade pip
+fi
+~/agent-harnesses/browseruse-venv/bin/pip install -q browser-use langchain-openai playwright
+~/agent-harnesses/browseruse-venv/bin/python -m playwright install chromium
+~/agent-harnesses/browseruse-venv/bin/python -c "import browser_use" && echo "  browser-use ✓"
+
+say "9/11 CrewAI"
+if [ ! -x ~/agent-harnesses/crewai-venv/bin/python ]; then
+  "$PY312" -m venv ~/agent-harnesses/crewai-venv
+  ~/agent-harnesses/crewai-venv/bin/pip install -q --upgrade pip
+fi
+~/agent-harnesses/crewai-venv/bin/pip install -q crewai crewai-tools openai tavily-python
+~/agent-harnesses/crewai-venv/bin/python -c "import crewai" && echo "  crewai ✓"
+
+say "10/11 LlamaIndex / Obsidian"
+if [ ! -x ~/agent-harnesses/llamaindex-venv/bin/python ]; then
+  "$PY312" -m venv ~/agent-harnesses/llamaindex-venv
+  ~/agent-harnesses/llamaindex-venv/bin/pip install -q --upgrade pip
+fi
+~/agent-harnesses/llamaindex-venv/bin/pip install -q llama-index llama-index-llms-openai llama-index-embeddings-huggingface llama-index-readers-file sentence-transformers
+~/agent-harnesses/llamaindex-venv/bin/python -c "import llama_index.core" && echo "  llama-index ✓"
+
+say "11/11 冒烟自检"
 python3 ~/scripts/gptr_client.py progress __nonexist__ >/dev/null && echo "  gptr 桥接 ✓"
 python3 ~/scripts/storm_client.py progress __nonexist__ >/dev/null && echo "  storm 桥接 ✓"
+python3 ~/scripts/agentloop_client.py progress __nonexist__ >/dev/null && echo "  agentloop 桥接 ✓"
+python3 ~/scripts/pydai_client.py progress __nonexist__ >/dev/null && echo "  pydai 桥接 ✓"
+python3 ~/scripts/browseruse_client.py progress __nonexist__ >/dev/null && echo "  browser-use 桥接 ✓"
+python3 ~/scripts/crewai_client.py progress __nonexist__ >/dev/null && echo "  crewai 桥接 ✓"
+python3 ~/scripts/obsidian_client.py progress __nonexist__ >/dev/null && echo "  obsidian 桥接 ✓"
 echo ""
-echo "✅ 完成。CodeWhale GUI(v2.6.0+)深度研究面板 5 引擎可用。踩坑详录见 harness/README.md"
+echo "✅ 完成。CodeWhale GUI(v2.6.0+)深度研究面板 10 引擎可用。踩坑详录见 harness/README.md"

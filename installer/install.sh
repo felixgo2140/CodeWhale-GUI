@@ -58,6 +58,12 @@ mkdir -p "$HOME/codewhale-gui"
 cp -R "$HERE/web" "$HOME/codewhale-gui/"
 cp "$HERE/server.py" "$HOME/codewhale-gui/server.py"
 cp "$HERE/VERSION" "$HOME/codewhale-gui/VERSION" 2>/dev/null || echo "0.0.0" > "$HOME/codewhale-gui/VERSION"   # 当前 GUI 版本(在线更新比对用)
+if [ -d "$HERE/harness" ]; then
+  rm -rf "$HOME/codewhale-gui/harness"
+  cp -R "$HERE/harness" "$HOME/codewhale-gui/harness"
+  chmod +x "$HOME/codewhale-gui/harness/install_harnesses.sh" 2>/dev/null || true
+  echo "  + 已部署研究 harness 脚本(密钥仍只从 ~/agent-harnesses/harness.env 读取)"
+fi
 sed -i '' "s#/Users/test#$HOME#g" "$HOME/codewhale-gui/web/index.html"   # 把示例家目录换成本机
 
 # ── 5. GUI token(本机生成,LAN 防护)──
