@@ -22,6 +22,25 @@ CODEWHALE_CFG = os.path.expanduser("~/.codewhale/config.toml")
 CODEWHALE_CMP_DIR = os.path.expanduser("~/.codewhale-gui/cmp")
 
 
+def _atomic_write_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _pid_alive(pid):
+    try:
+        pid = int(pid or 0)
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 def _read_env_file(path):
     vals = {}
     if not os.path.exists(path):
@@ -106,7 +125,7 @@ def _model_key(model):
         return "hunyuan"
     if m in ("glm", "zai", "zhipu", "glm-5.2", "glm-5.2-air"):
         return "zai"
-    if m in ("kimi", "moonshot", "kimi-for-coding", "moonshot-v1-128k"):
+    if m in ("kimi", "moonshot", "k3", "kimi-for-coding", "moonshot-v1-128k") or m.startswith("kimi"):
         return "kimi"
     if m in ("longcat", "longcat-2.0"):
         return "longcat"
@@ -126,10 +145,13 @@ def _set_embedding(vals):
     os.environ["EMBEDDING_KWARGS"] = json.dumps({
         "openai_api_base": base or "https://api.kimi.com/coding/v1",
         "openai_api_key": key,
+        # Kimi embedding endpoint accepts text input, but returns 500 for the
+        # token-id arrays produced by LangChain's length-safe preprocessing.
+        "check_embedding_ctx_length": False,
     }, ensure_ascii=False)
 
 
-def _set_openai_compat(key, base, model):
+def _set_openai_compat(key, base, model, temperature=None):
     if _looks_placeholder(key):
         raise RuntimeError(f"{model} 的 API key 未配置或还是占位符")
     base = (base or "").rstrip("/")
@@ -139,6 +161,10 @@ def _set_openai_compat(key, base, model):
     os.environ["FAST_LLM"] = f"openai:{model}"
     os.environ["SMART_LLM"] = f"openai:{model}"
     os.environ["STRATEGIC_LLM"] = f"openai:{model}"
+    if temperature is None:
+        os.environ.pop("TEMPERATURE", None)
+    else:
+        os.environ["TEMPERATURE"] = str(temperature)
     # 推理型模型(doubao-seed/LongCat/混元等)思考会吃掉输出预算,gpt-researcher 默认 3000/6000/4000
     # 太小 → 正文为空("LLM returned empty response")。统一拉高,普通模型也无害(只是上限)。
     os.environ.setdefault("FAST_TOKEN_LIMIT", "8000")
@@ -164,7 +190,7 @@ def _load_env(model=""):
     shadowed = {
         "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE",
         "FAST_LLM", "SMART_LLM", "STRATEGIC_LLM",
-        "EMBEDDING", "EMBEDDING_KWARGS", "LLM_KWARGS",
+        "EMBEDDING", "EMBEDDING_KWARGS", "LLM_KWARGS", "TEMPERATURE",
     }
     for k, v in vals.items():
         if k in shadowed:
@@ -189,9 +215,11 @@ def _load_env(model=""):
         key = key or vals.get("ZHIPU_API_KEY", "")
         _set_openai_compat(key, base or "https://api.z.ai/api/paas/v4", "GLM-5.2")
     elif mk == "kimi":
-        key, base = _codewhale_provider("moonshot", "https://api.kimi.com/coding/v1")
+        key, base, mdl = _codewhale_provider_config("moonshot", "https://api.kimi.com/coding/v1", "k3")
+        if not key:
+            key, base, mdl = _codewhale_provider_config("kimi", "https://api.kimi.com/coding/v1", "k3")
         key = key or vals.get("KIMI_API_KEY", "")
-        _set_openai_compat(key, base or "https://api.kimi.com/coding/v1", "kimi-for-coding")
+        _set_openai_compat(key, base or "https://api.kimi.com/coding/v1", mdl or "k3", temperature=1)
     elif mk == "longcat":
         key, base, mdl = _codewhale_provider_config("longcat", "https://api.longcat.chat/openai", "LongCat-2.0")
         _set_openai_compat(key, base, mdl or "LongCat-2.0")
@@ -206,26 +234,76 @@ def _load_env(model=""):
         _set_deepseek(vals)
 
 
+def _patch_model_compatibility(model):
+    """Kimi K3 only accepts its default temperature=1.
+
+    GPT Researcher passes per-call temperatures after LLM_KWARGS, so an env
+    override alone cannot fix it. Registering the active model in the package's
+    shared no-temperature list makes every retry omit that unsupported field.
+    """
+    raw = str(model or "").split(":", 1)[-1].strip()
+    if _model_key(raw) != "kimi" or raw.lower() not in {"k3", "kimi-for-coding"}:
+        return
+    candidates = {raw, raw.lower(), raw.upper()}
+    try:
+        from gpt_researcher.llm_provider.generic import base as generic_base
+        for name in candidates:
+            if name not in generic_base.NO_SUPPORT_TEMPERATURE_MODELS:
+                generic_base.NO_SUPPORT_TEMPERATURE_MODELS.append(name)
+    except Exception:
+        pass
+    try:
+        from gpt_researcher.utils import llm as llm_utils
+        for name in candidates:
+            if name not in llm_utils.NO_SUPPORT_TEMPERATURE_MODELS:
+                llm_utils.NO_SUPPORT_TEMPERATURE_MODELS.append(name)
+    except Exception:
+        pass
+
+
 def cmd_submit(prompt, model=""):
     os.makedirs(JOBS, exist_ok=True)
     jid = uuid.uuid4().hex[:12]
-    job = {"id": jid, "status": "running", "query": prompt, "model": model, "started": time.time()}
-    json.dump(job, open(f"{JOBS}/{jid}.json", "w"), ensure_ascii=False)
-    subprocess.Popen(
-        [VENV_PY, os.path.abspath(__file__), "run", jid],
-        start_new_session=True,
-        stdout=open(f"{JOBS}/{jid}.log", "w"),
-        stderr=subprocess.STDOUT,
-    )
+    job_path = f"{JOBS}/{jid}.json"
+    job = {"id": jid, "status": "running", "stage": "starting", "query": prompt, "model": model,
+           "started": time.time(), "updated": time.time()}
+    _atomic_write_json(job_path, job)
+    logf = open(f"{JOBS}/{jid}.log", "w", encoding="utf-8")
+    try:
+        proc = subprocess.Popen(
+            [VENV_PY, os.path.abspath(__file__), "run", jid],
+            start_new_session=True,
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+        )
+    finally:
+        logf.close()
+    try:
+        with open(job_path, encoding="utf-8") as f:
+            current = json.load(f)
+    except Exception:
+        current = job
+    current.update(pid=proc.pid, updated=time.time())
+    if current.get("stage") == "starting":
+        current["stage"] = "booting"
+    _atomic_write_json(job_path, current)
     print(json.dumps({"ok": True, "thread_id": jid}))
 
 
 def cmd_run(jid):
     import asyncio
 
-    job = json.load(open(f"{JOBS}/{jid}.json"))
-    _load_env(job.get("model", ""))
+    job_path = f"{JOBS}/{jid}.json"
+    with open(job_path, encoding="utf-8") as f:
+        job = json.load(f)
+    job.update(pid=os.getpid(), stage="configuring", updated=time.time())
+    _atomic_write_json(job_path, job)
     try:
+        _load_env(job.get("model", ""))
+        active_model = os.environ.get("FAST_LLM", "").split(":", 1)[-1]
+        _patch_model_compatibility(active_model)
+        job.update(stage="researching", active_model=active_model, updated=time.time())
+        _atomic_write_json(job_path, job)
         from gpt_researcher import GPTResearcher
 
         async def go():
@@ -250,18 +328,26 @@ def cmd_run(jid):
             srcs = len(r.visited_urls or [])
         except Exception:
             pass
-        job.update(status="success", file=fn, path=path, costs=costs, sources=srcs)
+        job.update(status="success", stage="completed", file=fn, path=path, costs=costs, sources=srcs,
+                   ended=time.time(), updated=time.time())
     except Exception as e:
-        job.update(status="error", error=_redact(str(e))[:500])
-    json.dump(job, open(f"{JOBS}/{jid}.json", "w"), ensure_ascii=False)
+        job.update(status="error", stage="failed", error=_redact(str(e))[:500], ended=time.time(), updated=time.time())
+    _atomic_write_json(job_path, job)
 
 
 def cmd_progress(jid):
+    job_path = f"{JOBS}/{jid}.json"
     try:
-        job = json.load(open(f"{JOBS}/{jid}.json"))
+        with open(job_path, encoding="utf-8") as f:
+            job = json.load(f)
     except Exception:
         print(json.dumps({"status": "pending"}))
         return
+    if job.get("status") == "running" and job.get("pid") and time.time() - float(job.get("started") or 0) > 5:
+        if not _pid_alive(job.get("pid")):
+            job.update(status="error", stage="failed", ended=time.time(), updated=time.time(),
+                       error="GPT Researcher 子进程已退出,但未生成结果。请查看任务日志后重试。")
+            _atomic_write_json(job_path, job)
     tail, nlines = "", 0
     try:
         log = open(f"{JOBS}/{jid}.log", errors="replace").read()
@@ -269,7 +355,7 @@ def cmd_progress(jid):
         nlines = len([l for l in log.splitlines() if l.strip()])
     except Exception:
         pass
-    out = {"status": job.get("status", "unknown"), "tail": tail, "msg_count": nlines,
+    out = {"status": job.get("status", "unknown"), "stage": job.get("stage", ""), "tail": tail, "msg_count": nlines,
            "llm_calls": 0, "in_tokens": 0, "out_tokens": 0}
     if job.get("error"):
         out["error"] = _redact(job["error"])
@@ -280,20 +366,23 @@ def cmd_progress(jid):
 
 def cmd_result(jid):
     try:
-        job = json.load(open(f"{JOBS}/{jid}.json"))
+        with open(f"{JOBS}/{jid}.json", encoding="utf-8") as f:
+            job = json.load(f)
     except Exception:
         print(json.dumps({"ok": False, "error": "job 不存在"}))
         return
     if job.get("path") and os.path.exists(job["path"]):
-        print(json.dumps({"ok": True, "output": open(job["path"], errors="replace").read(),
-                          "file": job.get("file"), "path": job.get("path")}, ensure_ascii=False))
+        with open(job["path"], errors="replace") as f:
+            output = f.read()
+        print(json.dumps({"ok": True, "output": output, "file": job.get("file"),
+                          "path": job.get("path")}, ensure_ascii=False))
     else:
         print(json.dumps({"ok": False, "error": _redact(job.get("error") or "无结果")}, ensure_ascii=False))
 
 
 def main():
     if len(sys.argv) < 3:
-        sys.exit("用法: gptr_client.py submit <prompt> [--model hunyuan|deepseek|zai|kimi|longcat|volcengine|qwen] | run|progress|result <job_id>")
+        sys.exit("用法: gptr_client.py submit <prompt> [--model hunyuan|deepseek|zai|kimi|k3|longcat|volcengine|qwen] | run|progress|result <job_id>")
     cmd, arg = sys.argv[1], sys.argv[2]
     model = ""
     if "--model" in sys.argv:

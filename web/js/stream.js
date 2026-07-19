@@ -4,6 +4,61 @@ function updateContextRisk(rec){
   state.activeMaxInputTokens=turns.reduce((m,t)=>Math.max(m, +(t&&t.usage&&t.usage.input_tokens||0)), 0);
 }
 function isRiskyContext(){ return state.activeMaxInputTokens>=250000 || state.activeTurnCount>=18; }
+
+async function waitForTurnTerminal(threadId, turnId, timeoutMs=120000){
+  const started=Date.now();
+  while(Date.now()-started<timeoutMs){
+    const rec=await fetchThreadWindow(threadId);
+    const turn=(rec.turns||[]).find(t=>t&&t.id===turnId);
+    if(turn && isTurnDone(normTurnStatus(turn.status))) return {turn,rec};
+    await new Promise(resolve=>setTimeout(resolve,800));
+  }
+  throw new Error("上下文整理超时,原消息尚未发送");
+}
+
+async function ensureContextCapacityBeforeSend(){
+  const tid=state.activeId;
+  if(!tid || state._contextMaintenance) return;
+  let risk;
+  try{
+    risk=await api(`/api/thread-context-risk?thread_id=${encodeURIComponent(tid)}`);
+  }catch(e){
+    console.warn("context risk check failed",e);
+    return;
+  }
+  if(!risk || risk.error || !risk.needs_compaction) return;
+  state._contextMaintenance=true;
+  if(!state.runUI) runStatusReset(false);
+  setRunning(true);
+  const pct=risk.pressure?`当前约 ${Math.round(risk.pressure*100)}%`:(risk.reason||"长线程");
+  runStatusUpdate("整理上下文",`${pct},先生成恢复摘要再发送`);
+  runStatusStep("检测到长线程上下文压力");
+  try{
+    const started=await api(`/v1/threads/${tid}/compact`,{method:"POST",body:"{}"});
+    let turnId=started&&started.turn&&started.turn.id;
+    if(!turnId){
+      const rec=await fetchThreadWindow(tid);
+      turnId=rec&&rec.thread&&rec.thread.latest_turn_id;
+    }
+    if(!turnId) throw new Error("后端没有返回上下文整理任务 ID");
+    state._contextCompactTurnId=turnId;
+    const done=await waitForTurnTerminal(tid,turnId);
+    const status=normTurnStatus(done.turn.status);
+    if(status!=="completed") throw new Error(`上下文整理${status==="interrupted"?"被中断":"失败"}`);
+    threadCachePut(tid,done.rec);
+    updateContextRisk(done.rec);
+    runStatusStep("上下文恢复摘要已落盘");
+    runStatusFinish("上下文已整理","done");
+    cwToast("上下文已主动整理,正在发送原消息");
+  }catch(e){
+    runStatusFinish("上下文整理失败","err");
+    throw e;
+  }finally{
+    state._contextCompactTurnId=null;
+    state._contextMaintenance=false;
+    setRunning(false);
+  }
+}
 function maybeResponsesApiHint(item){
   const msg=String((item&&item.detail)||(item&&item.summary)||"");
   const ctxExceeded=/context_length_exceeded|exceeds the context window/i.test(msg);
@@ -178,9 +233,78 @@ async function maybeUnexecutedWorkHintForActive(turnId){
     const rec=await fetchThreadWindow(id);
     if(state.activeId!==id || state.running) return;
     threadCachePut(id, rec);
+    settleVisibleFileCards();
+    await renderTurnArtifacts(turnId);
+    settleVisibleFileCards();
     // 终态只提示,绝不静默创建新 turn。继续执行必须由用户点击按钮确认。
     if(!maybeUnexecutedWorkHint(rec, turnId)) maybeMissingFinalReplyHint(rec, turnId);
   }catch(e){ console.warn("dangling work hint check failed", e); }
+}
+
+function dedupeVisibleFileCards(){
+  const cards=[...document.querySelectorAll("#mwrap .chat-file-card[data-path]")];
+  const kept=[];
+  const sameFile=(a,b)=>{
+    if(a===b) return true;
+    const homeA=a.startsWith("~/")?a.slice(1):"";
+    const homeB=b.startsWith("~/")?b.slice(1):"";
+    return (homeA && b.endsWith(homeA)) || (homeB && a.endsWith(homeB));
+  };
+  cards.reverse().forEach(card=>{
+    const path=String(card.dataset.path||"");
+    if(!path || !kept.some(other=>sameFile(path,other))){ kept.push(path); return; }
+    const box=card.parentElement;
+    const preview=card.nextElementSibling;
+    if(preview&&preview.classList.contains("chat-file-inline-preview")) preview.remove();
+    card.remove();
+    if(box&&box.classList.contains("chat-files")&&!box.querySelector(".chat-file-card")) box.remove();
+  });
+}
+
+let fileCardDedupeTimer=null;
+function settleVisibleFileCards(){
+  dedupeVisibleFileCards();
+  clearTimeout(fileCardDedupeTimer);
+  fileCardDedupeTimer=setTimeout(()=>{
+    fileCardDedupeTimer=null;
+    dedupeVisibleFileCards();
+  },600);
+}
+
+async function renderTurnArtifacts(turnId){
+  const tid=state.activeId;
+  if(!tid || !turnId) return [];
+  const id=`turn-artifacts-${tid}-${turnId}`;
+  const existing=document.getElementById(id);
+  if(existing) return existing.dataset.count?JSON.parse(existing.dataset.count):[];
+  const data=await api(`/api/thread-artifacts?thread_id=${encodeURIComponent(tid)}&turn_id=${encodeURIComponent(turnId)}`);
+  const files=(data&&data.files)||[];
+  if(!files.length || state.activeId!==tid) return [];
+  const visibleCards=[...document.querySelectorAll("#mwrap .chat-file-card[data-path]")];
+  const missing=files.filter(file=>!visibleCards.some(card=>{
+    const cardPath=String(card.dataset.path||"");
+    const cardName=cardPath.split("/").pop();
+    return cardPath===file.path || (cardName && cardName===file.name);
+  }));
+  if(!missing.length) return files;
+  const box=document.createElement("section");
+  box.className="turn-artifacts";
+  box.id=id;
+  box.dataset.count=JSON.stringify(files);
+  box.innerHTML=`<div class="turn-artifacts-title">${icon("file")} <span>本轮产出文件</span><small>${missing.length} 个</small></div>`;
+  $("#mwrap").appendChild(box);
+  missing.forEach(file=>appendFileDownloadCards(box,file.path));
+  scrollDown(true);
+  return files;
+}
+
+async function reconcileSnapshotDelivery(rec){
+  const turns=(rec&&rec.turns)||[];
+  const turn=[...turns].reverse().find(t=>t&&isTurnDone(normTurnStatus(t.status))&&t.input_summary!=="Manual context compaction");
+  settleVisibleFileCards();
+  if(turn) try{ await renderTurnArtifacts(turn.id); }catch(e){ console.warn("artifact reconciliation failed",e); }
+  settleVisibleFileCards();
+  if(!maybeUnexecutedWorkHint(rec,turn&&turn.id)) maybeMissingFinalReplyHint(rec,turn&&turn.id);
 }
 let mainView=null;
 const SNAPSHOT_VISIBLE_ITEMS = 80;       // fetchThreadWindow 默认窗口大小;渲染分页常量在 chat-view.js 内部
@@ -288,8 +412,12 @@ function onViewTurnFinished(turnId, status, meta={}){
   state.stopTurnId=null; state.stopRequestedAt=0;
   runStatusFinish(label,kind); procGroupFinish(); state._procGroup=null; setRunning(false);
   if(meta.refresh) refreshActiveMeta();
-  if(meta.checkHints && !state.queue.length) setTimeout(()=>maybeUnexecutedWorkHintForActive(turnId),250);
-  processQueue();
+  if(turnId===state._contextCompactTurnId) return;
+  const finish=async()=>{
+    if(meta.checkHints && !state.queue.length) await maybeUnexecutedWorkHintForActive(turnId);
+    processQueue();
+  };
+  setTimeout(()=>finish().catch(e=>{ console.warn("turn delivery reconciliation failed",e); processQueue(); }),250);
 }
 function onViewAssistantFinal(item, el){}
 function onViewUserMessage(item, el, meta={}){
@@ -299,7 +427,7 @@ function onViewUserMessage(item, el, meta={}){
   timelineRegisterUser(el, meta.text||"", {scope:"single", key:meta.id, item});
 }
 function onViewSnapshotStart(){ runStatusReset(false); timelineReset("single"); }
-function onViewSnapshotRendered(rec){ if(!maybeUnexecutedWorkHint(rec)) maybeMissingFinalReplyHint(rec); }
+function onViewSnapshotRendered(rec){ reconcileSnapshotDelivery(rec).catch(e=>console.warn("snapshot delivery reconciliation failed",e)); }
 function onViewTerminalOutput(text, failed=false, meta=null, live=false){ previewFeedTerminal(text,failed,meta,live); }
 function onViewFileChangeFinal(){ if(preview.url && preview.autoRefresh) setTimeout(previewReload,250); }
 function closeStream(){ if(state.es){ state.es.close(); state.es=null; } }
@@ -492,6 +620,7 @@ async function send(queuedText){
   try{
     let implicitNewTitle="";
     if(!state.activeId){ const t=await createThread(); implicitNewTitle=roughThreadTitle(text); _addOptimisticThread(t.id, implicitNewTitle); await openThread(t.id); loadThreads(); }   // 乐观立刻把新 thread 加进侧栏(否则慢 SWR 缓存下首条消息不生成可见 thread,要发第二条才出现);loadThreads 后台刷,不阻塞
+    await ensureContextCapacityBeforeSend();
     // 乐观渲染:会话就绪后立刻显示用户消息 + 进入"运行中"(思考指示),不等 SSE。否则首条要等后端起 turn(~1s+,推理模型更久),
     // 这段时间窗口空白,体感像"卡住/过好久才显示"。真 user_message 事件到达时由 startItem 认领这个气泡,不重复。
     const oel=row("user","你"); const oc=oel.querySelector(".content"); if(!decorateUserUploads(oc,text)) oc.innerHTML=md(text); $("#mwrap").appendChild(oel); state._optimUser=oel;
@@ -549,7 +678,7 @@ function queueFromInput(){
   state.queue.push({text, el});
 }
 function processQueue(){   // 当前任务结束后,自动发下一条排队消息
-  if(state.running || !state.queue.length) return;
+  if(state.running || state._contextMaintenance || !state.queue.length) return;
   const item=state.queue.shift(); item.el.remove();   // 移除占位,真消息由 turn 事件渲染
   send(item.text);
 }
@@ -615,4 +744,4 @@ function initMessageScroll(){
     if(b.classList.contains("copy")) copyMsg(b,msg); else if(b.classList.contains("edit")) editMsg(msg); });   // 消息操作:复制 / 编辑(委托,#mwrap 持久)
 }
 
-export { updateContextRisk, isRiskyContext, maybeResponsesApiHint, scrollDown, closeStream, renderThreadSnapshot, syncActiveTurn, openThread, onEvent, startItem, deltaItem, preferLongerText, completeItem, detectOptions, optionTextFromSelection, fillOptionInput, optionTargets, buildOptPicker, augmentOptions, scheduleSmartTitle, send, enterSend, queueFromInput, processQueue, interrupt, uploadOne, uploadFiles, renderAttach, withAttachments, initMessageScroll };
+export { updateContextRisk, isRiskyContext, maybeResponsesApiHint, ensureContextCapacityBeforeSend, renderTurnArtifacts, scrollDown, closeStream, renderThreadSnapshot, syncActiveTurn, openThread, onEvent, startItem, deltaItem, preferLongerText, completeItem, detectOptions, optionTextFromSelection, fillOptionInput, optionTargets, buildOptPicker, augmentOptions, scheduleSmartTitle, send, enterSend, queueFromInput, processQueue, interrupt, uploadOne, uploadFiles, renderAttach, withAttachments, initMessageScroll };

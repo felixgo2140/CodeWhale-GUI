@@ -730,13 +730,22 @@ async function submitDeerFlow(promptArg,eng){   // eng=DF_ENGINES 条目;默认 
         hdr.classList.remove("running"); hdr.textContent="✅ "+eng.name+" 深度研究完成"+(rm.label?` · LLM: ${rm.label}`:"");
         // 获取完整结果
         let rd={}, final="";
-        for(let k=0;k<3;k++){   // 报告文件可能比状态翻转慢半拍:空则短重试,且绝不拿状态字符串当正文兜底
+        for(let k=0;k<7;k++){   // 报告文件可能比状态翻转慢半拍:最长再等约 10 秒,且绝不拿状态字符串当正文兜底
           const rr=await fetch(API+"/poll?thread_id="+encodeURIComponent(d.thread_id)+"&full=1",{method:"POST",headers:{...auth}});   // 同上:POST + 带鉴权(原来漏了)
           rd=await rr.json();
           final=(rd.output||"").trim();
-          if(final) break;
+          if(final || rd.file || rd.path) break;
           await new Promise(r=>setTimeout(r,1500));
         }
+        if(!final && !(rd.file||rd.path)){
+          hdr.classList.remove("running");
+          hdr.textContent="❌ "+eng.name+" 完成但未交付产出"+(rm.label?` · LLM: ${rm.label}`:"");
+          body.textContent="Harness 已报告完成,但没有返回正文或可下载文件。任务 ID: "+d.thread_id+"。请检查任务日志后重试。";
+          stats.textContent=researchStatsWithModel("交付失败",recBase);
+          recId=await saveResearchRecord({...recBase,id:recId,external_thread_id:d.thread_id,status:"delivery_missing",stats:stats.textContent,output:body.textContent});
+          return;
+        }
+        if(!final && (rd.file||rd.path)) final="报告文件已生成,可在下方直接打开或下载。";
         // 清理输出:去掉状态行(状态: / [running] tokens / 缩进状态行)只留报告正文
         const clean=final.replace(/^状态:.*$/gm,"").replace(/^\[.*?\]\s*tokens:.*$/gm,"").replace(/^\s*\[.*$/gm,"").trim();
         renderResearchMarkdown(body, clean||final);

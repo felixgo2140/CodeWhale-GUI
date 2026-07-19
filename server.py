@@ -10,7 +10,7 @@
 Security: when bound to a non-loopback host (LAN), a token is REQUIRED. Without
 one it fails closed to 127.0.0.1, so the agent API is never exposed unprotected.
 """
-import http.server, http.client, socketserver, json, re, os, time, subprocess, shutil, urllib.request, urllib.error, urllib.parse, mimetypes, secrets, shlex
+import http.server, http.client, socketserver, json, re, os, time, subprocess, shutil, urllib.request, urllib.error, urllib.parse, mimetypes, secrets, shlex, datetime
 import base64, hashlib, tarfile, tempfile, io, threading, ssl, socket, ipaddress, signal, tomllib
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -377,7 +377,8 @@ _PROVIDER_KEYS_MIRROR = os.path.expanduser("~/.codewhale-gui/provider_keys.json"
 _mirror_heal_at = {}   # prov -> 上次自愈时间戳,限频防写风暴
 def _read_key_mirror():
     try:
-        d = json.load(open(_PROVIDER_KEYS_MIRROR))
+        with open(_PROVIDER_KEYS_MIRROR, encoding="utf-8") as f:
+            d = json.load(f)
         return d if isinstance(d, dict) else {}
     except Exception:
         return {}
@@ -1853,6 +1854,55 @@ def _clamp_research_progress(data, limit=24000):
         if isinstance(text, str) and len(text) > limit:
             out[key] = "…前面的进度已折叠…\n" + text[-limit:]
     return out
+
+def _harness_pid_alive(pid):
+    try:
+        pid = int(pid or 0)
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+
+def _reconcile_harness_progress(engine, tid, data, stale_seconds=1800):
+    """Turn abandoned bridge jobs into explicit terminal states.
+
+    Older harness bridges sometimes left a JSON job marked running forever when
+    their child process died. A recent job/log timestamp or live PID is enough
+    to keep waiting; an already-written report is recovered as success.
+    """
+    if not isinstance(data, dict) or str(data.get("status") or "").lower() not in {
+        "queued", "pending", "in_progress", "running"
+    }:
+        return data
+    engine = str(engine or "").strip()
+    tid = re.sub(r'[^A-Za-z0-9_-]', '', str(tid or ""))[:120]
+    outdir = _research_outdir(engine)
+    job_path = os.path.join(outdir, "jobs", tid + ".json") if outdir and tid else ""
+    if not job_path or not os.path.isfile(job_path):
+        return data
+    try:
+        with open(job_path, encoding="utf-8") as f:
+            job = json.load(f)
+    except Exception:
+        job = {}
+    payload = _research_md_payload(engine, tid, job)
+    if payload.get("output"):
+        return {**data, **payload, "ok": True, "status": "success", "stage": "recovered"}
+    paths = [job_path, os.path.join(outdir, "jobs", tid + ".log")]
+    latest = max([os.path.getmtime(path) for path in paths if os.path.exists(path)] or [time.time()])
+    if _harness_pid_alive(job.get("pid")) or time.time() - latest <= stale_seconds:
+        return data
+    error = "Harness 子进程已退出或超过 30 分钟没有进度,且未找到报告文件。请检查任务日志后重试。"
+    if isinstance(job, dict):
+        job.update(status="error", stage="failed", error=error, ended=time.time(), updated=time.time())
+        try:
+            _atomic_write_json(job_path, job, ensure_ascii=False)
+        except Exception:
+            pass
+    return {**data, "ok": False, "status": "error", "stage": "failed", "error": error}
+
 def upsert_research_record(data):
     rec = _clean_research_record(data if isinstance(data, dict) else {})
     if not rec["cw_thread_id"]:
@@ -1968,7 +2018,8 @@ def _runtime_json(kind, obj_id):
     if not (path == root or path.startswith(root + os.sep)):
         return None
     try:
-        return json.load(open(path, encoding="utf-8"))
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
     except Exception:
         return None
 def _runtime_file(kind, obj_id):
@@ -2246,6 +2297,172 @@ def _runtime_turns_for_thread(tid):
             out.append(d)
     out.sort(key=lambda x: (x.get("created_at") or "", x.get("id") or ""))
     return out
+
+def _runtime_turn_items(turn):
+    out = []
+    for iid in turn.get("item_ids") or []:
+        item = _runtime_json("items", str(iid))
+        if isinstance(item, dict):
+            out.append(item)
+    return out
+
+def _model_context_window(model):
+    name = str(model or "").lower()
+    if "longcat" in name:
+        return 1048576
+    if name == "k3" or "kimi" in name or "moonshot" in name:
+        return 262144
+    return 131072
+
+def _compaction_token_pair(text):
+    text = str(text or "")
+    if "token" not in text.lower():
+        return None
+    match = re.search(r'~?([\d,]+)\s*(?:→|->|=>)\s*~?([\d,]+)\s*tokens?', text, re.I)
+    if not match:
+        return None
+    try:
+        return int(match.group(1).replace(",", "")), int(match.group(2).replace(",", ""))
+    except Exception:
+        return None
+
+def thread_context_risk(tid):
+    if not re.match(r'^thr_[A-Za-z0-9_-]+$', tid or ""):
+        return {"error": "invalid thread_id"}
+    thread = _runtime_json("threads", tid)
+    if not isinstance(thread, dict):
+        return {"error": "thread not found"}
+    turns = _runtime_turns_for_thread(tid)
+    latest_compaction = None
+    total_items = 0
+    normal_turns = 0
+    for turn_index, turn in enumerate(turns):
+        items = _runtime_turn_items(turn)
+        total_items += len(items)
+        compactions = [item for item in items if item.get("kind") == "context_compaction"]
+        if not compactions:
+            normal_turns += 1
+            continue
+        for item in compactions:
+            text = str(item.get("detail") or item.get("summary") or "")
+            pair = _compaction_token_pair(text)
+            latest_compaction = {
+                "turn_index": turn_index,
+                "turn_id": turn.get("id") or "",
+                "kind": "emergency" if "emergency" in text.lower() else "manual",
+                "before_tokens": pair[0] if pair else 0,
+                "after_tokens": pair[1] if pair else 0,
+                "summary": _short_text(text, 240),
+            }
+    if latest_compaction:
+        later_turns = turns[latest_compaction["turn_index"] + 1:]
+        turns_since = len([turn for turn in later_turns if str(turn.get("input_summary") or "").strip()])
+        items_since = sum(len(turn.get("item_ids") or []) for turn in later_turns)
+    else:
+        turns_since = normal_turns
+        items_since = total_items
+    window = _model_context_window(thread.get("model"))
+    after = int((latest_compaction or {}).get("after_tokens") or 0)
+    pressure = (after / window) if after else 0.0
+    needs = False
+    reason = ""
+    if latest_compaction and after:
+        if pressure >= 0.80 and (turns_since >= 1 or latest_compaction.get("kind") == "emergency"):
+            needs = True
+            reason = f"上次压缩后仍占上下文约 {round(pressure * 100)}%"
+        elif turns_since >= 5 or items_since >= 100:
+            needs = True
+            reason = "上次压缩后又积累了较多工具步骤"
+    elif latest_compaction:
+        if turns_since >= 6 or items_since >= 120:
+            needs = True
+            reason = "上次整理后已新增较多对话和工具结果"
+    elif normal_turns >= 12 or total_items >= 160:
+        needs = True
+        reason = "长线程尚未做过结构化上下文整理"
+    return {
+        "thread_id": tid,
+        "needs_compaction": needs,
+        "reason": reason,
+        "context_window": window,
+        "estimated_tokens": after,
+        "pressure": round(pressure, 4),
+        "turns_since_compaction": turns_since,
+        "items_since_compaction": items_since,
+        "total_turns": len(turns),
+        "total_items": total_items,
+        "latest_compaction": latest_compaction,
+    }
+
+_ARTIFACT_EXTS = {".pdf", ".md", ".markdown", ".txt", ".csv", ".tsv", ".json", ".html", ".htm",
+                  ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".zip",
+                  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+_ARTIFACT_PATH_RE = re.compile(
+    r'(?P<path>(?:~\/|\/)[^\n\r`"\'<>]*?\.(?:pdf|md|markdown|txt|csv|tsv|json|html?|docx?|xlsx?|pptx?|zip|png|jpe?g|gif|webp|svg))'
+    r'(?=$|[\s`"\'<>，。；;：:、)）\]}])', re.I)
+
+def _iso_epoch(value):
+    try:
+        raw = str(value or "").strip().replace("Z", "+00:00")
+        return datetime.datetime.fromisoformat(raw).timestamp()
+    except Exception:
+        return 0.0
+
+def _item_strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from _item_strings(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            yield from _item_strings(child)
+
+def thread_artifacts(tid, turn_id=""):
+    if not re.match(r'^thr_[A-Za-z0-9_-]+$', tid or ""):
+        return {"error": "invalid thread_id"}
+    turns = _runtime_turns_for_thread(tid)
+    if turn_id:
+        turn = next((row for row in turns if row.get("id") == turn_id), None)
+    else:
+        turn = next((row for row in reversed(turns) if str(row.get("input_summary") or "") != "Manual context compaction"), None)
+    if not isinstance(turn, dict):
+        return {"thread_id": tid, "turn_id": turn_id, "files": []}
+    started = _iso_epoch(turn.get("created_at"))
+    ended = _iso_epoch(turn.get("ended_at")) or time.time()
+    found = {}
+    for item in _runtime_turn_items(turn):
+        kind = str(item.get("kind") or "")
+        if kind == "user_message":
+            continue
+        texts = list(_item_strings({
+            "summary": item.get("summary"), "detail": item.get("detail"),
+            "artifact_refs": item.get("artifact_refs"), "output": item.get("output"),
+        }))
+        combined = "\n".join(texts)
+        strong = kind in {"file_change", "agent_message"} or bool(re.search(
+            r'write_file|edit_file|apply_patch|create_file|saved|written|generated|报告|产出|已保存|已生成', combined, re.I))
+        for match in _ARTIFACT_PATH_RE.finditer(combined):
+            raw = match.group("path").strip().rstrip(".,")
+            path = _safe_download_file(raw)
+            if not path or os.path.splitext(path)[1].lower() not in _ARTIFACT_EXTS:
+                continue
+            try:
+                stat = os.stat(path)
+            except OSError:
+                continue
+            recent = bool(started and started - 120 <= stat.st_mtime <= ended + 120)
+            if not (strong or recent):
+                continue
+            found[path] = {
+                "path": path,
+                "name": os.path.basename(path),
+                "ext": os.path.splitext(path)[1].lower().lstrip("."),
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+            }
+    files = sorted(found.values(), key=lambda row: (row.get("mtime") or 0, row.get("path") or ""), reverse=True)
+    return {"thread_id": tid, "turn_id": turn.get("id") or "", "files": files[:12]}
 
 def thread_window(tid, start=None, limit=80):
     if not re.match(r'^thr_[A-Za-z0-9_-]+$', tid or ""):
@@ -6312,6 +6529,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception as e:
                 out = {"error": str(e)[:200]}
             return self._json(out)
+        if p == "/api/thread-context-risk":   # 发送前主动整理上下文,避免到 93% 才触发无效 emergency compaction
+            if not self._authed():
+                return self._deny()
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            tid = (q.get("thread_id", [""])[0] or "").strip()
+            try:
+                out = thread_context_risk(tid)
+            except Exception as e:
+                out = {"error": str(e)[:300]}
+            return self._json(out)
+        if p == "/api/thread-artifacts":   # turn 终态后核对真实落盘产出,不依赖最后一条模型回复是否成功吐出
+            if not self._authed():
+                return self._deny()
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            tid = (q.get("thread_id", [""])[0] or "").strip()
+            turn_id = (q.get("turn_id", [""])[0] or "").strip()
+            try:
+                out = thread_artifacts(tid, turn_id=turn_id)
+            except Exception as e:
+                out = {"error": str(e)[:300]}
+            return self._json(out)
         if p == "/api/cmp-threads":   # 对比 thread 注册表(侧栏分组用)
             if not self._authed():
                 return self._deny()
@@ -6997,7 +7235,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                             parsed = json.loads((r.stdout or "").strip().splitlines()[-1])
                             out = parsed if parsed.get("ok") is False else {"ok": True, **parsed}
                             if not full:
-                                out = _clamp_research_progress(out)
+                                out = _clamp_research_progress(_reconcile_harness_progress(m_h.group(1), tid, out))
                         except Exception:
                             out = {"ok": False, "error": (r.stderr or r.stdout or "无输出")[:300]}
                         if full and isinstance(out, dict) and out.get("ok") is not False:

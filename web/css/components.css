@@ -460,6 +460,29 @@ body.sideresizing,body.previewresizing{cursor:col-resize;user-select:none}
   flex-direction:column;
   gap:8px;
 }
+.turn-artifacts{
+  margin:2px 0 18px 30px;
+  padding:12px;
+  border:1px solid var(--line-strong);
+  border-radius:var(--r-l);
+  background:var(--bg);
+}
+.turn-artifacts-title{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  color:var(--ink-2);
+  font-size:13px;
+  font-weight:700;
+}
+.turn-artifacts-title small{
+  margin-left:auto;
+  color:var(--ink-3);
+  font-size:11px;
+  font-weight:500;
+}
+.turn-artifacts > .chat-files{margin-top:9px}
+.turn-artifacts .chat-file-card{background:var(--panel)}
 .chat-file-card{
   max-width:760px;
   display:flex;
