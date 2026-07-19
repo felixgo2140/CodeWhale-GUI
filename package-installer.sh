@@ -38,6 +38,8 @@ chmod +x "$STAGE/install.command" 2>/dev/null || true
 chmod +x "$STAGE/harness/install_harnesses.sh" 2>/dev/null || true
 echo "→ [3/3] 打包…"
 OUT="${1:-$HERE/codewhale-installer.tar.gz}"
+if [[ "$OUT" != /* ]]; then OUT="$PWD/$OUT"; fi
+mkdir -p "$(dirname "$OUT")"
 ( cd "$TMP" && COPYFILE_DISABLE=1 tar --exclude='.DS_Store' -czf "$OUT" codewhale-installer )
 rm -rf "$TMP"
 echo "✓ 安装包: $OUT  ($(du -h "$OUT" | cut -f1))"

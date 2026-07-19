@@ -68,6 +68,14 @@ class ProviderLifecycleTests(unittest.TestCase):
         self.assertIn("def _claude_runtime_has_cli", source)
         self.assertIn('provider == "claude-code" and not _claude_runtime_has_cli(pid)', source)
 
+    def test_full_installer_deploys_compatible_claude_runtime(self):
+        installer = (ROOT / "installer/install.sh").read_text(encoding="utf-8")
+
+        self.assertIn('for name in codewhale-claude codewhale-tui', installer)
+        self.assertIn('lipo -archs "$src"', installer)
+        self.assertIn('cp "$src" "$RUNTIME_BIN/$name"', installer)
+        self.assertIn('chmod 755 "$RUNTIME_BIN/$name"', installer)
+
 
 if __name__ == "__main__":
     unittest.main()

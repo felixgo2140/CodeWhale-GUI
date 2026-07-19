@@ -4,6 +4,7 @@
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="${1:-$HERE/CodeWhale.app}"
+VERSION="$(tr -d '\r\n' < "$HERE/../VERSION")"
 echo "→ 编译 arm64 + x86_64…"
 swiftc -O "$HERE/main.swift" -o /tmp/cw_arm -target arm64-apple-macos12  -framework Cocoa -framework WebKit -framework Speech -framework AVFoundation
 swiftc -O "$HERE/main.swift" -o /tmp/cw_x86 -target x86_64-apple-macos12 -framework Cocoa -framework WebKit -framework Speech -framework AVFoundation
@@ -12,15 +13,15 @@ codesign -s - --force /tmp/cw_uni        # ad-hoc 签名(arm64 必须有签名�
 rm -rf "$OUT"; mkdir -p "$OUT/Contents/MacOS" "$OUT/Contents/Resources"
 cp /tmp/cw_uni "$OUT/Contents/MacOS/CodeWhale"; chmod +x "$OUT/Contents/MacOS/CodeWhale"
 [ -f "$HERE/CodeWhale.icns" ] && cp "$HERE/CodeWhale.icns" "$OUT/Contents/Resources/CodeWhale.icns"
-cat > "$OUT/Contents/Info.plist" <<'PLIST'
+cat > "$OUT/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleName</key><string>CodeWhale</string>
   <key>CFBundleDisplayName</key><string>CodeWhale</string>
   <key>CFBundleIdentifier</key><string>com.codewhale.native</string>
-  <key>CFBundleVersion</key><string>2.0</string>
-  <key>CFBundleShortVersionString</key><string>2.0</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>CodeWhale</string>
   <key>CFBundleIconFile</key><string>CodeWhale</string>

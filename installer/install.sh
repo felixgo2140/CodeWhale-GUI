@@ -66,6 +66,27 @@ if [ -d "$HERE/harness" ]; then
 fi
 sed -i '' "s#/Users/test#$HOME#g" "$HOME/codewhale-gui/web/index.html"   # 把示例家目录换成本机
 
+# 完整安装包可携带 Claude 订阅桥接运行时。只安装与本机架构匹配的二进制,
+# 避免把 arm64 构建放到 Intel Mac 后造成 provider 反复启动失败。
+RUNTIME_BIN="$HOME/.codewhale-gui/bin"
+MACHINE="$(uname -m)"
+[ "$(sysctl -in sysctl.proc_translated 2>/dev/null || true)" = "1" ] && MACHINE="arm64"
+installed_runtime=0
+for name in codewhale-claude codewhale-tui; do
+  src="$HERE/bin/$name"
+  [ -f "$src" ] || continue
+  archs="$(lipo -archs "$src" 2>/dev/null || true)"
+  if [ -n "$archs" ] && [[ " $archs " != *" $MACHINE "* ]]; then
+    echo "  ⚠ 跳过 $name:安装包架构为 $archs,本机为 $MACHINE"
+    continue
+  fi
+  mkdir -p "$RUNTIME_BIN"
+  cp "$src" "$RUNTIME_BIN/$name"
+  chmod 755 "$RUNTIME_BIN/$name"
+  installed_runtime=1
+done
+[ "$installed_runtime" = "0" ] || echo "  + 已安装 Claude 订阅桥接运行时($MACHINE)"
+
 # ── 5. GUI token(本机生成,LAN 防护)──
 mkdir -p "$HOME/.codewhale-gui"
 "$PY" -c "import secrets;open('$HOME/.codewhale-gui/token','w').write(secrets.token_urlsafe(24))"
