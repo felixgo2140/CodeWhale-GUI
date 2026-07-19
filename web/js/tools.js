@@ -29,6 +29,7 @@ const ICONS={
   tablet:'<rect x="6" y="3" width="12" height="18" rx="2"></rect><path d="M11 18h2"></path>',
   phone:'<rect x="7" y="2" width="10" height="20" rx="2"></rect><path d="M11 18h2"></path>',
   paperclip:'<path d="m21.4 11.6-8.5 8.5a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 1 1-2.8-2.8l8.5-8.5"></path>',
+  mic:'<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><path d="M12 19v3"></path><path d="M8 22h8"></path>',
   file:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M14 2v6h6"></path><path d="M8 13h8"></path><path d="M8 17h6"></path>',
   send:'<path d="M22 2 11 13"></path><path d="m22 2-7 20-4-9-9-4z"></path>',
   stop:'<rect x="6" y="6" width="12" height="12" rx="2"></rect>',
@@ -90,6 +91,7 @@ function hydrateIcons(){
   if(modelChip && modelName && !modelChip.querySelector(".ico")) modelChip.insertAdjacentHTML("afterbegin",icon("brain"));
   setButtonIcon("#interruptbtn","stop","停止");
   setButtonIcon("#attachbtn","paperclip");
+  setButtonIcon("#voicebtn","mic");
   setButtonIcon("#sendbtn","send");
   setButtonIcon("#scrollbtn","chevronDown");
   setButtonIcon("#pvBack","chevronLeft");
@@ -102,6 +104,7 @@ function hydrateIcons(){
   setButtonIcon("#pvReveal","file","Finder");
   setButtonIcon("#pvClose","x");
   setButtonIcon("#cmpAttachBtn","paperclip");
+  setButtonIcon("#cmpVoiceBtn","mic");
   setButtonIcon("#cmpSendBtn","send","发送");
   setButtonIcon("#cmpStopAllBtn","stop","停止全部");
   setButtonIcon("#cmpNewBtn","plus","新对话");

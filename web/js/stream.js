@@ -80,15 +80,16 @@ function latestEndedTurnItems(rec, preferredTurnId, completedOnly=false){
 }
 function maybeUnexecutedWorkHint(rec, preferredTurnId){
   const got=latestEndedTurnItems(rec, preferredTurnId, true);
-  if(!got || !got.items.length) return;
+  if(!got || !got.items.length) return false;
   let idx=-1, agent=null;
   for(let i=got.items.length-1;i>=0;i--){
     if(isAssistantLikeItem(got.items[i])){ idx=i; agent=got.items[i]; break; }
   }
-  if(!agent || !looksLikeDanglingWorkIntent(itemText(agent))) return;
-  if(got.items.slice(idx+1).some(isExecutableProgressItem)) return;
+  if(!agent || !looksLikeDanglingWorkIntent(itemText(agent))) return false;
+  if(got.items.slice(idx+1).some(isExecutableProgressItem)) return false;
   const id="dangling-work-"+(state.activeId||"thread")+"-"+(got.turn.id||"latest");
-  if(document.getElementById(id)) return;
+  if(document.getElementById(id)) return true;
+  const recoveryPrompt="继续执行你刚才承诺的下一步。不要只描述计划，请直接调用可用工具完成搜索/读取/分析，并全程用中文给出最终结果；如果确实受阻，请明确说明阻塞原因和需要我提供的非敏感信息，不要索要密码、密钥或验证码。";
   const d=document.createElement("div");
   d.className="sysnote actionable";
   d.id=id;
@@ -99,7 +100,7 @@ function maybeUnexecutedWorkHint(rec, preferredTurnId){
   b.onclick=()=>{
     const inp=$("#input");
     if(inp){
-      inp.value="继续执行你刚才承诺的下一步。不要只描述计划，请直接调用可用工具完成搜索/读取/分析，并全程用中文给出结果。";
+      inp.value=recoveryPrompt;
       inp.dispatchEvent(new Event("input"));
       inp.focus();
     }
@@ -110,6 +111,7 @@ function maybeUnexecutedWorkHint(rec, preferredTurnId){
   d.appendChild(b);
   $("#mwrap").appendChild(d);
   scrollDown(true);
+  return true;
 }
 function meaningfulAgentText(item){
   return (item&&item.kind)==="agent_message" ? itemText(item).trim() : "";
@@ -128,7 +130,7 @@ function tailProgressLabel(item){
 }
 function maybeMissingFinalReplyHint(rec, preferredTurnId){
   const got=latestEndedTurnItems(rec, preferredTurnId, false);
-  if(!got || !got.items.length) return;
+  if(!got || !got.items.length) return false;
   let lastAgent=-1, lastProgress=-1, tail=null;
   for(let i=0;i<got.items.length;i++){
     const it=got.items[i]||{}, k=it.kind||"";
@@ -139,11 +141,12 @@ function maybeMissingFinalReplyHint(rec, preferredTurnId){
     }
   }
   const hasWork=got.items.some(it=>isExecutableProgressItem(it) || (it&&it.kind)==="agent_reasoning" || (it&&it.kind)==="context_compaction");
-  if(!hasWork) return;
-  if(lastAgent>=0 && lastProgress<=lastAgent && got.status==="completed") return;
-  if(lastProgress<=lastAgent && lastAgent>=0) return;
+  if(!hasWork) return false;
+  if(lastAgent>=0 && lastProgress<=lastAgent && got.status==="completed") return false;
+  if(lastProgress<=lastAgent && lastAgent>=0) return false;
   const id="missing-final-"+(state.activeId||"thread")+"-"+(got.turn.id||"latest");
-  if(document.getElementById(id)) return;
+  if(document.getElementById(id)) return true;
+  const recoveryPrompt="请基于刚才已经完成的读取、搜索、工具调用和中间结果，直接给出最终产出。不要从头寒暄，不要只描述计划；如果还缺一个关键数据，再补最少必要工具调用。全程用中文；如果确实受阻，请说明原因，但不要索要密码、密钥或验证码。";
   const d=document.createElement("div");
   d.className="sysnote actionable";
   d.id=id;
@@ -155,7 +158,7 @@ function maybeMissingFinalReplyHint(rec, preferredTurnId){
   b.onclick=()=>{
     const inp=$("#input");
     if(inp){
-      inp.value="请基于刚才已经完成的读取、搜索、工具调用和中间结果，直接给出最终产出。不要从头寒暄，不要只描述计划；如果还缺一个关键数据，再补最少必要工具调用。全程用中文。";
+      inp.value=recoveryPrompt;
       inp.dispatchEvent(new Event("input"));
       inp.focus();
     }
@@ -166,6 +169,7 @@ function maybeMissingFinalReplyHint(rec, preferredTurnId){
   d.appendChild(b);
   $("#mwrap").appendChild(d);
   scrollDown(true);
+  return true;
 }
 async function maybeUnexecutedWorkHintForActive(turnId){
   const id=state.activeId;
@@ -174,8 +178,8 @@ async function maybeUnexecutedWorkHintForActive(turnId){
     const rec=await fetchThreadWindow(id);
     if(state.activeId!==id || state.running) return;
     threadCachePut(id, rec);
-    maybeUnexecutedWorkHint(rec, turnId);
-    maybeMissingFinalReplyHint(rec, turnId);
+    // 终态只提示,绝不静默创建新 turn。继续执行必须由用户点击按钮确认。
+    if(!maybeUnexecutedWorkHint(rec, turnId)) maybeMissingFinalReplyHint(rec, turnId);
   }catch(e){ console.warn("dangling work hint check failed", e); }
 }
 let mainView=null;
@@ -295,7 +299,7 @@ function onViewUserMessage(item, el, meta={}){
   timelineRegisterUser(el, meta.text||"", {scope:"single", key:meta.id, item});
 }
 function onViewSnapshotStart(){ runStatusReset(false); timelineReset("single"); }
-function onViewSnapshotRendered(rec){ maybeUnexecutedWorkHint(rec); maybeMissingFinalReplyHint(rec); }
+function onViewSnapshotRendered(rec){ if(!maybeUnexecutedWorkHint(rec)) maybeMissingFinalReplyHint(rec); }
 function onViewTerminalOutput(text, failed=false, meta=null, live=false){ previewFeedTerminal(text,failed,meta,live); }
 function onViewFileChangeFinal(){ if(preview.url && preview.autoRefresh) setTimeout(previewReload,250); }
 function closeStream(){ if(state.es){ state.es.close(); state.es=null; } }

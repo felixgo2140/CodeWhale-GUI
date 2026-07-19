@@ -1,6 +1,9 @@
 // CodeWhale 原生 macOS 壳 — WKWebView 指向本地 GUI(127.0.0.1:3000),无 Chrome、无 chrome-profile。
 import Cocoa
 import WebKit
+import Speech
+import AVFoundation
+import Darwin
 
 let home = FileManager.default.homeDirectoryForCurrentUser.path
 func readToken() -> String {
@@ -21,20 +24,45 @@ func sh(_ cmd: String, wait: Bool = true) -> Int32 {
 }
 func ping(_ url: String) -> Bool { sh("curl -fsS -m2 '\(url)' >/dev/null 2>&1") == 0 }
 
+func wakeManagedService(_ label: String) -> Bool {
+    let target = "gui/\(getuid())/\(label)"
+    guard sh("launchctl print '\(target)' >/dev/null 2>&1") == 0 else { return false }
+    sh("launchctl kickstart '\(target)' >/dev/null 2>&1 || true", wait: false)
+    return true
+}
+
 func ensureServices() {
     if !ping("http://127.0.0.1:7878/health") {
-        sh("cd \"$HOME\" && nohup codewhale app-server --http --host 127.0.0.1 --port 7878 --insecure-no-auth >\"$HOME/codewhale-gui/app-server.log\" 2>&1 &", wait: false)
+        if !wakeManagedService("com.codewhale.appserver") {
+            sh("cd \"$HOME\" && nohup codewhale app-server --http --host 127.0.0.1 --port 7878 --insecure-no-auth >\"$HOME/codewhale-gui/app-server.log\" 2>&1 &", wait: false)
+        }
     }
     if !ping("http://127.0.0.1:3000/") {
-        sh("nohup python3 \"$HOME/codewhale-gui/server.py\" >\"$HOME/codewhale-gui/webserver.log\" 2>&1 &", wait: false)
+        if !wakeManagedService("com.codewhale.frontend") {
+            sh("nohup python3 \"$HOME/codewhale-gui/server.py\" >\"$HOME/codewhale-gui/webserver.log\" 2>&1 &", wait: false)
+        }
     }
     for _ in 0..<40 { if ping("http://127.0.0.1:3000/") { break }; usleep(400_000) }
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     var window: NSWindow!
     var web: WKWebView!
     var extraWindows: [NSWindow] = []   // window.open() 开的独立窗口(多模型对比单独开窗),保留引用避免被释放
+    var fnMonitor: Any?
+    var fnPressed = false
+    var voiceStartWork: DispatchWorkItem?
+    var voiceFinishWork: DispatchWorkItem?
+    var voiceTargetWeb: WKWebView?
+    let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
+    let audioEngine = AVAudioEngine()
+    var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    var recognitionTask: SFSpeechRecognitionTask?
+    var voiceTranscript = ""
+    var voiceRecording = false
+    var voiceStopping = false
+    var voiceDelivered = false
+    var voiceButtonActive = false
 
     func applicationDidFinishLaunching(_ note: Notification) {
         buildMenu()      // 没主菜单 → Cmd+C/V/X/A 无处分发,文本框复制粘贴失灵
@@ -42,6 +70,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         let cfg = WKWebViewConfiguration()
         cfg.websiteDataStore = .default()            // 持久化 localStorage(置顶/token 缓存)
         cfg.preferences.setValue(true, forKey: "developerExtrasEnabled")  // 右键可"检查元素"
+        cfg.userContentController.add(self, name: "voiceControl")
         web = WKWebView(frame: NSRect(x: 0, y: 0, width: 1200, height: 800), configuration: cfg)
         web.navigationDelegate = self
         web.uiDelegate = self        // ★ 关键:不设 uiDelegate 时 WKWebView 不弹 JS 对话框,confirm() 直接返回 false、alert()/prompt() 静默无效 → 删除/更新/重命名/对比「重启后端」等点了没反应
@@ -57,6 +86,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         window.minSize = NSSize(width: 720, height: 480)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        installVoiceShortcut()
         load()
     }
     func load() {
@@ -122,6 +152,219 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     }
     @objc func reloadPage(_ sender: Any?) { load() }   // 重新加载页面(load() 会带 token 重新拉 :3000)
 
+    // ── 按住 Fn 语音输入 ──
+    // WKWebView 通常拿不到 Fn/Globe 修饰键,所以由原生壳监听 flagsChanged。
+    // 仅 App 在前台时生效;按住 180ms 后开始,松开后结束,避免轻触误触。
+    func installVoiceShortcut() {
+        guard fnMonitor == nil else { return }
+        fnMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged]) { [weak self] event in
+            self?.handleModifierFlags(event)
+            return event
+        }
+    }
+
+    func activeWebView() -> WKWebView? {
+        if let w = NSApp.keyWindow?.contentView as? WKWebView { return w }
+        return web
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "voiceControl",
+              let body = message.body as? [String: Any],
+              let action = body["action"] as? String else { return }
+        voiceTargetWeb = message.webView ?? activeWebView()
+        if action == "start" {
+            voiceButtonActive = true
+            authorizeAndStartVoice()
+        } else if action == "stop" {
+            voiceButtonActive = false
+            if voiceRecording { stopVoiceCapture() }
+            else if !voiceStopping { emitVoice(["state": "ready", "message": "语音输入已停止"]) }
+        }
+    }
+
+    func voiceIntentActive() -> Bool { fnPressed || voiceButtonActive }
+
+    func handleModifierFlags(_ event: NSEvent) {
+        let down = event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.function)
+        if down == fnPressed { return }
+        fnPressed = down
+        if down {
+            guard NSApp.isActive else { return }
+            voiceTargetWeb = activeWebView()
+            voiceStartWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self = self, self.fnPressed, NSApp.isActive else { return }
+                self.authorizeAndStartVoice()
+            }
+            voiceStartWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
+        } else {
+            voiceStartWork?.cancel()
+            voiceStartWork = nil
+            if voiceRecording { stopVoiceCapture() }
+        }
+    }
+
+    func authorizeAndStartVoice() {
+        requestSpeechAuthorization { [weak self] speechOK in
+            guard let self = self else { return }
+            guard speechOK else {
+                self.voiceButtonActive = false
+                self.emitVoice(["state": "error", "message": "请在系统设置中允许 CodeWhale 使用语音识别"])
+                return
+            }
+            self.requestMicrophoneAuthorization { [weak self] micOK in
+                guard let self = self else { return }
+                guard micOK else {
+                    self.voiceButtonActive = false
+                    self.emitVoice(["state": "error", "message": "请在系统设置中允许 CodeWhale 使用麦克风"])
+                    return
+                }
+                guard self.voiceIntentActive(), NSApp.isActive else {
+                    self.emitVoice(["state": "ready", "message": "权限已就绪,请再次按住 Fn 或点击麦克风"])
+                    return
+                }
+                self.startVoiceCapture()
+            }
+        }
+    }
+
+    func requestSpeechAuthorization(_ done: @escaping (Bool) -> Void) {
+        switch SFSpeechRecognizer.authorizationStatus() {
+        case .authorized: done(true)
+        case .notDetermined:
+            SFSpeechRecognizer.requestAuthorization { status in
+                DispatchQueue.main.async { done(status == .authorized) }
+            }
+        default: done(false)
+        }
+    }
+
+    func requestMicrophoneAuthorization(_ done: @escaping (Bool) -> Void) {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: done(true)
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { ok in
+                DispatchQueue.main.async { done(ok) }
+            }
+        default: done(false)
+        }
+    }
+
+    func startVoiceCapture() {
+        guard !voiceRecording else { return }
+        guard let recognizer = speechRecognizer, recognizer.isAvailable else {
+            voiceButtonActive = false
+            emitVoice(["state": "error", "message": "当前语音识别服务不可用"])
+            return
+        }
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        recognitionRequest = nil
+        voiceFinishWork?.cancel()
+        voiceTranscript = ""
+        voiceStopping = false
+        voiceDelivered = false
+
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        request.taskHint = .dictation
+        recognitionRequest = request
+        let input = audioEngine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            voiceButtonActive = false
+            emitVoice(["state": "error", "message": "没有检测到可用的麦克风输入"])
+            return
+        }
+        input.removeTap(onBus: 0)
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak request] buffer, _ in
+            request?.append(buffer)
+        }
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+        } catch {
+            input.removeTap(onBus: 0)
+            voiceButtonActive = false
+            emitVoice(["state": "error", "message": "麦克风启动失败"])
+            return
+        }
+        voiceRecording = true
+        emitVoice(["state": "recording"])
+        recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            DispatchQueue.main.async {
+                guard let self = self, !self.voiceDelivered else { return }
+                if let result = result {
+                    let text = result.bestTranscription.formattedString.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !text.isEmpty {
+                        self.voiceTranscript = text
+                        self.emitVoice(["state": self.voiceStopping ? "processing" : "partial", "text": text])
+                    }
+                    if result.isFinal { self.finishVoiceTranscript() }
+                }
+                if error != nil {
+                    if self.voiceStopping, !self.voiceTranscript.isEmpty { self.finishVoiceTranscript() }
+                    else if self.voiceRecording { self.cancelVoiceCapture(message: "语音识别中断,请重试") }
+                }
+            }
+        }
+    }
+
+    func stopVoiceCapture() {
+        guard voiceRecording else { return }
+        voiceRecording = false
+        voiceStopping = true
+        if audioEngine.isRunning { audioEngine.stop() }
+        audioEngine.inputNode.removeTap(onBus: 0)
+        recognitionRequest?.endAudio()
+        emitVoice(["state": "processing", "text": voiceTranscript])
+        voiceFinishWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.finishVoiceTranscript() }
+        voiceFinishWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: work)
+    }
+
+    func finishVoiceTranscript() {
+        guard !voiceDelivered else { return }
+        voiceDelivered = true
+        voiceFinishWork?.cancel()
+        recognitionRequest?.endAudio()
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        recognitionRequest = nil
+        voiceRecording = false
+        voiceStopping = false
+        voiceButtonActive = false
+        let text = voiceTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { emitVoice(["state": "error", "message": "没有听清,请重试"]); return }
+        emitVoice(["state": "final", "text": text])
+    }
+
+    func cancelVoiceCapture(message: String? = nil) {
+        voiceFinishWork?.cancel()
+        if audioEngine.isRunning { audioEngine.stop() }
+        audioEngine.inputNode.removeTap(onBus: 0)
+        recognitionRequest?.endAudio()
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        recognitionRequest = nil
+        voiceRecording = false
+        voiceStopping = false
+        voiceButtonActive = false
+        voiceDelivered = true
+        if let message = message { emitVoice(["state": "error", "message": message]) }
+    }
+
+    func emitVoice(_ detail: [String: Any]) {
+        guard JSONSerialization.isValidJSONObject(detail),
+              let data = try? JSONSerialization.data(withJSONObject: detail),
+              let json = String(data: data, encoding: .utf8) else { return }
+        let js = "window.dispatchEvent(new CustomEvent('codewhale:voice',{detail:\(json)}));"
+        (voiceTargetWeb ?? activeWebView())?.evaluateJavaScript(js, completionHandler: nil)
+    }
+
     // ── JS 对话框(WKUIDelegate)── 用原生 NSAlert 实现 alert()/confirm()/prompt(),挂成 window sheet。
     // 不实现时 WKWebView 默认全部静默失效(confirm 返回 false),导致所有 confirm/alert/prompt 功能点了没反应。
     func webView(_ w: WKWebView, runJavaScriptAlertPanelWithMessage msg: String, initiatedByFrame f: WKFrameInfo, completionHandler done: @escaping () -> Void) {
@@ -164,7 +407,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780),
                            styleMask: [.titled, .closable, .miniaturizable, .resizable],
                            backing: .buffered, defer: false)
-        win.title = "CodeWhale 对比"
+        let isCompare = action.request.url.flatMap {
+            URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems
+        }?.contains(where: { $0.name == "compare" && $0.value == "1" }) == true
+        win.title = isCompare ? "CodeWhale 对比" : "CodeWhale"
         win.center()
         win.isReleasedWhenClosed = false
         let nweb = WKWebView(frame: NSRect(x: 0, y: 0, width: 1180, height: 780), configuration: config)
@@ -191,6 +437,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     func applicationShouldHandleReopen(_ s: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
         return true
+    }
+    func applicationDidResignActive(_ notification: Notification) {
+        voiceStartWork?.cancel()
+        fnPressed = false
+        if voiceRecording { cancelVoiceCapture(message: nil) }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ a: NSApplication) -> Bool { return true }
 }

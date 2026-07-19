@@ -307,7 +307,8 @@ async function openCompare(){
   // ② 后端准备放后台(不挡渲染):取配置/偏好(到了刷新 chips 的"已配置"标记/下拉默认)+ 没会话时重置陈旧后端 + 预热
   try{ const d=await api("/api/model"); CMP.keyed=d.keyed||{}; renderCmpChips(); }catch(e){}
   try{ const mp=await api("/api/model-pref"); CMP.modelPrefs=mp.prefs||{}; CMP.modelEffort=mp.effort||{}; renderCmpChips(); }catch(e){}   // 各列当前所选模型变体 + claude effort
-  if(Object.keys(CMP.threads).length===0){ try{ await api("/api/compare/reset",{method:"POST",body:"{}"}); }catch(e){} }   // 清残留旧后端,杜绝"GLM/GPT 栏都答 DeepSeek";慢,放渲染之后
+  // 打开/刷新对比窗口不能全局 reset provider 后端：这些进程也承载单模型线程，
+  // 自动清理会把其它窗口正在运行的 turn 硬中断。显式“重启后端”按钮仍可按需 reset。
   api("/api/compare/ensure",{method:"POST",body:JSON.stringify({providers:[...CMP.sel]})}).catch(()=>{});   // 预热选中栏后端
 }
 function closeCompare(){ $("#cmpView").hidden=true; }
@@ -699,7 +700,7 @@ function renderCmpCols(){   // diff:保留已有栏内容,只增删变化的
       `<div class="cmprunbar" id="cmprun-${p.id}" hidden><span class="pulse"></span><span class="txt">启动中</span><button class="cmpstopbar" title="停止这一栏当前回答">停止</button></div>`+
       `<div class="cmpcol-b" id="cmpb-${p.id}"></div>`+
       `<div class="cmpcatt" id="cmpcatt-${p.id}" hidden></div>`+
-      `<div class="cmpcol-f"><button class="cmpcolattach" id="cmpcattbtn-${p.id}" title="给 ${nm} 加附件（只随这一栏的追问发出）">📎</button><input type="file" class="cmpcolfile" id="cmpcfile-${p.id}" multiple hidden><textarea class="cmpcolin" id="cmpin-${p.id}" rows="1" wrap="soft" placeholder="只追问 ${nm}…（Enter 发送）"></textarea><button class="cmpcolsend" id="cmpcsend-${p.id}" title="只发给 ${nm}（单独继续这个对话）">→</button></div>`;
+      `<div class="cmpcol-f"><button class="cmpcolattach" id="cmpcattbtn-${p.id}" title="给 ${nm} 加附件（只随这一栏的追问发出）">📎</button><button class="cmpcolvoice voicebtn" id="cmpvoice-${p.id}" type="button" title="语音追问 ${nm}（点击开始,再次点击结束）">${icon("mic")}</button><input type="file" class="cmpcolfile" id="cmpcfile-${p.id}" multiple hidden><textarea class="cmpcolin" id="cmpin-${p.id}" rows="1" wrap="soft" placeholder="只追问 ${nm}…（Enter 发送）"></textarea><button class="cmpcolsend" id="cmpcsend-${p.id}" title="只发给 ${nm}（单独继续这个对话）">→</button></div>`;
 	    box.appendChild(d);
 	    cmpEnsureView(p.id);
     const sel=d.querySelector(".cmpmodelsel"); if(sel){ sel.addEventListener("click",e=>e.stopPropagation()); sel.addEventListener("change",e=>{ e.stopPropagation(); cmpSetModel(p.id, e.target.value); }); }

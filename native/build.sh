@@ -5,8 +5,8 @@ set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="${1:-$HERE/CodeWhale.app}"
 echo "→ 编译 arm64 + x86_64…"
-swiftc -O "$HERE/main.swift" -o /tmp/cw_arm -target arm64-apple-macos12  -framework Cocoa -framework WebKit
-swiftc -O "$HERE/main.swift" -o /tmp/cw_x86 -target x86_64-apple-macos12 -framework Cocoa -framework WebKit
+swiftc -O "$HERE/main.swift" -o /tmp/cw_arm -target arm64-apple-macos12  -framework Cocoa -framework WebKit -framework Speech -framework AVFoundation
+swiftc -O "$HERE/main.swift" -o /tmp/cw_x86 -target x86_64-apple-macos12 -framework Cocoa -framework WebKit -framework Speech -framework AVFoundation
 lipo -create /tmp/cw_arm /tmp/cw_x86 -output /tmp/cw_uni
 codesign -s - --force /tmp/cw_uni        # ad-hoc 签名(arm64 必须有签名才能运行)
 rm -rf "$OUT"; mkdir -p "$OUT/Contents/MacOS" "$OUT/Contents/Resources"
@@ -27,6 +27,8 @@ cat > "$OUT/Contents/Info.plist" <<'PLIST'
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>NSMicrophoneUsageDescription</key><string>按住 Fn 或点击麦克风按钮时,CodeWhale 使用麦克风将语音转成输入文字。</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>CodeWhale 使用系统语音识别将口述内容整理为聊天输入。</string>
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict></plist>
 PLIST

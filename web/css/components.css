@@ -264,6 +264,40 @@ body.sideresizing,body.previewresizing{cursor:col-resize;user-select:none}
 .thread .act .ico{width:14px;height:14px}
 .thread .act:hover{background:var(--accent-tint);color:var(--accent-deep)}
 .thread .act.cron.on{background:var(--cron-bg);color:var(--cron-ink)}
+.thread-context-menu{
+  position:fixed;
+  z-index:205;
+  width:224px;
+  max-height:calc(100vh - 16px);
+  overflow-y:auto;
+  padding:6px;
+  border:1px solid var(--line-strong);
+  border-radius:var(--r-m);
+  background:var(--panel);
+  box-shadow:var(--sh-3);
+  color:var(--ink);
+}
+.thread-context-menu .ctx-item{
+  width:100%;
+  min-height:34px;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:7px 9px;
+  border:0;
+  border-radius:var(--r-s);
+  background:transparent;
+  color:inherit;
+  font:inherit;
+  font-size:12.5px;
+  text-align:left;
+}
+.thread-context-menu .ctx-item .ico{width:15px;height:15px;flex:0 0 auto;color:var(--ink-2)}
+.thread-context-menu .ctx-item:hover,.thread-context-menu .ctx-item:focus-visible{background:var(--accent-tint);color:var(--accent-deep);outline:0}
+.thread-context-menu .ctx-item.danger{color:var(--err)}
+.thread-context-menu .ctx-item.danger .ico{color:currentColor}
+.thread-context-menu .ctx-item.danger:hover,.thread-context-menu .ctx-item.danger:focus-visible{background:var(--err-tint)}
+.thread-context-menu .ctx-sep{height:1px;margin:5px 3px;background:var(--line)}
 .empty-thread-note{padding:14px;color:var(--ink-3);font-size:12px}
 #sidefoot{border-top:1px solid var(--line-strong);padding:10px 14px;font-size:12px;color:var(--ink-3);display:flex;flex-direction:column;gap:6px;background:var(--surface-muted)}
 #statusrow{display:flex;align-items:center;justify-content:space-between;gap:8px}
@@ -920,9 +954,26 @@ body.sideresizing,body.previewresizing{cursor:col-resize;user-select:none}
 
 /* Composer */
 #composer{border-top:1px solid var(--line);padding:14px 0 18px;background:var(--surface-muted)}
+#voiceStatus,#cmpVoiceStatus{
+  max-width:712px;margin:0 auto 8px;padding:8px 12px;box-sizing:border-box;
+  display:flex;align-items:center;gap:8px;min-height:38px;border:1px solid var(--line-strong);
+  border-radius:8px;background:var(--surface);color:var(--ink-2);box-shadow:var(--sh-1)
+}
+#voiceStatus[hidden],#cmpVoiceStatus[hidden]{display:none}
+#cmpVoiceStatus{max-width:none;margin:0 14px 8px}
+.voice-dot{width:9px;height:9px;flex:0 0 9px;border-radius:50%;background:var(--accent)}
+.voice-label{color:var(--ink);white-space:nowrap}
+.voice-preview{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-3)}
+#voiceStatus.recording .voice-dot,#cmpVoiceStatus.recording .voice-dot{animation:voicePulse 1s ease-in-out infinite;background:var(--err)}
+#voiceStatus.processing .voice-dot,#cmpVoiceStatus.processing .voice-dot{animation:voicePulse 1.1s ease-in-out infinite}
+#voiceStatus.done .voice-dot,#cmpVoiceStatus.done .voice-dot{background:var(--ok)}
+#voiceStatus.error .voice-dot,#cmpVoiceStatus.error .voice-dot{background:var(--err)}
+textarea.voice-listening{border-color:var(--accent)!important;box-shadow:var(--focus-ring)!important}
+@keyframes voicePulse{0%,100%{opacity:.38;transform:scale(.82)}50%{opacity:1;transform:scale(1.18)}}
 #cwrap{max-width:760px;margin:0 auto;padding:0 24px;display:flex;gap:9px;align-items:flex-end;position:relative}
 #input{
   flex:1;
+  min-width:0;
   min-height:36px;
   max-height:200px;
   resize:none;
@@ -938,7 +989,7 @@ body.sideresizing,body.previewresizing{cursor:col-resize;user-select:none}
   transition:border-color var(--t-fast),box-shadow var(--t-fast),background var(--t-fast);
 }
 #input:focus{border-color:var(--accent);box-shadow:var(--focus-ring)}
-#sendbtn,#attachbtn,#pluginbtn{
+#sendbtn,#attachbtn,#pluginbtn,#voicebtn{
   width:36px;
   height:36px;
   border-radius:var(--r-m);
@@ -958,8 +1009,21 @@ body.sideresizing,body.previewresizing{cursor:col-resize;user-select:none}
 #sendbtn:hover{background:var(--accent-deep)}
 #sendbtn:disabled{background:var(--line);color:var(--ink-3);box-shadow:var(--sh-none)}
 #sendbtn.stop{background:var(--err)}
-#attachbtn:hover,#pluginbtn:hover{border-color:var(--line-strong);color:var(--ink)}
+#attachbtn:hover,#pluginbtn:hover,#voicebtn:hover{border-color:var(--accent);color:var(--accent-deep)}
 #pluginbtn{font-size:19px;font-weight:600}
+.voicebtn{
+  border:1px solid var(--line);
+  background:var(--panel);
+  color:var(--ink-2);
+  cursor:pointer;
+  transition:border-color var(--t-fast),background var(--t-fast),color var(--t-fast),box-shadow var(--t-fast);
+}
+.voicebtn:hover{border-color:var(--accent);color:var(--accent-deep)}
+.voicebtn.starting,.voicebtn.processing{border-color:var(--accent);background:var(--accent-tint);color:var(--accent-deep)}
+.voicebtn.recording{border-color:var(--err);background:var(--err-tint);color:var(--err);animation:voiceButtonPulse 1s ease-in-out infinite}
+.voicebtn:disabled{cursor:wait;opacity:.72}
+.voicebtn .ico{width:17px;height:17px}
+@keyframes voiceButtonPulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--err) 12%,transparent)}50%{box-shadow:0 0 0 5px color-mix(in srgb,var(--err) 16%,transparent)}}
 #hint{max-width:760px;margin:6px auto 0;padding:0 24px;font-size:var(--fs-caption);color:var(--ink-3)}
 #cwrap.drag{outline:2px dashed var(--accent);outline-offset:4px;border-radius:12px}
 #attachbar,#cmpAttachBar{
@@ -1643,6 +1707,7 @@ html.cmpwin #main{display:none!important}
   #tmeta{display:none}
   #ttitle{font-size:13px}
   #mwrap,#cwrap,#hint,#attachbar{padding-left:14px;padding-right:14px}
+  #voiceStatus{margin-left:14px;margin-right:14px}
   #topbar{padding:0 10px;gap:8px}
   #composer{padding:10px 0 14px}
   #autowrap{font-size:var(--fs-caption);gap:5px}

@@ -61,6 +61,119 @@ function modelSummary(provs){
   const more=names.length>2?` +${names.length-2}`:"";
   return `${provs.length} 模型${shown?` · ${shown}${more}`:""}`;
 }
+let threadContextMenu=null;
+function closeThreadContextMenu(){
+  if(threadContextMenu){ threadContextMenu.remove(); threadContextMenu=null; }
+}
+function ensureThreadContextMenuHandlers(){
+  if(ensureThreadContextMenuHandlers.ready) return;
+  ensureThreadContextMenuHandlers.ready=true;
+  document.addEventListener("pointerdown",e=>{ if(threadContextMenu&&!threadContextMenu.contains(e.target)) closeThreadContextMenu(); },true);
+  document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeThreadContextMenu(); });
+  document.addEventListener("scroll",closeThreadContextMenu,true);
+  window.addEventListener("resize",closeThreadContextMenu);
+  window.addEventListener("blur",closeThreadContextMenu);
+}
+function contextAction(label,iconName,run,opts={}){ return {label,iconName,run,...opts}; }
+function showThreadContextMenu(ev,actions){
+  ev.preventDefault(); ev.stopPropagation(); closeThreadContextMenu(); ensureThreadContextMenuHandlers();
+  const menu=document.createElement("div"); menu.className="thread-context-menu"; menu.setAttribute("role","menu"); menu.style.visibility="hidden";
+  for(const a of actions){
+    if(a.separator){ const sep=document.createElement("div"); sep.className="ctx-sep"; sep.setAttribute("role","separator"); menu.appendChild(sep); continue; }
+    const b=document.createElement("button"); b.type="button"; b.className="ctx-item"+(a.danger?" danger":""); b.setAttribute("role","menuitem");
+    b.innerHTML=`${icon(a.iconName||"message")}<span>${esc(a.label)}</span>`;
+    b.onclick=async e=>{ e.stopPropagation(); closeThreadContextMenu(); try{ await a.run(); }catch(err){ cwToast(err?.message||"操作失败"); } };
+    menu.appendChild(b);
+  }
+  document.body.appendChild(menu); threadContextMenu=menu;
+  const pad=8, rect=menu.getBoundingClientRect();
+  menu.style.left=Math.max(pad,Math.min(ev.clientX,window.innerWidth-rect.width-pad))+"px";
+  menu.style.top=Math.max(pad,Math.min(ev.clientY,window.innerHeight-rect.height-pad))+"px";
+  menu.style.visibility="visible";
+  menu.querySelector(".ctx-item")?.focus({preventScroll:true});
+}
+async function copyContextValue(value,okLabel){
+  const text=String(value||"").trim(); if(!text){ cwToast("没有可复制的内容"); return; }
+  await clipCopy(text); cwToast(okLabel||"已复制");
+}
+function taskDeepLink(id){
+  const u=new URL(location.pathname,location.origin); u.searchParams.set("thread",id); return u.toString();
+}
+function comparisonDeepLink(id){
+  const u=new URL(location.pathname,location.origin); u.searchParams.set("compare","1"); u.searchParams.set("session",id); return u.toString();
+}
+async function threadDetail(t){
+  if(t?.workspace) return t;
+  const rec=await api(`/v1/threads/${t.id}`);
+  return Object.assign({},t,rec?.thread||rec||{});
+}
+async function threadWorkspace(t){
+  const th=await threadDetail(t), workspace=String(th?.workspace||"").trim();
+  if(!workspace) throw new Error("这个任务没有工作目录");
+  return workspace;
+}
+async function revealThreadWorkspace(t){
+  const workspace=await threadWorkspace(t);
+  await api("/api/workspace/reveal",{method:"POST",body:JSON.stringify({path:workspace})});
+  cwToast("已在 Finder 中打开工作目录");
+}
+async function addForkedThread(raw,title){
+  const id=raw?.id||raw?.thread?.id;
+  if(!id) throw new Error("分叉成功但没有返回新会话 id");
+  if(typeof _addOptimisticThread==="function") _addOptimisticThread(id,raw?.title||raw?.thread?.title||title||"续接任务");
+  await loadThreads();
+  await openThread(id);
+  loadThreads();
+  return id;
+}
+async function continueInNewTask(t){
+  const raw=await api(`/v1/threads/${t.id}/fork`,{method:"POST",body:"{}"});
+  await addForkedThread(raw,t.title);
+  cwToast("已在新任务中继续");
+}
+async function continueInNewWorktree(t){
+  const workspace=await threadWorkspace(t);
+  const raw=await api("/api/thread/fork-worktree",{method:"POST",body:JSON.stringify({thread_id:t.id,workspace,title:t.title||""})});
+  await addForkedThread(raw?.thread||raw,t.title);
+  cwToast(`已创建工作树: ${raw?.branch||"新分支"}`);
+}
+function openTaskWindow(t){
+  const w=window.open(taskDeepLink(t.id),"_blank");
+  if(!w) cwToast("新窗口被系统拦截,请退出并重新打开 CodeWhale 后再试");
+}
+function threadContextActions(t){
+  const pinned=state.pinned.has(t.id), cron=state.cronJobs.has(t.id);
+  return [
+    contextAction(pinned?"取消置顶":"置顶","pin",()=>togglePin(t.id)),
+    contextAction("重命名","edit",()=>renameThread(t.id,t.title)),
+    contextAction(cron?"移出 Cron Jobs":"加入 Cron Jobs","calendar",()=>toggleCronJob(t.id)),
+    contextAction("归档对话","trash",()=>deleteThread(t.id,t.title),{danger:true}),
+    {separator:true},
+    contextAction("在 Finder 中显示","folder",()=>revealThreadWorkspace(t)),
+    contextAction("复制工作目录","copy",async()=>copyContextValue(await threadWorkspace(t),"已复制工作目录")),
+    contextAction("复制会话 ID","hash",()=>copyContextValue(t.id,"已复制会话 ID")),
+    contextAction("复制深度链接","external",()=>copyContextValue(taskDeepLink(t.id),"已复制深度链接")),
+    {separator:true},
+    contextAction("在新任务中继续","repeat",()=>continueInNewTask(t)),
+    contextAction("在新工作树中继续","folder",()=>continueInNewWorktree(t)),
+    contextAction("在新窗口中打开","external",()=>openTaskWindow(t))
+  ];
+}
+function comparisonContextActions(s){
+  const pinned=state.pinned.has(s.id), cron=state.cronJobs.has(s.id);
+  const ids=Object.entries(s.threads||{}).map(([prov,id])=>`${PROV_SHORT[prov]||prov}: ${id}`).join("\n");
+  return [
+    contextAction(pinned?"取消置顶":"置顶","pin",()=>togglePin(s.id)),
+    contextAction("重命名","edit",()=>renameCmpSession(s.id,s.topic)),
+    contextAction(cron?"移出 Cron Jobs":"加入 Cron Jobs","calendar",()=>toggleCronJob(s.id)),
+    contextAction("归档整组对比","trash",()=>deleteCmpSession(s.id,s.topic),{danger:true}),
+    {separator:true},
+    contextAction("复制对比 ID","hash",()=>copyContextValue(s.id,"已复制对比 ID")),
+    contextAction("复制各模型会话 ID","layout",()=>copyContextValue(ids,"已复制各模型会话 ID")),
+    contextAction("复制深度链接","external",()=>copyContextValue(comparisonDeepLink(s.id),"已复制深度链接")),
+    contextAction("在新窗口中打开","external",()=>openCompareWindow(s.id))
+  ];
+}
 function threadEl(t){   // 单条对话 DOM
   const pinned=state.pinned.has(t.id);
   const cron=state.cronJobs.has(t.id);
@@ -80,6 +193,7 @@ function threadEl(t){   // 单条对话 DOM
     `<span class="time">${relTime(t.updated_at)}</span><span class="actions"><button class="act rename" title="重命名">${icon("edit")}</button><button class="act cron ${cron?"on":""}" title="${cron?"移出 Cron Jobs":"加入 Cron Jobs"}">${icon("calendar")}</button><button class="act pin" title="${pinned?"取消置顶":"置顶"}">${icon("pin")}</button><button class="act del" title="删除">${icon("trash")}</button></span></div>`+
     `<div class="meta"><span class="models">${esc(PROV_SHORT[t.provider]||t.provider||t.model||"")}</span>${t.preview?`<span class="prev snippet">${esc(t.preview)}</span>`:""}</div>`;
   d.onclick=()=>openThread(t.id);
+  d.oncontextmenu=e=>showThreadContextMenu(e,threadContextActions(t));
   keyboardButton(d,()=>openThread(t.id),`打开对话: ${t.title||"未命名"}`);
   d.querySelector(".pin").onclick=(e)=>{e.stopPropagation();togglePin(t.id);};
   d.querySelector(".cron").onclick=(e)=>{e.stopPropagation();toggleCronJob(t.id);};
@@ -96,6 +210,7 @@ function cmpSessionEl(s){   // 对比会话行:点=回到当时整场对比
     `<span class="time">${relTime(s.ts||0)}</span><span class="actions"><button class="act rename" title="重命名">${icon("edit")}</button><button class="act cron ${cron?"on":""}" title="${cron?"移出 Cron Jobs":"加入 Cron Jobs"}">${icon("calendar")}</button><button class="act pin" title="${pinned?"取消置顶":"置顶"}">${icon("pin")}</button><button class="act del" title="从列表删除此对比会话">${icon("trash")}</button></span></div>`+
     `<div class="meta"><span class="models">${esc(modelSummary(provs))}</span></div>`;
   d.onclick=()=>openCompareWindow(s.id);   // 点会话 → 新开一个独立窗口还原那场对比(主窗口不受影响)
+  d.oncontextmenu=e=>showThreadContextMenu(e,comparisonContextActions(s));
   keyboardButton(d,()=>openCompareWindow(s.id),`打开对比会话: ${s.topic||"对比"}`);
   d.querySelector(".rename").onclick=(e)=>{e.stopPropagation();renameCmpSession(s.id,s.topic);};
   d.querySelector(".pin").onclick=(e)=>{e.stopPropagation();togglePin(s.id);};

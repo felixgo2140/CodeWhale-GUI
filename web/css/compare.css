@@ -115,7 +115,7 @@
   transition:border-color var(--t-fast),box-shadow var(--t-fast);
 }
 #cmpInput:focus{border-color:var(--accent);box-shadow:var(--focus-ring)}
-#cmpAttachBtn,#cmpPluginBtn{
+#cmpAttachBtn,#cmpPluginBtn,#cmpVoiceBtn{
   flex:0 0 auto;
   width:36px;
   border:1px solid var(--line);
@@ -129,7 +129,7 @@
   justify-content:center;
 }
 #cmpPluginBtn{font-size:19px;font-weight:600}
-#cmpAttachBtn:hover,#cmpPluginBtn:hover{border-color:var(--line-strong);color:var(--ink)}
+#cmpAttachBtn:hover,#cmpPluginBtn:hover,#cmpVoiceBtn:hover{border-color:var(--accent);color:var(--accent-deep)}
 #cmpPlugindrop{
   display:none;
   position:absolute;
@@ -434,7 +434,7 @@ input.cmpmodelinput:focus{border-color:var(--accent);box-shadow:var(--focus-ring
 }
 .cmpcolsend:hover{background:var(--accent-deep)}
 .cmpcolsend:disabled{opacity:.45;cursor:default}
-.cmpcolattach{
+.cmpcolattach,.cmpcolvoice{
   flex:0 0 auto;
   width:34px;
   border:1px solid var(--line);
@@ -445,7 +445,7 @@ input.cmpmodelinput:focus{border-color:var(--accent);box-shadow:var(--focus-ring
   cursor:pointer;
   color:var(--ink-2);
 }
-.cmpcolattach:hover{border-color:var(--line-strong);color:var(--ink)}
+.cmpcolattach:hover,.cmpcolvoice:hover{border-color:var(--accent);color:var(--accent-deep)}
 .cmpcatt{display:flex;flex-wrap:wrap;gap:5px;padding:6px 8px 0}
 .cmpcatt[hidden]{display:none}
 
