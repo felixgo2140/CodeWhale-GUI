@@ -12,8 +12,9 @@ class MessageContextActionTests(unittest.TestCase):
         self.assertIn("function installSelectionActions", source)
         self.assertIn('event.target.closest?.(".msg.assistant .content")', source)
         self.assertIn('action("copy-message","复制整条回复","⌘⇧C")', source)
-        self.assertIn('action("copy-markdown","复制为 Markdown")', source)
         self.assertIn('action("attach-context","将所选内容附加为上下文")', source)
+        self.assertNotIn("复制为 Markdown", source)
+        self.assertNotIn("nodeMarkdown", source)
         self.assertIn("el._cwInputSel=inputSel", source)
         self.assertIn("ensureAssistantActions(el,id)", source)
 

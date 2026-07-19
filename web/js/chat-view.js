@@ -165,63 +165,6 @@ function copyText(text){
   return execCopyText(text);
 }
 
-function cleanMarkdown(text){
-  return String(text||"").replace(/[ \t]+\n/g,"\n").replace(/\n{3,}/g,"\n\n").trim();
-}
-
-function nodeMarkdown(node){
-  if(!node) return "";
-  if(node.nodeType===Node.TEXT_NODE) return node.nodeValue||"";
-  if(node.nodeType!==Node.ELEMENT_NODE && node.nodeType!==Node.DOCUMENT_FRAGMENT_NODE) return "";
-  if(node.nodeType===Node.DOCUMENT_FRAGMENT_NODE) return [...node.childNodes].map(nodeMarkdown).join("");
-  const tag=node.tagName.toLowerCase();
-  const inner=()=>[...node.childNodes].map(nodeMarkdown).join("");
-  if(tag==="br") return "\n";
-  if(tag==="strong"||tag==="b") return `**${inner()}**`;
-  if(tag==="em"||tag==="i") return `*${inner()}*`;
-  if(tag==="del"||tag==="s") return `~~${inner()}~~`;
-  if(tag==="code" && node.parentElement?.tagName.toLowerCase()!=="pre"){
-    const value=node.textContent||"";
-    const fence=value.includes("`")?"``":"`";
-    return `${fence}${value}${fence}`;
-  }
-  if(tag==="pre"){
-    const code=node.textContent||"";
-    const cls=node.querySelector("code")?.className||"";
-    const lang=(cls.match(/language-([\w+-]+)/)||[])[1]||"";
-    return `\n\`\`\`${lang}\n${code.replace(/\n+$/,"")}\n\`\`\`\n`;
-  }
-  if(tag==="a"){
-    const label=cleanMarkdown(inner())||node.getAttribute("href")||"";
-    const href=node.getAttribute("href")||"";
-    return href?`[${label}](${href})`:label;
-  }
-  if(tag==="img") return `![${node.getAttribute("alt")||""}](${node.getAttribute("src")||""})`;
-  if(/^h[1-6]$/.test(tag)) return `\n${"#".repeat(Number(tag[1]))} ${cleanMarkdown(inner())}\n\n`;
-  if(tag==="blockquote") return `\n${cleanMarkdown(inner()).split("\n").map(line=>"> "+line).join("\n")}\n\n`;
-  if(tag==="ul"||tag==="ol"){
-    const ordered=tag==="ol";
-    const lines=[...node.children].filter(child=>child.tagName.toLowerCase()==="li").map((li,index)=>{
-      const body=cleanMarkdown([...li.childNodes].filter(child=>!(child.nodeType===Node.ELEMENT_NODE&&["ul","ol"].includes(child.tagName.toLowerCase()))).map(nodeMarkdown).join(""));
-      const nested=[...li.children].filter(child=>["ul","ol"].includes(child.tagName.toLowerCase())).map(nodeMarkdown).join("");
-      const prefix=ordered?`${index+1}. `:"- ";
-      return prefix+body.replace(/\n/g,"\n  ")+(nested?"\n"+nested.split("\n").map(line=>line?"  "+line:line).join("\n"):"");
-    });
-    return `\n${lines.join("\n")}\n`;
-  }
-  if(tag==="li") return inner();
-  if(["p","div","section","article","header","footer","table","thead","tbody","tr"].includes(tag)) return `\n${inner()}\n`;
-  if(tag==="th"||tag==="td") return `${inner()}\t`;
-  return inner();
-}
-
-function selectionAsMarkdown(range, fallback){
-  try{
-    const fragment=range.cloneContents();
-    return cleanMarkdown(nodeMarkdown(fragment))||String(fallback||"").trim();
-  }catch(e){ return String(fallback||"").trim(); }
-}
-
 function assistantMessageText(msg){
   try{ return String(typeof msg?._cwRawMessage==="function" ? msg._cwRawMessage() : (msg?.querySelector(".content")?.innerText||"")); }
   catch(e){ return String(msg?.querySelector(".content")?.innerText||""); }
@@ -251,7 +194,7 @@ function closeSelectionMenu(){
   if(selectionMenu){ selectionMenu.remove(); selectionMenu=null; }
 }
 
-function showSelectionMenu(event,msg,selected,markdown){
+function showSelectionMenu(event,msg,selected){
   closeSelectionMenu();
   const menu=document.createElement("div");
   menu.className="message-selection-menu";
@@ -265,7 +208,6 @@ function showSelectionMenu(event,msg,selected,markdown){
   };
   menu.append(action("copy-selection","复制"));
   menu.append(action("copy-message","复制整条回复","⌘⇧C"));
-  menu.append(action("copy-markdown","复制为 Markdown"));
   const sep=document.createElement("div"); sep.className="message-selection-sep"; menu.append(sep);
   menu.append(action("attach-context","将所选内容附加为上下文"));
   menu.addEventListener("click",async e=>{
@@ -274,7 +216,6 @@ function showSelectionMenu(event,msg,selected,markdown){
     try{
       if(button.dataset.messageAction==="copy-selection") await copyText(selected);
       else if(button.dataset.messageAction==="copy-message") await copyText(assistantMessageText(msg));
-      else if(button.dataset.messageAction==="copy-markdown") await copyText(markdown||selected);
       else if(button.dataset.messageAction==="attach-context"){ appendSelectionContext(msg,selected); cwToast("已附加到输入框"); closeSelectionMenu(); return; }
       cwToast("已复制");
     }catch(err){ cwToast(err?.message||"操作失败"); }
@@ -301,7 +242,7 @@ function installSelectionActions(){
     const selected=selection.toString().trim(); if(!selected) return;
     event.preventDefault();
     activeAssistantMessage=msg;
-    showSelectionMenu(event,msg,selected,selectionAsMarkdown(range,selected));
+    showSelectionMenu(event,msg,selected);
   });
   document.addEventListener("pointerdown",event=>{ if(selectionMenu&&!selectionMenu.contains(event.target)) closeSelectionMenu(); },true);
   document.addEventListener("keydown",async event=>{
