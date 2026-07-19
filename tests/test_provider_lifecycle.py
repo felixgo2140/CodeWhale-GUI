@@ -60,6 +60,14 @@ class ProviderLifecycleTests(unittest.TestCase):
         self.assertIn('b.textContent="继续执行"', source)
         self.assertIn('b.textContent="继续总结产出"', source)
 
+    def test_claude_provider_discovers_desktop_cli_and_rejects_false_health(self):
+        source = (ROOT / "server.py").read_text(encoding="utf-8")
+
+        self.assertIn("def _discover_claude_cli", source)
+        self.assertIn("Application Support/Claude/claude-code", source)
+        self.assertIn("def _claude_runtime_has_cli", source)
+        self.assertIn('provider == "claude-code" and not _claude_runtime_has_cli(pid)', source)
+
 
 if __name__ == "__main__":
     unittest.main()

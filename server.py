@@ -10,7 +10,7 @@
 Security: when bound to a non-loopback host (LAN), a token is REQUIRED. Without
 one it fails closed to 127.0.0.1, so the agent API is never exposed unprotected.
 """
-import http.server, http.client, socketserver, json, re, os, time, subprocess, shutil, urllib.request, urllib.error, urllib.parse, mimetypes, secrets, shlex, datetime
+import http.server, http.client, socketserver, json, re, os, time, subprocess, shutil, urllib.request, urllib.error, urllib.parse, mimetypes, secrets, shlex, datetime, glob
 import base64, hashlib, tarfile, tempfile, io, threading, ssl, socket, ipaddress, signal, tomllib
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -695,7 +695,60 @@ def _find_codewhale():   # Apple Silicon=/opt/homebrew, Intel=/usr/local, 直装
             return p
     return shutil.which("codewhale") or "codewhale"
 CODEWHALE = _find_codewhale()
-_PATH = "/opt/homebrew/bin:/usr/local/bin:" + os.path.expanduser("~/.local/bin") + ":/usr/bin:/bin:/usr/sbin:/sbin"
+_RUNTIME_BIN_DIR = os.path.expanduser("~/.codewhale-gui/bin")
+
+def _claude_version_key(path):
+    match = re.search(r"/claude-code/([^/]+)/claude\.app/", path or "")
+    if not match:
+        return ()
+    return tuple((1, int(part)) if part.isdigit() else (0, part)
+                 for part in re.split(r"[._-]", match.group(1)))
+
+def _discover_claude_cli():
+    """Find a real Claude Code executable, including Claude Desktop's bundled CLI."""
+    explicit = os.environ.get("CODEWHALE_CLAUDE_BIN", "").strip()
+    candidates = [
+        explicit,
+        shutil.which("claude"),
+        os.path.expanduser("~/.claude/local/claude"),
+        "/Applications/Claude.app/Contents/Resources/claude",
+    ]
+    bundled = glob.glob(os.path.expanduser(
+        "~/Library/Application Support/Claude/claude-code/*/claude.app/Contents/MacOS/claude"
+    ))
+    candidates += sorted(bundled, key=_claude_version_key, reverse=True)
+    for path in candidates:
+        if path and os.path.isfile(path) and os.access(path, os.X_OK):
+            return os.path.realpath(path)
+    return ""
+
+def _prepare_claude_cli():
+    """Expose the discovered CLI at a stable, space-free path for provider children."""
+    target = _discover_claude_cli()
+    if not target:
+        return ""
+    os.makedirs(_RUNTIME_BIN_DIR, exist_ok=True)
+    link = os.path.join(_RUNTIME_BIN_DIR, "claude")
+    try:
+        if not os.path.islink(link) or os.path.realpath(link) != target:
+            tmp = link + ".tmp"
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            os.symlink(target, tmp)
+            os.replace(tmp, link)
+        return link
+    except OSError as exc:
+        print(f"[claude-code] 无法创建稳定 CLI 映射: {exc}", flush=True)
+        return target
+
+_CLAUDE_CLI = _prepare_claude_cli()
+_path_parts = [_RUNTIME_BIN_DIR, "/opt/homebrew/bin", "/usr/local/bin",
+               os.path.expanduser("~/.local/bin"), "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+if _CLAUDE_CLI and os.path.dirname(_CLAUDE_CLI) not in _path_parts:
+    _path_parts.insert(0, os.path.dirname(_CLAUDE_CLI))
+_PATH = ":".join(dict.fromkeys(_path_parts))
 def _proxy_env():
     # launchd 起的 server.py 没继承 shell 的 HTTP_PROXY → 它拉起的 codewhale 子进程(update 下载 / 各 provider 外连)
     # 在 TUN 兜不住的机器上连不上。把探测到的本机代理注入子进程环境(同 _open_url 的思路)。
@@ -3885,7 +3938,7 @@ def _cw_binary(prov):
 # 在线更新只发 web/server.py(那俩二进制 63MB 太大,且更新通道只许 web/server.py/VERSION)。
 # 所以缺二进制时,从签名 release 自动拉:复用 Ed25519 签名 manifest(携带二进制 SHA-256 + arch)→ 下载 → 验哈希 → ad-hoc 签名。
 # 这样旧机器在线更新到带本逻辑的 server.py 后,首次用 Claude 列即自动补齐二进制,无需重跑安装器。
-_BIN_DIR = os.path.expanduser("~/.codewhale-gui/bin")
+_BIN_DIR = _RUNTIME_BIN_DIR
 _patched_fetch_lock = threading.Lock()
 _patched_fetch_state = {"phase": "idle", "error": None}   # 供 /api/model 等暴露状态(可选)
 def _download_verified(url, dst, sha256_expected, size_expected):
@@ -4475,6 +4528,8 @@ def _provider_config_error(prov):
                 return "ChatGPT OAuth 未登录或已过期:请在终端运行 codex login 重新登录 ChatGPT 订阅后重试"
         except Exception:
             pass
+    if prov == "claude-code" and not _CLAUDE_CLI:
+        return "Claude Code CLI 未安装:请先安装 Claude Code，或安装/打开 Claude Desktop 后重启 CodeWhale"
     if prov == "custom" and not _provider_key("custom"):
         return "腾讯混元 API key 未配置:点击左下「🧠 模型」→「腾讯混元」→ 粘贴 TokenHub api_key →「保存并设为新对话模型」"
     if prov == "volcengine" and not _provider_key("volcengine"):
@@ -4920,6 +4975,19 @@ def _tcp_listening(port):
         return True
     except Exception:
         return False
+def _claude_runtime_has_cli(pid):
+    """A listening Claude provider is only healthy if its inherited PATH can spawn Claude."""
+    if not _CLAUDE_CLI:
+        return False
+    try:
+        out = subprocess.run(
+            ["/bin/ps", "eww", "-p", str(int(pid)), "-o", "command="],
+            capture_output=True, text=True, timeout=4,
+        ).stdout
+        match = re.search(r"(?:^|\s)PATH=([^\s]+)", out)
+        return bool(match and shutil.which("claude", path=match.group(1)))
+    except Exception:
+        return False
 def _kill_cmp_backends():
     # 当前补丁版实际命令是 `codewhale-tui --config ~/.codewhale-gui/cmp/... serve`;
     # 旧逻辑只 pkill app-server,会留下孤儿后端占端口。
@@ -4967,6 +5035,10 @@ def _adopt_cmp_backends():
     adopted = {}
     for (provider, port), pid in sorted(candidates.items(), key=lambda row: row[1], reverse=True):
         if provider in adopted or not _port_up(port):
+            continue
+        if provider == "claude-code" and not _claude_runtime_has_cli(pid):
+            print(f"[cmp] Claude 后端端口 {port} 存活但 PATH 找不到 claude，重启该 provider", flush=True)
+            _kill_cmp_provider(provider, port=port)
             continue
         adopted[provider] = {"port": port, "pid": pid}
         CMP_PORTS[provider] = port

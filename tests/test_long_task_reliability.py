@@ -35,6 +35,19 @@ class RuntimeFixture:
 
 
 class LongTaskReliabilityTests(unittest.TestCase):
+    def test_claude_runtime_health_requires_spawnable_cli(self):
+        fake_ps = mock.Mock(stdout="codewhale-tui PATH=/usr/bin:/bin HOME=/tmp")
+        with mock.patch.object(SERVER, "_CLAUDE_CLI", "/tmp/claude"), \
+             mock.patch.object(SERVER.subprocess, "run", return_value=fake_ps), \
+             mock.patch.object(SERVER.shutil, "which", return_value=None):
+            self.assertFalse(SERVER._claude_runtime_has_cli(123))
+
+        fake_ps.stdout = "codewhale-tui PATH=/managed/bin:/usr/bin HOME=/tmp"
+        with mock.patch.object(SERVER, "_CLAUDE_CLI", "/managed/bin/claude"), \
+             mock.patch.object(SERVER.subprocess, "run", return_value=fake_ps), \
+             mock.patch.object(SERVER.shutil, "which", return_value="/managed/bin/claude"):
+            self.assertTrue(SERVER._claude_runtime_has_cli(123))
+
     def test_image_upload_returns_before_deferred_vision_finishes(self):
         started = threading.Event()
         release = threading.Event()
