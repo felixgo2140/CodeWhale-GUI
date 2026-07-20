@@ -32,7 +32,7 @@ const CMP_HANDOFF_AGENT_CHARS=9000;
 const CMP_HANDOFF_USER_CHARS=2200;
 const cmpTitleTimers=new Map();
 // 建对比线程时直接把 model 钉到 thread 级,绕过 default_text_model="auto" 的自动路由(它会按 prompt 内容乱选、常落 deepseek,导致 GLM/GPT 栏答错)。
-const CMP_FORCE_MODEL={ deepseek:"deepseek-v4-pro", volcengine:"doubao-seed-2-1-pro-260628", longcat:"LongCat-2.0", qwen:"qwen3.7-max-2026-06-08", zai:"GLM-5.2", "openai-codex":"gpt-5.5", "claude-code":"opus", moonshot:"k3", custom:"hy3-preview" };   // 各 provider 默认模型(徽章/下拉的默认选中);实际由 server.py model_prefs 决定
+const CMP_FORCE_MODEL={ deepseek:"deepseek-v4-pro", volcengine:"doubao-seed-2-1-pro-260628", longcat:"LongCat-2.0", qwen:"qwen3.7-max-2026-06-08", zai:"GLM-5.2", "openai-codex":"gpt-5.6-sol", "claude-code":"opus", moonshot:"k3", custom:"hy3-preview" };   // 各 provider 默认模型(徽章/下拉的默认选中);实际由 server.py model_prefs 决定
 // 每 provider 可选模型变体(下拉)。claude-code 用别名(opus/sonnet/haiku),server 端 env 传给 claude -p + 身份串跟着走。
 const MODEL_VARIANTS={
   "claude-code":[{id:"opus",name:"Opus 4.8"},{id:"sonnet",name:"Sonnet 4.6"},{id:"haiku",name:"Haiku 4.5"}],
@@ -42,7 +42,7 @@ const MODEL_VARIANTS={
   qwen:[{id:"qwen3.8-max-preview",name:"Qwen 3.8 Max Preview · Token Plan"},{id:"qwen3.7-max-2026-06-08",name:"Qwen 3.7 Max Stable"},{id:"qwen3.7-max",name:"Qwen 3.7 Max"},{id:"qwen3.7-plus",name:"Qwen 3.7 Plus"}],
   custom:[{id:"hy3-preview",name:"Hy3 Preview"},{id:"hy-mt2-pro",name:"Hy-MT2 Pro"},{id:"hy-mt2-plus",name:"Hy-MT2 Plus"},{id:"hy-mt2-lite",name:"Hy-MT2 Lite"},{id:"hunyuan-role-latest",name:"Hunyuan Role Latest"},{id:"hy-role",name:"Hunyuan Role"},{id:"hunyuan-2.0-thinking-20251109",name:"HY 2.0 Think (旧)"},{id:"hunyuan-2.0-instruct-20251111",name:"HY 2.0 Instruct (旧)"}],
   zai:[{id:"GLM-5.2",name:"GLM-5.2"},{id:"GLM-4.6",name:"GLM-4.6"}],
-  "openai-codex":[{id:"gpt-5.5",name:"GPT-5.5"}],
+  "openai-codex":[{id:"gpt-5.6-sol",name:"GPT-5.6 Sol"},{id:"gpt-5.6-terra",name:"GPT-5.6 Terra"},{id:"gpt-5.6-luna",name:"GPT-5.6 Luna"},{id:"gpt-5.5",name:"GPT-5.5"}],
   moonshot:[{id:"k3",name:"K3"},{id:"kimi-for-coding-highspeed",name:"K2.7 Code Highspeed"},{id:"kimi-for-coding",name:"K2.7 Code"}],   // Kimi Code /models 会动态刷新；K3 是默认模型
 };
 let providerModelCatalogPromise=null;

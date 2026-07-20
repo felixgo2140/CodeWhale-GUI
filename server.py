@@ -3916,13 +3916,20 @@ _QWEN_TOKEN_PLAN_BASE_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com
 _QWEN_LATEST_MODEL = "qwen3.8-max-preview"
 _QWEN_DEFAULT_MODEL = "qwen3.7-max-2026-06-08"
 _QWEN_CREDENTIAL_PROFILES_FILE = os.path.expanduser("~/.codewhale-gui/qwen_credentials.json")
+_OPENAI_CODEX_DEFAULT_MODEL = "gpt-5.6-sol"
+_OPENAI_CODEX_FALLBACK_MODELS = (
+    {"id": "gpt-5.6-sol", "name": "GPT-5.6 Sol", "priority": 1},
+    {"id": "gpt-5.6-terra", "name": "GPT-5.6 Terra", "priority": 2},
+    {"id": "gpt-5.6-luna", "name": "GPT-5.6 Luna", "priority": 3},
+    {"id": "gpt-5.5", "name": "GPT-5.5", "priority": 20},
+)
 _CMP_PIN_MODEL = {"zai": "GLM-5.2", "custom": "hy3-preview", "volcengine": _VOLCENGINE_DEFAULT_MODEL, "longcat": _LONGCAT_DEFAULT_MODEL, "qwen": _QWEN_DEFAULT_MODEL}
 # 真正生效的是「建线程时把 model 钉到 thread 级」——default_text_model="auto" 的自动路由会按 prompt 乱选模型、
 # 无视 provider 与 [providers].model;只有 thread.model 是具体 id 才压得住。建会话/对比建线程时注入这个。
 # claude-code 必须钉 thread.model="sonnet" 做**确定性路由**:default_text_model="auto" 会让 CodeWhale 逐轮自动路由、
 # 时不时把 claude 栏答成 deepseek。"sonnet" 是 claude-code 已注册的合法 wire model(钉它不会 400;钉 "opus" 这种未注册名才会被 deepseek 校验拒)。
 # 它只是"路由键",真正传给 `claude -p` 的模型由 _CLAUDE_CODE_MODEL 经 env 覆盖(见下)——所以钉 sonnet 路由、实际跑 opus 不矛盾。
-_CMP_FORCE_MODEL = {"deepseek": "deepseek-v4-pro", "zai": "GLM-5.2", "openai-codex": "gpt-5.5", "claude-code": "sonnet", "moonshot": "k3", "custom": "hy3-preview", "volcengine": _VOLCENGINE_DEFAULT_MODEL, "longcat": _LONGCAT_DEFAULT_MODEL, "qwen": _QWEN_DEFAULT_MODEL}   # k3 = Kimi Code 订阅 API 的 K3 模型;custom 槽=腾讯混元(TokenHub OpenAI 兼容);volcengine=普通 Ark API 豆包模型;longcat=美团 LongCat OpenAI 兼容模型;qwen=阿里云百炼千问 OpenAI 兼容模型
+_CMP_FORCE_MODEL = {"deepseek": "deepseek-v4-pro", "zai": "GLM-5.2", "openai-codex": _OPENAI_CODEX_DEFAULT_MODEL, "claude-code": "sonnet", "moonshot": "k3", "custom": "hy3-preview", "volcengine": _VOLCENGINE_DEFAULT_MODEL, "longcat": _LONGCAT_DEFAULT_MODEL, "qwen": _QWEN_DEFAULT_MODEL}   # k3 = Kimi Code 订阅 API 的 K3 模型;custom 槽=腾讯混元(TokenHub OpenAI 兼容);volcengine=普通 Ark API 豆包模型;longcat=美团 LongCat OpenAI 兼容模型;qwen=阿里云百炼千问 OpenAI 兼容模型
 _LITELLM_COMPARE_ALIASES = {
     "zai": "glm",
     "moonshot": "kimi",
@@ -3990,6 +3997,40 @@ def _normalize_provider_model_item(item):
         return None
     name = str(item.get("display_name") or item.get("label") or item.get("name") or mid).strip() or mid
     return {"id": mid, "name": name, "owned_by": item.get("owned_by") or "", "created": item.get("created") or ""}
+def _codex_models_cache_file():
+    return os.path.join(os.path.expanduser(os.environ.get("CODEX_HOME") or "~/.codex"), "models_cache.json")
+def _codex_oauth_models(cache_file=None):
+    """Read the OAuth model catalog maintained by Codex CLI without exposing credentials."""
+    fallback = [dict(item) for item in _OPENAI_CODEX_FALLBACK_MODELS]
+    path = os.path.expanduser(cache_file or _codex_models_cache_file())
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        raw = data.get("models") if isinstance(data, dict) else []
+        models = []
+        for item in raw if isinstance(raw, list) else []:
+            if not isinstance(item, dict):
+                continue
+            mid = str(item.get("slug") or item.get("id") or "").strip()
+            if not mid.startswith("gpt-") or item.get("supported_in_api") is False or item.get("visibility") == "hide":
+                continue
+            models.append({
+                "id": mid,
+                "name": str(item.get("display_name") or mid).strip() or mid,
+                "description": str(item.get("description") or "")[:240],
+                "priority": int(item.get("priority") or 999),
+                "reasoning_levels": [
+                    str(level.get("effort") or "")
+                    for level in (item.get("supported_reasoning_levels") or [])
+                    if isinstance(level, dict) and level.get("effort")
+                ],
+            })
+        if models:
+            models.sort(key=lambda item: (item.get("priority", 999), item["id"]))
+            return {"provider": "openai-codex", "ok": True, "source": "codex-oauth-cache", "models": models, "count": len(models)}
+    except Exception:
+        pass
+    return {"provider": "openai-codex", "ok": True, "source": "bundled-oauth-catalog", "models": fallback, "count": len(fallback)}
 def _provider_models(prov, force=False):
     prov = re.sub(r'[^A-Za-z0-9._-]', '', str(prov or ""))
     now = time.time()
@@ -3998,7 +4039,9 @@ def _provider_models(prov, force=False):
         cached = _PROVIDER_MODELS_CACHE.get(ck)
         if cached and now - cached.get("t", 0) < 600:
             return dict(cached.get("data") or {})
-    if prov in ("openai-codex", "claude-code"):
+    if prov == "openai-codex":
+        return _codex_oauth_models()
+    if prov == "claude-code":
         return {"provider": prov, "ok": False, "reason": "oauth_or_cli", "models": []}
     key = ((_provider_cfg(prov).get("api_key") if isinstance(_provider_cfg(prov), dict) else "") or _provider_key(prov) or "").strip()
     if prov == "deepseek":
@@ -4031,7 +4074,7 @@ def _provider_models(prov, force=False):
     _PROVIDER_MODELS_CACHE[ck] = {"t": now, "data": out}
     return out
 def provider_models(providers=None, force=False):
-    ids = providers or ["deepseek", "zai", "moonshot", "custom", "volcengine", "longcat", "qwen"]
+    ids = providers or ["deepseek", "zai", "moonshot", "custom", "volcengine", "longcat", "qwen", "openai-codex"]
     items = {}
     threads = []
     lock = threading.Lock()
