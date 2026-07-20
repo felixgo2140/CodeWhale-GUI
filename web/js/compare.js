@@ -25,7 +25,7 @@ function cmpRestoreDraft(inp, raw){
 }
 
 /* ---------- 多模型并排对比 ---------- */
-const CMP={ sel:new Set(), threads:{}, seq:{}, keyed:{}, maxed:null, autoApprove:true, allowShell:false, fakeip:false, turn:{}, running:{}, busy:false, sendQ:[], provQ:{}, dispatching:{}, cancelled:{}, attachments:[], prepareChain:null, sessionId:null, topic:"", titleSeed:"", history:{}, historyLoading:{}, historyFull:{}, brief:{}, briefLoading:{}, restoring:false, views:{}, bags:{}, runState:{} };  // sessionId:当前对比会话(null=未开始,首次发送时建);provQ=按模型拆开的待发送队列
+const CMP={ sel:new Set(), threads:{}, seq:{}, keyed:{}, maxed:null, autoApprove:true, allowShell:false, fakeip:false, turn:{}, running:{}, busy:false, sendQ:[], provQ:{}, dispatching:{}, cancelled:{}, attachments:[], prepareChain:null, sessionId:null, topic:"", titleSeed:"", history:{}, historyLoading:{}, historyFull:{}, brief:{}, briefLoading:{}, restoring:false, views:{}, bags:{}, runState:{}, latestPrompt:{} };  // sessionId:当前对比会话(null=未开始,首次发送时建);provQ=按模型拆开的待发送队列
 const CMP_TITLE_DELAY_MS=1000;
 const CMP_CONTEXT_RISK={ "openai-codex":{maxInput:220000, turns:14} };
 const CMP_HANDOFF_AGENT_CHARS=9000;
@@ -166,6 +166,8 @@ function cmpAddViewUser(prov,text,opts={}){
   const view=cmpEnsureView(prov); if(!view) return null;
   const id=opts.key||cmpStaticItemId(prov,"cmpuser");
   const item={id,kind:"user_message",detail:String(text||""),summary:String(text||""),created_at:opts.time,started_at:opts.time};
+  const clean=cmpCleanUserText(item.detail).trim();
+  if(clean) CMP.latestPrompt[prov]={text:clean,time:opts.time||new Date().toISOString()};
   view.startItem(id,item);
   view.completeItem(id,item,false);
   const rec=cmpBag(prov).items&&cmpBag(prov).items.get(id);
@@ -289,11 +291,14 @@ function cmpOnViewTurnFinished(prov, turnId, status, meta={}){
 }
 function cmpOnViewAssistantFinal(prov,item,el,meta={}){
   cmpRunRecordAnswer(prov,meta.text||item.detail||item.summary||"");
+  cmpScheduleSummaryRender();
 }
 function cmpOnViewUserMessage(prov,item,el,meta={}){
   const text=cmpCleanUserText(meta.text||item.detail||item.summary||"");
+  if(text.trim()) CMP.latestPrompt[prov]={text:text.trim(),time:item.started_at||item.created_at||item.updated_at||item.ended_at||new Date().toISOString()};
   const key=(el&&el.dataset&&el.dataset.tlKey) || meta.id || item.id || cmpTimelineKey(text,item.started_at||item.created_at);
   timelineRegisterUser(el,text,{scope:"compare",key,time:item.started_at||item.created_at||item.updated_at||item.ended_at,provider:prov});
+  cmpScheduleSummaryRender();
 }
 
 async function openCompare(){
@@ -359,7 +364,7 @@ async function restoreCompareSession(sess){   // 点侧栏对比会话 → 打�
   timelineClose();
   CMP.sessionId=sess.id;
   CMP.topic=sess.topic||"对比"; CMP.titleSeed=sess.title_seed||sess.topic||"";
-  CMP.threads={...(sess.threads||{})}; CMP.seq={}; CMP.turn={}; CMP.running={}; CMP.busy=false; CMP.sendQ=[]; CMP.provQ={}; CMP.dispatching={}; CMP.cancelled={}; CMP.history={}; CMP.historyLoading={}; CMP.historyFull={}; CMP.brief={}; CMP.briefLoading={}; clearAttachmentList(CMP.attachments); CMP.maxed=null;
+  CMP.threads={...(sess.threads||{})}; CMP.seq={}; CMP.turn={}; CMP.running={}; CMP.busy=false; CMP.sendQ=[]; CMP.provQ={}; CMP.dispatching={}; CMP.cancelled={}; CMP.history={}; CMP.historyLoading={}; CMP.historyFull={}; CMP.brief={}; CMP.briefLoading={}; CMP.latestPrompt={}; clearAttachmentList(CMP.attachments); CMP.maxed=null;
   CMP.sel=new Set(Object.keys(sess.threads||{}));
   if(CMP.sel.size===0) CMP.sel.add("deepseek");
   cmpResetAllViews();
@@ -420,6 +425,7 @@ async function cmpRenderBrief(prov, rec){
   if(!snap.items.length) cmpAppendSysNote(prov,rec.has_more?"(最新内容待加载)":"(暂无历史内容)");
   timelineRender();
   b.scrollTop=b.scrollHeight;
+  cmpScheduleSummaryRender();
 }
 async function cmpLoadBrief(prov,tid){
   const b=$("#cmpb-"+CSS.escape(prov));
@@ -478,6 +484,7 @@ async function cmpRenderHistory(prov, rec, opts={}){
   b.dataset.tid=tid;
   b.dataset.mode="history";
   b.scrollTop=b.scrollHeight;
+  cmpScheduleSummaryRender();
 }
 async function cmpLoadHistory(prov,tid,opts={}){   // 拉某栏 thread 对话消息;渲染交给 chat-view 快照分页/懒 markdown,避免打开大 group 顶满 CPU
   const b=$("#cmpb-"+CSS.escape(prov));
@@ -497,8 +504,113 @@ async function cmpLoadHistory(prov,tid,opts={}){   // 拉某栏 thread 对话消
   }catch(e){ if(b) b.innerHTML=""; cmpAddMsg(prov,"a err","✗ 载入历史失败:"+esc(e.message||"")); }
   finally{ if(CMP.historyLoading[prov]===tid) delete CMP.historyLoading[prov]; }
 }
-function cmpNormalizeLayout(l){ return l==="col" ? "tab" : (["row","tab","grid"].includes(l)?l:"row"); }
+function cmpNormalizeLayout(l){ return l==="col" ? "tab" : (["row","tab","grid","stack","summary"].includes(l)?l:"row"); }
 function cmpFirstSelectedProvider(){ return [...CMP.sel][0] || null; }
+
+function cmpSummarySourceItems(prov){
+  const bag=CMP.bags&&CMP.bags[prov];
+  if(bag&&bag.items instanceof Map&&bag.items.size){
+    return [...bag.items.values()].map((rec,index)=>({
+      kind:String(rec&&rec.kind||""),
+      text:String(rec&&((rec.raw!=null?rec.raw:"")||(rec.content&&rec.content.textContent)||"")).trim(),
+      index
+    }));
+  }
+  let items=[];
+  if(CMP.history&&CMP.history[prov]&&Array.isArray(CMP.history[prov].items)) items=CMP.history[prov].items;
+  else if(CMP.brief&&CMP.brief[prov]) items=cmpBriefSnapshot(prov,CMP.brief[prov]).items||[];
+  return items.map((item,index)=>({
+    kind:String(item&&item.kind||""),
+    text:String(item&&((item.detail||item.summary||item.text)||"")).trim(),
+    index
+  }));
+}
+function cmpSummaryPair(prov){
+  const records=cmpSummarySourceItems(prov);
+  let userIndex=-1;
+  for(let i=records.length-1;i>=0;i--){
+    if(["user_message","user"].includes(records[i].kind)&&records[i].text){ userIndex=i; break; }
+  }
+  const question=(userIndex>=0&&records[userIndex].text) || (CMP.latestPrompt[prov]&&CMP.latestPrompt[prov].text) || "";
+  let answer="";
+  const start=userIndex>=0?userIndex+1:0;
+  for(let i=records.length-1;i>=start;i--){
+    if(records[i].kind==="agent_message"&&records[i].text){ answer=records[i].text; break; }
+  }
+  return {question,answer,running:!!CMP.running[prov],threadId:CMP.threads[prov]||""};
+}
+function cmpSummaryModelName(prov){
+  const vars=MODEL_VARIANTS[prov]||[];
+  const id=(CMP.modelPrefs&&CMP.modelPrefs[prov])||CMP_FORCE_MODEL[prov]||(vars[0]&&vars[0].id)||"";
+  const found=vars.find(v=>v.id===id);
+  return (found&&found.name)||id;
+}
+function cmpHydrateSummary(){
+  if(_cmpLay!=="summary") return;
+  PROVIDERS.filter(p=>CMP.sel.has(p.id)).forEach(p=>{
+    const pair=cmpSummaryPair(p.id);
+    if(!pair.question&&!pair.answer&&pair.threadId&&!CMP.briefLoading[p.id]&&!CMP.historyLoading[p.id]) cmpLoadBrief(p.id,pair.threadId);
+  });
+}
+function cmpRenderSummary(){
+  const host=$("#cmpSummary"); if(!host||_cmpLay!=="summary") return;
+  const providers=PROVIDERS.filter(p=>CMP.sel.has(p.id));
+  const pairs=providers.map(p=>({provider:p,pair:cmpSummaryPair(p.id)}));
+  const questions=pairs.map(x=>x.pair.question).filter(Boolean);
+  const normalized=questions.map(q=>q.replace(/\s+/g," ").trim());
+  const sharedQuestion=questions.length===pairs.length&&new Set(normalized).size===1 ? questions[0] : "";
+  const oldScroll=host.scrollTop;
+  host.innerHTML="";
+  const shell=document.createElement("div"); shell.className="cmpsum-shell";
+  const head=document.createElement("div"); head.className="cmpsum-head";
+  const title=document.createElement("h2"); title.textContent="最新问答汇总";
+  const meta=document.createElement("span"); meta.textContent=`${providers.length} 个模型`;
+  head.append(title,meta); shell.appendChild(head);
+  if(sharedQuestion){
+    const q=document.createElement("section"); q.className="cmpsum-question";
+    const label=document.createElement("div"); label.className="cmpsum-label"; label.textContent="你的最新问题";
+    const textEl=document.createElement("div"); textEl.className="cmpsum-text"; textEl.textContent=sharedQuestion;
+    q.append(label,textEl); shell.appendChild(q);
+  }
+  if(!providers.length){
+    const empty=document.createElement("div"); empty.className="cmpsum-empty"; empty.textContent="请先选择要比较的模型";
+    shell.appendChild(empty);
+  }else{
+    const grid=document.createElement("div"); grid.className="cmpsum-grid";
+    pairs.forEach(({provider,pair})=>{
+      const card=document.createElement("article"); card.className="cmpsum-card msg assistant"+(pair.running?" running":"");
+      card._cwRawMessage=()=>pair.answer;
+      card._cwInputSel="#cmpInput";
+      const cardHead=document.createElement("header"); cardHead.className="cmpsum-card-head";
+      const name=document.createElement("strong"); name.className="cmpsum-card-name"; name.textContent=PROV_SHORT[provider.id]||provider.name;
+      const model=document.createElement("span"); model.className="cmpsum-card-model"; model.textContent=cmpSummaryModelName(provider.id);
+      const stateEl=document.createElement("span"); stateEl.className="cmpsum-card-state";
+      stateEl.textContent=pair.running?"正在回答":(pair.answer?"最新回复":(pair.threadId?"等待回复":"尚未开始"));
+      cardHead.append(name,model,stateEl); card.appendChild(cardHead);
+      if(!sharedQuestion){
+        const q=document.createElement("div"); q.className="cmpsum-card-question";
+        const label=document.createElement("div"); label.className="cmpsum-label"; label.textContent="最新问题";
+        const textEl=document.createElement("div"); textEl.className="cmpsum-text"; textEl.textContent=pair.question||"暂无问题";
+        q.append(label,textEl); card.appendChild(q);
+      }
+      const answer=document.createElement("div"); answer.className="cmpsum-answer content";
+      if(pair.answer){
+        const view=cmpEnsureView(provider.id);
+        if(view) view.markdownNow(answer,pair.answer,card,"#cmpInput",false);
+        else answer.textContent=pair.answer;
+      }else answer.textContent=pair.running?"模型正在处理这个问题…":"暂无对应回复";
+      card.appendChild(answer); grid.appendChild(card);
+    });
+    shell.appendChild(grid);
+  }
+  host.appendChild(shell);
+  host.scrollTop=Math.min(oldScroll,Math.max(0,host.scrollHeight-host.clientHeight));
+}
+let cmpSummaryFrame=0;
+function cmpScheduleSummaryRender(){
+  if(_cmpLay!=="summary"||cmpSummaryFrame) return;
+  cmpSummaryFrame=requestAnimationFrame(()=>{ cmpSummaryFrame=0; cmpRenderSummary(); });
+}
 function cmpContextStats(rec){
   const turns=(rec&&rec.turns)||[];
   return {
@@ -595,11 +707,24 @@ function cmpApplyMaxVisibility(){
     c.classList.toggle("hide",!!CMP.maxed && !me);
   });
 }
-let _cmpLay = cmpNormalizeLayout(localStorage.getItem("cw_cmplay") || "row");   // 对比栏排列:row 横列 / tab 标签页 / grid 田字格(兼容旧 col=标签页)
-function setCmpLayout(l){   // 横/标签/田。横/田显示全部;标签只显示当前模型,用上方 tab 切换。
+let _cmpLay = cmpNormalizeLayout(localStorage.getItem("cw_cmplay") || "row");   // 对比栏排列:row 横列 / tab 标签页 / grid 田字格 / stack 纵向 / summary 汇总(兼容旧 col=标签页)
+function setCmpLayout(l){   // 横/标签/田/纵/汇总。汇总只呈现各模型最新一轮问答,不销毁原列。
   _cmpLay = cmpNormalizeLayout(l); try{localStorage.setItem("cw_cmplay",_cmpLay);}catch(e){}
-  const box=$("#cmpCols"); if(box){ box.classList.remove("lay-col","lay-grid","lay-tab"); if(_cmpLay==="tab")box.classList.add("lay-tab"); else if(_cmpLay==="grid")box.classList.add("lay-grid"); }
+  const box=$("#cmpCols"), summary=$("#cmpSummary");
+  if(box){
+    box.classList.remove("lay-col","lay-grid","lay-tab","lay-stack","lay-summary");
+    if(_cmpLay==="tab") box.classList.add("lay-tab");
+    else if(_cmpLay==="grid") box.classList.add("lay-grid");
+    else if(_cmpLay==="stack") box.classList.add("lay-stack");
+    else if(_cmpLay==="summary") box.classList.add("lay-summary");
+  }
+  if(summary) summary.hidden=_cmpLay!=="summary";
   document.querySelectorAll("#cmpLayout .laybtn").forEach(b=>b.classList.toggle("on", b.dataset.l===_cmpLay));
+  if(_cmpLay==="summary"){
+    if(CMP.maxed){ CMP.maxed=null; cmpApplyMaxVisibility(); }
+    renderCmpTabs(); cmpRenderSummary(); cmpHydrateSummary();
+    return;
+  }
   if(_cmpLay==="tab"){
     if(!CMP.maxed || !CMP.sel.has(CMP.maxed)) CMP.maxed=cmpFirstSelectedProvider();
     cmpApplyMaxVisibility();
@@ -612,8 +737,9 @@ function setCmpLayout(l){   // 横/标签/田。横/田显示全部;标签只显
 async function cmpSetModel(prov, model){   // 选了某栏的模型变体:存 pref(单窗口也共用)+ 该栏开新 thread(模型 thread-locked)
   CMP.modelPrefs=CMP.modelPrefs||{}; CMP.modelPrefs[prov]=model;
   try{ await api("/api/model-pref",{method:"POST",body:JSON.stringify({provider:prov,model})}); }catch(e){}
-  delete CMP.threads[prov]; delete CMP.history[prov]; delete CMP.historyLoading[prov]; delete CMP.historyFull[prov]; delete CMP.brief[prov]; delete CMP.briefLoading[prov]; CMP.seq[prov]=0;
+  delete CMP.threads[prov]; delete CMP.history[prov]; delete CMP.historyLoading[prov]; delete CMP.historyFull[prov]; delete CMP.brief[prov]; delete CMP.briefLoading[prov]; delete CMP.latestPrompt[prov]; CMP.seq[prov]=0;
   cmpDropView(prov,{clear:true});
+  cmpScheduleSummaryRender();
   cwToast((PROV_SHORT[prov]||prov)+" 模型 → "+model+"(下一条起生效)");
 }
 async function cmpSetEffort(prov, effort){   // 推理 effort:存 pref(走 env,后端重启)→ 下一条起生效。effort 不是 thread-locked(只是每轮/env 参数),所以**不清 thread、不清内容**(旧对话留着,继续追问即用新 effort)
@@ -737,6 +863,7 @@ function renderCmpCols(){   // diff:保留已有栏内容,只增删变化的
     else { cmpApplyMaxVisibility(); cmpEnsureHistory(CMP.maxed); }   // 新加的栏也隐藏(只留放大那栏)
     renderCmpTabs();
   }
+  if(_cmpLay==="summary"){ cmpRenderSummary(); cmpHydrateSummary(); }
 }
 function cmpSetProgress(prov, text){   // 长任务可见进度:阶段 / 步数 / 秒表 / 最近工具或等待状态
   const bar=$("#cmprun-"+CSS.escape(prov));
@@ -756,6 +883,7 @@ function cmpSetRunning(prov,on){
   if(on) cmpSetProgress(prov,"启动中"); else cmpClearProgress(prov);
   cmpSyncSendUI();   // 刷新发送按钮状态(列停了就从「引导」变回「发送」)
   if(CMP.maxed || _cmpLay==="tab") renderCmpTabs();   // 放大/标签页:标签上的运行小圆点跟随
+  cmpScheduleSummaryRender();
 }
 async function cmpStop(prov){   // 暂停单个对话:中断该栏当前 turn(中断后 SSE 会发 completed/interrupted → finish 收尾)
   const tid=CMP.threads[prov]; let turn=CMP.turn[prov];
@@ -802,7 +930,7 @@ function cmpClearAllCols(){   // 清空对比视图所有列(线程/消息/状�
   CMP.sessionId=null;
   timelineReset("compare");
   CMP.topic=""; CMP.titleSeed="";
-  CMP.threads={}; CMP.seq={}; CMP.turn={}; CMP.running={}; CMP.busy=false; CMP.sendQ=[]; CMP.provQ={}; CMP.dispatching={}; CMP.cancelled={}; CMP.history={}; CMP.historyLoading={}; CMP.historyFull={}; CMP.brief={}; CMP.briefLoading={}; CMP.runState={}; clearAttachmentList(CMP.attachments); Object.keys(CMP.colAttach||{}).forEach(pv=>{clearAttachmentList(CMP.colAttach[pv]); cmpColRenderAttach(pv);}); cmpSyncSendUI(); cmpRenderAttach();
+  CMP.threads={}; CMP.seq={}; CMP.turn={}; CMP.running={}; CMP.busy=false; CMP.sendQ=[]; CMP.provQ={}; CMP.dispatching={}; CMP.cancelled={}; CMP.history={}; CMP.historyLoading={}; CMP.historyFull={}; CMP.brief={}; CMP.briefLoading={}; CMP.runState={}; CMP.latestPrompt={}; clearAttachmentList(CMP.attachments); Object.keys(CMP.colAttach||{}).forEach(pv=>{clearAttachmentList(CMP.colAttach[pv]); cmpColRenderAttach(pv);}); cmpSyncSendUI(); cmpRenderAttach(); cmpScheduleSummaryRender();
   [...document.querySelectorAll("#cmpCols .cmpcol")].forEach(c=>{ const p=c.dataset.p; cmpResetView(p,{clear:true}); const s=$("#cmpst-"+CSS.escape(p)); if(s) s.textContent=""; const stop=$("#cmpstop-"+CSS.escape(p)); if(stop) stop.hidden=true; cmpClearProgress(p); const cs=$("#cmpcsend-"+CSS.escape(p)); if(cs) cs.disabled=false; c.hidden=!CMP.sel.has(p); });
 }
 async function cmpResetBackends(){   // 重启所有对比后端(残留后端连不上各自端点→回退 DeepSeek 时用):杀掉旧后端 + 清历史,下次发送用最新配置/key 冷启
