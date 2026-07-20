@@ -194,6 +194,29 @@ function closeSelectionMenu(){
   if(selectionMenu){ selectionMenu.remove(); selectionMenu=null; }
 }
 
+function fitSelectionMenuToViewport(menu,clientX,clientY){
+  const pad=8;
+  const place=()=>{
+    if(!menu?.isConnected) return;
+    const vv=window.visualViewport;
+    const widths=[window.innerWidth,document.documentElement?.clientWidth,vv?.width].filter(v=>Number.isFinite(v)&&v>0);
+    const heights=[window.innerHeight,document.documentElement?.clientHeight,vv?.height].filter(v=>Number.isFinite(v)&&v>0);
+    const width=Math.min(...widths),height=Math.min(...heights);
+    menu.style.maxWidth=Math.max(160,width-pad*2)+"px";
+    menu.style.maxHeight=Math.max(80,height-pad*2)+"px";
+    const rect=menu.getBoundingClientRect();
+    const left=clientX+rect.width+pad<=width ? clientX : clientX-rect.width;
+    const top=clientY+rect.height+pad<=height ? clientY : clientY-rect.height;
+    menu.style.left=Math.max(pad,Math.min(left,width-rect.width-pad))+"px";
+    menu.style.top=Math.max(pad,Math.min(top,height-rect.height-pad))+"px";
+    menu.style.visibility="visible";
+  };
+  menu.style.visibility="hidden";
+  menu.style.left="0px"; menu.style.top="0px";
+  place();
+  requestAnimationFrame(place); // 字体/缩放完成后再校正一次,WKWebView 窗口边缘不溢出
+}
+
 function showSelectionMenu(event,msg,selected){
   closeSelectionMenu();
   const menu=document.createElement("div");
@@ -222,10 +245,7 @@ function showSelectionMenu(event,msg,selected){
     closeSelectionMenu();
   });
   document.body.appendChild(menu);
-  const rect=menu.getBoundingClientRect();
-  const left=Math.max(8,Math.min(event.clientX,window.innerWidth-rect.width-8));
-  const top=Math.max(8,Math.min(event.clientY,window.innerHeight-rect.height-8));
-  menu.style.left=left+"px"; menu.style.top=top+"px";
+  fitSelectionMenuToViewport(menu,event.clientX,event.clientY);
   selectionMenu=menu;
 }
 

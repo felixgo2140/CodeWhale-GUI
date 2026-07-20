@@ -728,6 +728,9 @@ body.sideresizing,body.previewresizing{cursor:col-resize;user-select:none}
   position:fixed;
   z-index:1800;
   width:min(290px,calc(100vw - 16px));
+  max-height:calc(100dvh - 16px);
+  overflow-y:auto;
+  overscroll-behavior:contain;
   padding:6px;
   border:1px solid var(--line-strong);
   border-radius:var(--r-s);

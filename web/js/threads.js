@@ -75,6 +75,19 @@ function ensureThreadContextMenuHandlers(){
   window.addEventListener("blur",closeThreadContextMenu);
 }
 function contextAction(label,iconName,run,opts={}){ return {label,iconName,run,...opts}; }
+function fitThreadMenuToViewport(menu,clientX,clientY){
+  const pad=8,vv=window.visualViewport;
+  const widths=[window.innerWidth,document.documentElement?.clientWidth,vv?.width].filter(v=>Number.isFinite(v)&&v>0);
+  const heights=[window.innerHeight,document.documentElement?.clientHeight,vv?.height].filter(v=>Number.isFinite(v)&&v>0);
+  const width=Math.min(...widths),height=Math.min(...heights);
+  menu.style.maxWidth=Math.max(160,width-pad*2)+"px";
+  menu.style.maxHeight=Math.max(80,height-pad*2)+"px";
+  const rect=menu.getBoundingClientRect();
+  const left=clientX+rect.width+pad<=width ? clientX : clientX-rect.width;
+  const top=clientY+rect.height+pad<=height ? clientY : clientY-rect.height;
+  menu.style.left=Math.max(pad,Math.min(left,width-rect.width-pad))+"px";
+  menu.style.top=Math.max(pad,Math.min(top,height-rect.height-pad))+"px";
+}
 function showThreadContextMenu(ev,actions){
   ev.preventDefault(); ev.stopPropagation(); closeThreadContextMenu(); ensureThreadContextMenuHandlers();
   const menu=document.createElement("div"); menu.className="thread-context-menu"; menu.setAttribute("role","menu"); menu.style.visibility="hidden";
@@ -86,10 +99,9 @@ function showThreadContextMenu(ev,actions){
     menu.appendChild(b);
   }
   document.body.appendChild(menu); threadContextMenu=menu;
-  const pad=8, rect=menu.getBoundingClientRect();
-  menu.style.left=Math.max(pad,Math.min(ev.clientX,window.innerWidth-rect.width-pad))+"px";
-  menu.style.top=Math.max(pad,Math.min(ev.clientY,window.innerHeight-rect.height-pad))+"px";
+  fitThreadMenuToViewport(menu,ev.clientX,ev.clientY);
   menu.style.visibility="visible";
+  requestAnimationFrame(()=>{ if(menu.isConnected) fitThreadMenuToViewport(menu,ev.clientX,ev.clientY); });
   menu.querySelector(".ctx-item")?.focus({preventScroll:true});
 }
 function showThreadActionMenu(ev,actions){

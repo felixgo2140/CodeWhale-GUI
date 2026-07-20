@@ -30,6 +30,20 @@ class MessageContextActionTests(unittest.TestCase):
 
         self.assertIn(".message-selection-menu", source)
         self.assertIn(".message-selection-sep", source)
+        self.assertIn("max-height:calc(100dvh - 16px)", source)
+        self.assertIn("overflow-y:auto", source)
+
+    def test_context_menus_flip_and_clamp_to_the_visible_viewport(self):
+        chat = (ROOT / "web/js/chat-view.js").read_text(encoding="utf-8")
+        threads = (ROOT / "web/js/threads.js").read_text(encoding="utf-8")
+
+        self.assertIn("function fitSelectionMenuToViewport", chat)
+        self.assertIn("clientY-rect.height", chat)
+        self.assertIn("document.documentElement?.clientHeight", chat)
+        self.assertIn("window.visualViewport", chat)
+        self.assertIn("requestAnimationFrame(place)", chat)
+        self.assertIn("function fitThreadMenuToViewport", threads)
+        self.assertIn("clientY-rect.height", threads)
 
 
 if __name__ == "__main__":
