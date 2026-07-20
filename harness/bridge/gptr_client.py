@@ -235,14 +235,17 @@ def _load_env(model=""):
 
 
 def _patch_model_compatibility(model):
-    """Kimi K3 only accepts its default temperature=1.
+    """Register models that reject GPT Researcher's per-call temperature.
 
     GPT Researcher passes per-call temperatures after LLM_KWARGS, so an env
     override alone cannot fix it. Registering the active model in the package's
     shared no-temperature list makes every retry omit that unsupported field.
     """
     raw = str(model or "").split(":", 1)[-1].strip()
-    if _model_key(raw) != "kimi" or raw.lower() not in {"k3", "kimi-for-coding"}:
+    lower = raw.lower()
+    kimi_fixed_temperature = _model_key(raw) == "kimi" and lower in {"k3", "kimi-for-coding"}
+    qwen_thinking_only = _model_key(raw) == "qwen" and lower.startswith("qwen3.8-")
+    if not (kimi_fixed_temperature or qwen_thinking_only):
         return
     candidates = {raw, raw.lower(), raw.upper()}
     try:

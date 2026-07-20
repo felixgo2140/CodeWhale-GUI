@@ -3564,7 +3564,7 @@ def _set_root_config_values(values):
             end += 1
     _atomic_write(CFG, "\n".join(lines), secret=True)
 
-def set_model(provider, model, api_key):
+def set_model(provider, model, api_key, base_url=""):
     provider = (provider or "").strip()
     if not provider:
         return {"error": "provider required"}
@@ -3614,10 +3614,16 @@ def set_model(provider, model, api_key):
                 "newchatCapable": True, "restarted": False, "note": "LongCat key 已保存"}
     if provider == "qwen":
         model = model if model and model != "auto" else _QWEN_DEFAULT_MODEL
+        current = _provider_cfg("qwen") or {}
+        target_base = (base_url or current.get("base_url") or _QWEN_BASE_URL).strip().rstrip("/")
+        probe_key = (api_key or current.get("api_key") or _provider_key("qwen") or "").strip()
+        probe = _qwen_probe(probe_key, target_base, model)
+        if probe.get("fatal"):
+            return {"error": probe.get("error") or "千问模型校验失败"}
         try:
             values = {
                 "kind": "openai-compatible",
-                "base_url": _QWEN_BASE_URL,
+                "base_url": target_base,
                 "model": model,
             }
             if api_key:
@@ -3631,8 +3637,12 @@ def set_model(provider, model, api_key):
                 _restart_litellm()
         except Exception as e:
             return {"error": "写入千问配置失败: " + str(e)[:150]}
-        return {"ok": True, "provider": "qwen", "model": model,
-                "newchatCapable": True, "restarted": False, "note": "千问 key 已保存"}
+        out = {"ok": True, "provider": "qwen", "model": model,
+               "base_url": target_base, "newchatCapable": True, "restarted": False,
+               "note": "千问配置已校验并保存"}
+        if probe.get("warning"):
+            out["warning"] = probe["warning"]
+        return out
     prev_p = _cfg_get("provider") or "deepseek"          # 记下当前可用配置,失败回退用
     prev_m = _cfg_get("default_text_model") or "deepseek-v4-pro"
     if api_key:
@@ -3684,6 +3694,8 @@ _LONGCAT_BASE_URL = "https://api.longcat.chat/openai"
 _LONGCAT_DEFAULT_MODEL = "LongCat-2.0"
 _LONGCAT_CONTEXT_WINDOW = 1048576
 _QWEN_BASE_URL = "https://ws-zazex2z3400vhsxs.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+_QWEN_TOKEN_PLAN_BASE_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+_QWEN_LATEST_MODEL = "qwen3.8-max-preview"
 _QWEN_DEFAULT_MODEL = "qwen3.7-max-2026-06-08"
 _CMP_PIN_MODEL = {"zai": "GLM-5.2", "custom": "hy3-preview", "volcengine": _VOLCENGINE_DEFAULT_MODEL, "longcat": _LONGCAT_DEFAULT_MODEL, "qwen": _QWEN_DEFAULT_MODEL}
 # 真正生效的是「建线程时把 model 钉到 thread 级」——default_text_model="auto" 的自动路由会按 prompt 乱选模型、
@@ -3876,6 +3888,52 @@ def _qwen_model_for_chat():
         return _QWEN_DEFAULT_MODEL
     return model
 
+def _qwen_requires_token_plan(model):
+    return str(model or "").strip().lower().startswith("qwen3.8-")
+
+def _qwen_probe(key, base, model, timeout=45):
+    """Validate a Qwen key/base/model tuple before replacing the working config."""
+    key = str(key or "").strip()
+    base = str(base or "").strip().rstrip("/")
+    model = str(model or "").strip()
+    if not key:
+        return {"fatal": True, "error": "千问 API key 未配置"}
+    if not base.startswith("https://"):
+        return {"fatal": True, "error": "千问 base URL 必须使用 https://"}
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "只回复：OK"}],
+        "max_tokens": 16,
+        "stream": False,
+    }
+    req = urllib.request.Request(
+        base + "/chat/completions",
+        data=json.dumps(payload, ensure_ascii=False).encode(),
+        method="POST",
+        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+    )
+    try:
+        with _LOCAL.open(req, timeout=timeout) as resp:
+            json.load(resp)
+        return {"ok": True}
+    except urllib.error.HTTPError as e:
+        raw = e.read(1200).decode("utf-8", errors="replace")
+        try:
+            err = json.loads(raw).get("error") or {}
+            message = str(err.get("message") or err.get("code") or raw)[:300]
+        except Exception:
+            message = raw[:300]
+        if _qwen_requires_token_plan(model):
+            if e.code in (401, 403):
+                message = ("Qwen3.8 Max Preview 仅 Token Plan 可用。请填写 Token Plan 页面生成的专用 "
+                           "base URL 和 API key；现有百炼/工作区 key 不能直接复用。服务端返回：" + message)
+            elif e.code == 404:
+                message = "当前端点没有开放 qwen3.8-max-preview；请使用 Token Plan 专用 base URL。"
+        return {"fatal": True, "status": e.code, "error": message}
+    except Exception as e:
+        message = "千问连通性检查失败：" + str(e)[:220]
+        return {"fatal": _qwen_requires_token_plan(model), "warning": message, "error": message}
+
 def _qwen_chat_once(provider, prompt):
     provider = re.sub(r'[^A-Za-z0-9_-]', '', str(provider or ""))
     if provider != "qwen":
@@ -3889,10 +3947,11 @@ def _qwen_chat_once(provider, prompt):
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": str(prompt or "")}],
-        "temperature": 0.2,
         "max_tokens": 3000,
         "stream": False,
     }
+    if not _qwen_requires_token_plan(model):
+        payload["temperature"] = 0.2
     def call(m):
         body = json.dumps({**payload, "model": m}, ensure_ascii=False).encode()
         req = urllib.request.Request(base + "/chat/completions",
@@ -6715,7 +6774,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 elif p == "/api/skills":
                     out = list_skills()
                 elif p == "/api/model":
-                    out = {"current": current_model(), "keyed": provider_key_status()}
+                    qcfg = _provider_cfg("qwen") or {}
+                    out = {"current": current_model(), "keyed": provider_key_status(),
+                           "provider_bases": {"qwen": qcfg.get("base_url") or _QWEN_BASE_URL}}
                 else:
                     q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                     out = read_skill(q.get("path", [""])[0])
@@ -7291,7 +7352,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     if p == "/api/mcp":
                         out = self._mcp_action(data)
                     elif p == "/api/model":
-                        out = set_model(data.get("provider", ""), data.get("model", ""), data.get("api_key", ""))
+                        out = set_model(data.get("provider", ""), data.get("model", ""),
+                                        data.get("api_key", ""), data.get("base_url", ""))
                     else:
                         out = self._skill_create(data)
             except Exception as e:

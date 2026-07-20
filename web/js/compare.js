@@ -39,7 +39,7 @@ const MODEL_VARIANTS={
   deepseek:[{id:"deepseek-v4-pro",name:"V4 Pro"},{id:"deepseek-v4-flash",name:"V4 Flash"}],
   volcengine:[{id:"doubao-seed-2-1-pro-260628",name:"Seed 2.1 Pro"},{id:"doubao-seed-2-1-turbo-260628",name:"Seed 2.1 Turbo"},{id:"doubao-seed-evolving",name:"Seed Evolving(需手动开通)"},{id:"doubao-seed-1-6-251015",name:"Seed 1.6"}],
   longcat:[{id:"LongCat-2.0",name:"LongCat-2.0"}],
-  qwen:[{id:"qwen3.7-max-2026-06-08",name:"Qwen 3.7 Max 最新"},{id:"qwen3.7-max",name:"Qwen 3.7 Max"},{id:"qwen-plus",name:"Qwen Plus"}],
+  qwen:[{id:"qwen3.8-max-preview",name:"Qwen 3.8 Max Preview · Token Plan"},{id:"qwen3.7-max-2026-06-08",name:"Qwen 3.7 Max Stable"},{id:"qwen3.7-max",name:"Qwen 3.7 Max"},{id:"qwen3.7-plus",name:"Qwen 3.7 Plus"}],
   custom:[{id:"hy3-preview",name:"Hy3 Preview"},{id:"hy-mt2-pro",name:"Hy-MT2 Pro"},{id:"hy-mt2-plus",name:"Hy-MT2 Plus"},{id:"hy-mt2-lite",name:"Hy-MT2 Lite"},{id:"hunyuan-role-latest",name:"Hunyuan Role Latest"},{id:"hy-role",name:"Hunyuan Role"},{id:"hunyuan-2.0-thinking-20251109",name:"HY 2.0 Think (旧)"},{id:"hunyuan-2.0-instruct-20251111",name:"HY 2.0 Instruct (旧)"}],
   zai:[{id:"GLM-5.2",name:"GLM-5.2"},{id:"GLM-4.6",name:"GLM-4.6"}],
   "openai-codex":[{id:"gpt-5.5",name:"GPT-5.5"}],
@@ -52,7 +52,10 @@ function applyProviderModelCatalog(payload){
   Object.entries(items).forEach(([prov,info])=>{
     const models=Array.isArray(info&&info.models)?info.models:[];
     if(!models.length) return;
-    MODEL_VARIANTS[prov]=models.map(m=>({id:m.id,name:m.name||m.id}));
+    const curated=MODEL_VARIANTS[prov]||[];
+    const merged=[...curated,...models.map(m=>({id:m.id,name:m.name||m.id}))];
+    const seen=new Set();
+    MODEL_VARIANTS[prov]=merged.filter(m=>m.id&&!seen.has(m.id)&&(seen.add(m.id),true));
   });
   return items;
 }

@@ -1221,11 +1221,13 @@ async function openModelSwitch(preselect){
     <div class="prow" id="mvariantrow" style="display:none"><select id="mvariant" class="msearch flush" title="模型变体"></select></div>
     <div class="prow" id="meffortrow" style="display:none"><select id="meffort" class="msearch flush" title="Claude 推理 effort"><option value="">推理 effort:默认</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></div>
     <div class="prow"><input id="mmodel" placeholder="模型名(可改)"></div>
+    <div class="prow" id="mbaserow" style="display:none"><input id="mbase" placeholder="Token Plan / OpenAI 兼容 base URL"></div>
     <div class="prow" id="mkeyrow"><input id="mkey" type="password" placeholder="API key"></div>
     <div class="prow"><button class="btn primary" id="mswitch">切换并应用到当前对话</button></div>
     <div id="mhint" class="panel-note">切换后<b>当前打开的对话下一条</b>会直接使用此模型;没有打开对话时,只会设置新对话默认模型。其它未打开的旧对话保持原模型。切换可能重启对应后端几秒,会话数据不丢。key 存本机,不外传。</div>`;
-  let keyed={}, curNc="", prefs={};
+  let keyed={}, curNc="", prefs={}, providerBases={};
   try{ const d=await api("/api/model"); keyed=d.keyed||{};
+    providerBases=d.provider_bases||{};
     try{ curNc=(await api("/api/newchat-provider")).provider||""; }catch(e){}
     try{ const mp=await api("/api/model-pref"); prefs=mp.prefs||{}; window._effortPrefs=mp.effort||{}; }catch(e){}   // 各 provider 当前所选模型变体 + claude effort
     $("#curmodel").textContent = (curNc && curNc!==d.current.provider)
@@ -1245,11 +1247,44 @@ async function openModelSwitch(preselect){
       $("#mvariant").innerHTML=opts.map(v=>`<option value="${esc(v.id)}" ${v.id===cm?"selected":""}>${esc(v.name)}</option>`).join("");
       if(p.freeModel){
         $("#mmodel").parentElement.style.display="flex"; $("#mmodel").value=cm||""; $("#mmodel").placeholder="模型 ID(可改;下拉会同步)";
-        $("#mvariant").onchange=()=>{ $("#mmodel").value=$("#mvariant").value; };
-      } else { $("#mmodel").parentElement.style.display="none"; $("#mvariant").onchange=null; }
+      } else { $("#mmodel").parentElement.style.display="none"; }
     } else { $("#mvariantrow").style.display="none"; $("#mvariant").onchange=null; $("#mmodel").parentElement.style.display="flex"; $("#mmodel").value=prefs[sel.value]||p.model||""; $("#mmodel").placeholder=p.freeModel?"模型 ID,如 hy3-preview":"模型名(可改)"; }
     if(EFFORT_PROVIDERS.includes(sel.value)){ $("#meffortrow").style.display="flex"; $("#meffort").value=(window._effortPrefs&&window._effortPrefs[sel.value])||""; }   // Claude / GPT 有推理 effort
     else $("#meffortrow").style.display="none";
+    const baseRow=$("#mbaserow"), baseInput=$("#mbase");
+    const qwenTokenPlanBase="https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
+    const updateQwenHint=()=>{
+      const chosen=vars.length?$("#mvariant").value:$("#mmodel").value.trim();
+      if(chosen.startsWith("qwen3.8-")){
+        if(!baseInput.value||baseInput.value===providerBases.qwen||baseInput.dataset.autoBase==="legacy"){
+          baseInput.value=qwenTokenPlanBase;
+          baseInput.dataset.autoBase="token-plan";
+        }
+      } else if(baseInput.dataset.autoBase==="token-plan"){
+        baseInput.value=providerBases.qwen||"";
+        baseInput.dataset.autoBase="legacy";
+      }
+      $("#mhint").innerHTML=chosen.startsWith("qwen3.8-")
+        ? "<b>Qwen3.8 Max Preview 仅 Token Plan 可用。</b>请填写 Token Plan API Keys 页面提供的专用 base URL 与专用 key；校验成功后才会替换当前 3.7 配置。"
+        : "切换后<b>当前打开的对话下一条</b>会直接使用此模型；千问配置会先做最小请求校验，失败不会覆盖当前可用配置。";
+    };
+    if(sel.value==="qwen"){
+      baseRow.style.display="flex";
+      if(baseInput.dataset.provider!=="qwen"){
+        baseInput.value=providerBases.qwen||"";
+        baseInput.dataset.provider="qwen";
+        baseInput.dataset.autoBase="legacy";
+      }
+      updateQwenHint();
+    } else {
+      baseRow.style.display="none";
+      baseInput.dataset.provider="";
+      $("#mhint").innerHTML="切换后<b>当前打开的对话下一条</b>会直接使用此模型；没有打开对话时，只会设置新对话默认模型。其它未打开的旧对话保持原模型。";
+    }
+    $("#mvariant").onchange=()=>{
+      if(p.freeModel) $("#mmodel").value=$("#mvariant").value;
+      if(sel.value==="qwen") updateQwenHint();
+    };
     $("#mkeyrow").style.display=p.oauth?"none":"flex";
     $("#mkey").placeholder=p.oauth?"OAuth 登录,无需 key":(keyed[p.id]?"已配置,留空=不改":(p.cmpKeyOnly?"必填:TokenHub 模型调用 api_key(sk- 开头)":"必填:该 provider 的 API key"));
     const sw=$("#mswitch"); if(sw) sw.textContent=p.cmpKeyOnly?"保存并应用到当前对话":(p.newchatOnly||p.sidecar?"应用到当前对话":"切换并应用到当前对话"); };   // custom/claude-code/sidecar 不切主后端,但可 pin 当前 thread
@@ -1266,7 +1301,9 @@ async function openModelSwitch(preselect){
       if(p.cmpKeyOnly||p.sidecar){
         // 腾讯混元/LongCat:不切主后端。/api/model 只保存对应 provider key+模型;
         // 单窗口新对话再通过 /api/newchat-provider 路由到独立 provider 后端,主 :7878 保持当前默认不动。
-        const d=await api("/api/model",{method:"POST",body:JSON.stringify({provider,model:variant||p.model||"hy3-preview",api_key})});
+        const payload={provider,model:variant||p.model||"hy3-preview",api_key};
+        if(provider==="qwen") payload.base_url=$("#mbase").value.trim();
+        const d=await api("/api/model",{method:"POST",body:JSON.stringify(payload)});
         if(d.error){ alert("保存失败: "+d.error); b.textContent=p.cmpKeyOnly?"保存并应用到当前对话":"应用到当前对话"; b.disabled=false; return; }
         if(d.warning){ b.title=d.warning; cwToast("⚠ "+d.warning); }
         if(variant){ try{ await api("/api/model-pref",{method:"POST",body:JSON.stringify({provider,model:variant})}); }catch(e){} }
