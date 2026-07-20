@@ -607,6 +607,12 @@ function optionTargets(container, fallbackSel){ return chatTools().optionTargets
 function buildOptPicker(items, inputSel, container){ return chatTools().buildOptPicker(items, inputSel, container); }
 function augmentOptions(container, text, inputSel){ return chatTools().augmentOptions(container, text, inputSel||"#input"); }
 
+function restoreComposerDraft(inp, raw){
+  const draft=String(raw||"").trim(), current=String(inp&&inp.value||"");
+  if(inp && draft && current.trim()!==draft) inp.value=current.trim()?`${draft}\n${current}`:draft;
+  if(inp){ inp.style.height="auto"; inp.style.height=Math.min(inp.scrollHeight,200)+"px"; inp.focus(); }
+  const btn=$("#sendbtn"); if(btn) btn.disabled=!(inp&&inp.value.trim())&&!state.attachments.length;
+}
 
 async function send(queuedText){
   const inp=$("#input");
@@ -621,7 +627,12 @@ async function send(queuedText){
       if(!state.running) runStatusReset(false);
       setRunning(true); runStatusUpdate("附件已入队","文件落盘后立即发送；图片识别会在本任务中继续");
     }
-    text=await prepared;
+    try{ text=await prepared; }
+    catch(e){
+      state._preparingSend=false; restoreComposerDraft(inp,raw);
+      if(waiting){ runStatusFinish("附件准备失败","err"); setRunning(false); processQueue(); }
+      sysnote("附件准备失败，已恢复输入: "+String(e&&e.message||e)); return;
+    }
     if(!text){
       state._preparingSend=false;
       if(waiting){ runStatusFinish("附件发送失败","err"); setRunning(false); processQueue(); }
@@ -694,7 +705,7 @@ function queueFromInput(){
     item.text=text||""; item.ready=true;
     if(!item.text){ const i=state.queue.indexOf(item); if(i>=0) state.queue.splice(i,1); el.remove(); }
     processQueue();
-  }).catch(e=>{ const i=state.queue.indexOf(item); if(i>=0) state.queue.splice(i,1); el.remove(); sysnote("附件发送失败: "+e.message); processQueue(); });
+  }).catch(e=>{ const i=state.queue.indexOf(item); if(i>=0) state.queue.splice(i,1); el.remove(); restoreComposerDraft(inp,raw); sysnote("附件发送失败，已恢复输入: "+e.message); processQueue(); });
 }
 function processQueue(){   // 当前任务结束后,自动发下一条排队消息
   if(state.running || state._contextMaintenance || !state.queue.length) return;
@@ -745,7 +756,8 @@ function renderAttach(){
 async function withAttachments(text){   // 取走附件后只等快速落盘；耗时识图/PDF 解析留在任务内部
   if(!state.attachments.length) return text;
   const bundle=takeAttachmentBundle(state.attachments,renderAttach);
-  return attachmentPrompt(text,bundle);
+  try{ return await attachmentPrompt(text,bundle); }
+  catch(e){ restoreAttachmentBundle(state.attachments,bundle,renderAttach); throw e; }
 }
 
 

@@ -14,7 +14,14 @@ async function cmpColWithAttach(prov, text){   // 取走该栏附件包；只等
   const list=(CMP.colAttach&&CMP.colAttach[prov])||[];
   if(!list.length) return text;
   const bundle=takeAttachmentBundle(list,()=>cmpColRenderAttach(prov));
-  return attachmentPrompt(text,bundle);
+  try{ return await attachmentPrompt(text,bundle); }
+  catch(e){ restoreAttachmentBundle(list,bundle,()=>cmpColRenderAttach(prov)); throw e; }
+}
+
+function cmpRestoreDraft(inp, raw){
+  const draft=String(raw||"").trim(), current=String(inp&&inp.value||"");
+  if(inp && draft && current.trim()!==draft) inp.value=current.trim()?`${draft}\n${current}`:draft;
+  if(inp){ inp.style.height="auto"; inp.focus(); }
 }
 
 /* ---------- 多模型并排对比 ---------- */
@@ -774,7 +781,11 @@ async function cmpRunOne(prov){   // 只追问这一个模型(单独继续该栏
   const prepared=cmpColWithAttach(prov, raw);   // 立即清空该栏附件条，上传落盘后自动继续
   inp.value=""; inp.style.height="auto";
   try{
-    const text=await prepared;
+    let text;
+    try{ text=await prepared; }
+    catch(e){
+      cmpRestoreDraft(inp,raw); sysnote("附件准备失败，已恢复该栏输入: "+String(e&&e.message||e)); return;
+    }
     if(!text) return;
     const item=cmpMakeItem(text, raw || "附件追问");
     cmpEnsureSession(item,[prov]);             // 单栏追问也属于一个对比会话,否则侧栏会散成多个 thread
@@ -929,7 +940,12 @@ async function cmpSend(){
   ta.value=""; ta.style.height="auto";
   const atts=takeAttachmentBundle(CMP.attachments,cmpRenderAttach);   // 立即释放输入区，附件只在本次发送包里等待落盘
   const run=async()=>{
-    const sent=await attachmentPrompt(raw,atts);
+    let sent;
+    try{ sent=await attachmentPrompt(raw,atts); }
+    catch(e){
+      restoreAttachmentBundle(CMP.attachments,atts,cmpRenderAttach); cmpRestoreDraft(ta,raw);
+      cwToast("附件准备失败，已恢复输入"); return;
+    }
     if(!sent) return;
     const steerable=(atts.length||!raw)?[]:[...CMP.sel].filter(p=>CMP.running[p] && CMP.threads[p] && CMP.turn[p]);   // 正在跑且有活动 turn 的列
     if(steerable.length){

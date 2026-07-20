@@ -650,6 +650,15 @@ function takeAttachmentBundle(list, render){
   if(typeof render==="function") render();
   return bundle;
 }
+function restoreAttachmentBundle(list, bundle, render){
+  const target=list||[], restored=[];
+  (bundle||[]).forEach(a=>{
+    if(!a || target.includes(a)) return;
+    a.consumed=false; restored.push(a);
+  });
+  if(restored.length) target.unshift(...restored);
+  if(typeof render==="function") render();
+}
 async function attachmentPrompt(text, bundle){
   const files=bundle||[];
   await Promise.all(files.map(a=>a&&a.ready ? a.ready : Promise.resolve(a)));
@@ -873,4 +882,4 @@ function setRunning(r){
 function refreshActiveMeta(){ loadThreads(); }
 
 
-export { cwToast, cwConfirm, esc, escAttr, ICONS, icon, iconLabel, setButtonIcon, hydrateIcons, keyboardButton, relTime, timelineTimeValue, timelineTimeLabel, timelinePreview, timelineReset, timelineHash, timelineRegisterUser, timelineRender, timelineOpen, timelineClose, timelineToggle, timelineJump, initTimelineControls, roughThreadTitle, normTurnStatus, isTurnRunning, isTurnDone, isStoppingTurn, statusText, isImportantStatus, activeSummary, turnInfoFromSnapshot, runFmt, runStatusReset, runStatusEnsure, runStatusTick, runStatusUpdate, runStatusStep, runLabelForItem, runStatusFromItem, runStatusFinish, pendingApprovalCards, approvalGoneError, markApproval, approvalRequired, decide, approvalResolved, row, sysnote, execCopy, clipCopy, msgText, copyMsg, editMsg, isImageAttachment, revokeAttachmentPreview, clearAttachmentList, uploadAttachmentRecord, optimisticUpload, attachmentReadRef, attachmentChip, filePathsFromText, fileDownloadHref, appendFileDownloadCards, pdfPathsFromText, pdfDownloadHref, appendPdfDownloadCards, setRunning, refreshActiveMeta };
+export { cwToast, cwConfirm, esc, escAttr, ICONS, icon, iconLabel, setButtonIcon, hydrateIcons, keyboardButton, relTime, timelineTimeValue, timelineTimeLabel, timelinePreview, timelineReset, timelineHash, timelineRegisterUser, timelineRender, timelineOpen, timelineClose, timelineToggle, timelineJump, initTimelineControls, roughThreadTitle, normTurnStatus, isTurnRunning, isTurnDone, isStoppingTurn, statusText, isImportantStatus, activeSummary, turnInfoFromSnapshot, runFmt, runStatusReset, runStatusEnsure, runStatusTick, runStatusUpdate, runStatusStep, runLabelForItem, runStatusFromItem, runStatusFinish, pendingApprovalCards, approvalGoneError, markApproval, approvalRequired, decide, approvalResolved, row, sysnote, execCopy, clipCopy, msgText, copyMsg, editMsg, isImageAttachment, revokeAttachmentPreview, clearAttachmentList, uploadAttachmentRecord, optimisticUpload, takeAttachmentBundle, restoreAttachmentBundle, attachmentPrompt, attachmentReadRef, attachmentChip, filePathsFromText, fileDownloadHref, appendFileDownloadCards, pdfPathsFromText, pdfDownloadHref, appendPdfDownloadCards, setRunning, refreshActiveMeta };

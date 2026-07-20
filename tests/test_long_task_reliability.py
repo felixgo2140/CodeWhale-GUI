@@ -88,8 +88,15 @@ class LongTaskReliabilityTests(unittest.TestCase):
         self.assertIn('"X-Upload-Extract":"deferred"', tools)
         self.assertIn("function takeAttachmentBundle", tools)
         self.assertIn("async function attachmentPrompt", tools)
+        export_block = tools.rsplit("export {", 1)[1]
+        self.assertIn("takeAttachmentBundle", export_block)
+        self.assertIn("restoreAttachmentBundle", export_block)
+        self.assertIn("attachmentPrompt", export_block)
         self.assertIn("附件已入队", stream)
         self.assertIn("state.queue[0].ready===false", stream)
+        self.assertIn("附件准备失败，已恢复输入", stream)
+        self.assertIn("restoreAttachmentBundle(state.attachments,bundle,renderAttach)", stream)
+        self.assertIn("restoreAttachmentBundle(list,bundle,()=>cmpColRenderAttach(prov))", compare)
         self.assertIn("CMP.prepareChain", compare)
         self.assertNotIn("图片需识图约 20 秒", stream + compare)
 
