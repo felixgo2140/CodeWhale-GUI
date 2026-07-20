@@ -214,18 +214,28 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     }
 
     func authorizeAndStartVoice() {
-        requestSpeechAuthorization { [weak self] speechOK in
+        requestSpeechAuthorization { [weak self] speechStatus in
             guard let self = self else { return }
-            guard speechOK else {
+            guard speechStatus == .authorized else {
                 self.voiceButtonActive = false
-                self.emitVoice(["state": "error", "message": "请在系统设置中允许 CodeWhale 使用语音识别"])
+                if speechStatus == .restricted {
+                    self.emitVoice(["state": "error", "message": "这台 Mac 的语音识别权限受系统策略限制"])
+                } else {
+                    self.emitVoice(["state": "error", "message": "语音识别权限未开启,正在打开系统设置"])
+                    self.openPrivacySettings("Privacy_SpeechRecognition")
+                }
                 return
             }
-            self.requestMicrophoneAuthorization { [weak self] micOK in
+            self.requestMicrophoneAuthorization { [weak self] micStatus in
                 guard let self = self else { return }
-                guard micOK else {
+                guard micStatus == .authorized else {
                     self.voiceButtonActive = false
-                    self.emitVoice(["state": "error", "message": "请在系统设置中允许 CodeWhale 使用麦克风"])
+                    if micStatus == .restricted {
+                        self.emitVoice(["state": "error", "message": "这台 Mac 的麦克风权限受系统策略限制"])
+                    } else {
+                        self.emitVoice(["state": "error", "message": "麦克风权限未开启,正在打开系统设置"])
+                        self.openPrivacySettings("Privacy_Microphone")
+                    }
                     return
                 }
                 guard self.voiceIntentActive(), NSApp.isActive else {
@@ -237,25 +247,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         }
     }
 
-    func requestSpeechAuthorization(_ done: @escaping (Bool) -> Void) {
-        switch SFSpeechRecognizer.authorizationStatus() {
-        case .authorized: done(true)
+    func openPrivacySettings(_ pane: String) {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { NSWorkspace.shared.open(url) }
+    }
+
+    func requestSpeechAuthorization(_ done: @escaping (SFSpeechRecognizerAuthorizationStatus) -> Void) {
+        let current = SFSpeechRecognizer.authorizationStatus()
+        switch current {
         case .notDetermined:
             SFSpeechRecognizer.requestAuthorization { status in
-                DispatchQueue.main.async { done(status == .authorized) }
+                DispatchQueue.main.async { done(status) }
             }
-        default: done(false)
+        default: done(current)
         }
     }
 
-    func requestMicrophoneAuthorization(_ done: @escaping (Bool) -> Void) {
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized: done(true)
+    func requestMicrophoneAuthorization(_ done: @escaping (AVAuthorizationStatus) -> Void) {
+        let current = AVCaptureDevice.authorizationStatus(for: .audio)
+        switch current {
         case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .audio) { ok in
-                DispatchQueue.main.async { done(ok) }
+            AVCaptureDevice.requestAccess(for: .audio) { _ in
+                DispatchQueue.main.async { done(AVCaptureDevice.authorizationStatus(for: .audio)) }
             }
-        default: done(false)
+        default: done(current)
         }
     }
 
@@ -398,8 +413,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         p.canChooseFiles = true
         p.canChooseDirectories = parameters.allowsDirectories
         p.allowsMultipleSelection = parameters.allowsMultipleSelection
-        if let win = (w.window ?? window) { p.beginSheetModal(for: win) { r in done(r == .OK ? p.urls : nil) } }
-        else { done(p.runModal() == .OK ? p.urls : nil) }
+        // Keep this synchronous. With beginSheetModal, a window that is switching/closing or
+        // already owns another sheet can return from this delegate without retaining WebKit's
+        // completion handler. WebKit then aborts the whole app in CompletionHandlerCallChecker.
+        // runModal drives its own event loop and guarantees exactly one completion before return.
+        done(p.runModal() == .OK ? p.urls : nil)
     }
 
     // ── window.open() → 独立原生窗口(自带最大化/缩放/最小化)。多模型对比可单独开窗、和主页面来回切,不必关掉对比。

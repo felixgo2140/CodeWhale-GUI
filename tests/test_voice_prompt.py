@@ -1,5 +1,7 @@
 import importlib.util
 import pathlib
+import plistlib
+import tempfile
 import unittest
 from unittest import mock
 
@@ -57,6 +59,38 @@ class VoicePromptTests(unittest.TestCase):
         self.assertEqual(result["provider"], "deepseek")
         self.assertEqual(result["model"], "deepseek-chat")
         self.assertEqual(open_url.call_count, 2)
+
+
+class NativeVoicePermissionTests(unittest.TestCase):
+    def test_native_revision_is_read_from_info_plist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            contents = pathlib.Path(tmp) / "CodeWhale.app" / "Contents"
+            contents.mkdir(parents=True)
+            with (contents / "Info.plist").open("wb") as f:
+                plistlib.dump({"CodeWhaleNativeRevision": "native-rev-123"}, f)
+
+            self.assertEqual(SERVER._native_app_revision(str(contents.parent)), "native-rev-123")
+
+    def test_native_build_and_updater_preserve_tcc_identity(self):
+        build = (ROOT / "native" / "build.sh").read_text()
+        server = (ROOT / "server.py").read_text()
+        native = (ROOT / "native" / "main.swift").read_text()
+
+        self.assertIn("CodeWhaleNativeRevision", build)
+        self.assertIn("current_revision == incoming_revision", server)
+        self.assertIn('codesign", "--verify", "--deep", "--strict"', server)
+        self.assertIn("Privacy_SpeechRecognition", native)
+        self.assertIn("Privacy_Microphone", native)
+        self.assertIn("语音识别权限未开启", native)
+
+    def test_file_picker_completes_synchronously_to_avoid_webkit_abort(self):
+        native = (ROOT / "native" / "main.swift").read_text()
+        panel_start = native.index("func webView(_ w: WKWebView, runOpenPanelWith")
+        panel_end = native.index("// ── window.open()", panel_start)
+        panel = native[panel_start:panel_end]
+
+        self.assertIn("done(p.runModal() == .OK ? p.urls : nil)", panel)
+        self.assertNotIn("p.beginSheetModal(", panel)
 
 
 class ProviderRuntimeAdoptionTests(unittest.TestCase):

@@ -11,7 +11,7 @@ Security: when bound to a non-loopback host (LAN), a token is REQUIRED. Without
 one it fails closed to 127.0.0.1, so the agent API is never exposed unprotected.
 """
 import http.server, http.client, socketserver, json, re, os, time, subprocess, shutil, urllib.request, urllib.error, urllib.parse, mimetypes, secrets, shlex, datetime, glob
-import base64, hashlib, tarfile, tempfile, io, threading, ssl, socket, ipaddress, signal, tomllib
+import base64, hashlib, tarfile, tempfile, io, threading, ssl, socket, ipaddress, signal, tomllib, plistlib
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
@@ -4283,6 +4283,16 @@ _APP_DEST = os.path.expanduser("~/Applications/CodeWhale.app")
 _APPSHA_MARKER = os.path.expanduser("~/.codewhale-gui/.appsha")
 _app_refresh_lock = threading.Lock()
 _app_refresh_state = {"phase": "idle", "updated": False, "error": None}
+
+def _native_app_revision(app_path):
+    """Return the source-derived native shell revision, independent of GUI release version."""
+    try:
+        with open(os.path.join(app_path, "Contents", "Info.plist"), "rb") as f:
+            value = plistlib.load(f).get("CodeWhaleNativeRevision", "")
+        return str(value or "").strip()
+    except Exception:
+        return ""
+
 def _refresh_native_app():
     cfg = _update_cfg()
     if not (cfg.get("repo") or cfg.get("base_url")) or not _HAVE_CRYPTO:
@@ -4309,15 +4319,31 @@ def _refresh_native_app():
                 tf.extractall(tmpd)
             newapp = os.path.join(tmpd, "CodeWhale.app")
             if not os.path.isdir(newapp): raise ValueError("包内无 CodeWhale.app")
+            current_revision = _native_app_revision(_APP_DEST)
+            incoming_revision = _native_app_revision(newapp)
+            if current_revision and current_revision == incoming_revision:
+                # GUI/Harness releases often rebuild the same native shell with only a different
+                # CFBundleVersion. Replacing an ad-hoc signed app changes its macOS TCC identity
+                # and silently invalidates Microphone/SpeechRecognition grants. Keep the healthy
+                # installed shell whenever its actual native sources have not changed.
+                _atomic_write(_APPSHA_MARKER, sha)
+                _app_refresh_state.update(phase="ready", updated=False, error=None)
+                print(f"[native-app] 原生壳未变化({incoming_revision[:12]}),保留现有 App 与语音权限", flush=True)
+                return
             os.makedirs(os.path.dirname(_APP_DEST), exist_ok=True)
             bak = _APP_DEST + ".bak"; shutil.rmtree(bak, ignore_errors=True)
             if os.path.exists(_APP_DEST): shutil.move(_APP_DEST, bak)
             try:
                 shutil.move(newapp, _APP_DEST)
                 subprocess.run(["xattr", "-dr", "com.apple.quarantine", _APP_DEST], capture_output=True)
-                subprocess.run(["codesign", "-s", "-", "--force", "--deep", _APP_DEST], capture_output=True)
+                verified = subprocess.run(
+                    ["codesign", "--verify", "--deep", "--strict", _APP_DEST],
+                    capture_output=True,
+                )
+                if verified.returncode != 0:
+                    subprocess.run(["codesign", "-s", "-", "--force", "--deep", _APP_DEST], capture_output=True)
                 subprocess.run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-f", _APP_DEST], capture_output=True)
-                open(_APPSHA_MARKER, "w").write(sha)
+                _atomic_write(_APPSHA_MARKER, sha)
                 shutil.rmtree(bak, ignore_errors=True)
                 _app_refresh_state.update(phase="updated", updated=True)   # 前端可据此提示"退出重开生效"
                 print("[native-app] 已更新 ~/Applications/CodeWhale.app —— 退出重开 CodeWhale 生效", flush=True)

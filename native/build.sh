@@ -5,6 +5,15 @@ set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="${1:-$HERE/CodeWhale.app}"
 VERSION="$(tr -d '\r\n' < "$HERE/../VERSION")"
+# Native shell updates have a different lifecycle from the HTML GUI. The source-derived
+# revision lets the updater preserve the existing app (and its macOS TCC grants) across
+# GUI-only releases, even when CFBundleVersion changes.
+NATIVE_REVISION="$({
+  printf '%s\n' 'codewhale-native-revision-v1'
+  printf '%s\n' 'main.swift'; cat "$HERE/main.swift"
+  printf '%s\n' 'build.sh'; cat "$HERE/build.sh"
+  if [ -f "$HERE/CodeWhale.icns" ]; then printf '%s\n' 'CodeWhale.icns'; cat "$HERE/CodeWhale.icns"; fi
+} | shasum -a 256 | awk '{print $1}')"
 echo "→ 编译 arm64 + x86_64…"
 swiftc -O "$HERE/main.swift" -o /tmp/cw_arm -target arm64-apple-macos12  -framework Cocoa -framework WebKit -framework Speech -framework AVFoundation
 swiftc -O "$HERE/main.swift" -o /tmp/cw_x86 -target x86_64-apple-macos12 -framework Cocoa -framework WebKit -framework Speech -framework AVFoundation
@@ -22,6 +31,7 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>com.codewhale.native</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CodeWhaleNativeRevision</key><string>$NATIVE_REVISION</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>CodeWhale</string>
   <key>CFBundleIconFile</key><string>CodeWhale</string>
