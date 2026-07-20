@@ -625,7 +625,7 @@ async function send(queuedText){
     inp.value=""; inp.style.height="auto"; getMainView().setStick(true);
     if(waiting){
       if(!state.running) runStatusReset(false);
-      setRunning(true); runStatusUpdate("附件已入队","文件落盘后立即发送；图片识别会在本任务中继续");
+      setRunning(true); runStatusUpdate("附件已入队","文件落盘并完成本机快速 OCR 后发送");
     }
     try{ text=await prepared; }
     catch(e){
@@ -696,7 +696,7 @@ function queueFromInput(){
   const prepared=withAttachments(raw);   // 立即取走这一条的附件包，解析未完成也不会占住下一条输入
   inp.value=""; inp.style.height="auto"; $("#sendbtn").disabled=true;
   const el=document.createElement("div"); el.className="msg user queued";
-  el.innerHTML=`<div class="av">你</div><div class="body"><div class="who">${icon("clock")} 排队中（附件会在任务内识别）</div><div class="content"></div><button class="qx" title="取消排队">✕</button></div>`;
+  el.innerHTML=`<div class="av">你</div><div class="body"><div class="who">${icon("clock")} 排队中（截图快速识别后发送）</div><div class="content"></div><button class="qx" title="取消排队">✕</button></div>`;
   el.querySelector(".content").textContent=raw||"(附件)";
   el.querySelector(".qx").onclick=()=>{ const i=state.queue.findIndex(q=>q.el===el); if(i>=0) state.queue.splice(i,1); el.remove(); };
   $("#mwrap").appendChild(el); scrollDown(true);
@@ -753,7 +753,7 @@ function renderAttach(){
   });
   $("#sendbtn").disabled=!state.running && !$("#input").value.trim() && !state.attachments.length;
 }
-async function withAttachments(text){   // 取走附件后只等快速落盘；耗时识图/PDF 解析留在任务内部
+async function withAttachments(text){   // 取走附件后等落盘 + 本机亚秒级 OCR；耗时视觉补充留在后台
   if(!state.attachments.length) return text;
   const bundle=takeAttachmentBundle(state.attachments,renderAttach);
   try{ return await attachmentPrompt(text,bundle); }

@@ -60,6 +60,7 @@ class LongTaskReliabilityTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp, \
              mock.patch.object(SERVER, "UPLOAD_DIR", tmp), \
+             mock.patch.object(SERVER, "_extract_image_local_ocr_text", return_value=""), \
              mock.patch.object(SERVER, "_extract_image_upload_text", side_effect=slow_extract):
             before = time.monotonic()
             result = SERVER.save_upload(b"not-a-real-png", "screen.png", "thr_demo", defer_extract=True)
@@ -80,6 +81,45 @@ class LongTaskReliabilityTests(unittest.TestCase):
             final = pathlib.Path(result["text_path"]).read_text(encoding="utf-8")
             self.assertTrue(final.startswith("视觉模型识别结果"))
 
+    def test_image_upload_returns_inline_local_ocr_before_remote_vision(self):
+        release = threading.Event()
+
+        def slow_remote(path):
+            release.wait(2)
+            return ""
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(SERVER, "UPLOAD_DIR", tmp), \
+             mock.patch.object(SERVER, "_extract_image_local_ocr_text", return_value="截图标题\n关键数字 42"), \
+             mock.patch.object(SERVER, "_extract_image_upload_text", side_effect=slow_remote):
+            before = time.monotonic()
+            result = SERVER.save_upload(b"not-a-real-png", "screen.png", "thr_demo", defer_extract=True)
+            elapsed = time.monotonic() - before
+
+            self.assertLess(elapsed, 0.5)
+            self.assertEqual(result["text_kind"], "image_ocr")
+            self.assertEqual(result["ocr_text"], "截图标题\n关键数字 42")
+            sidecar = pathlib.Path(result["text_path"])
+            self.assertIn("状态: ocr_ready", sidecar.read_text(encoding="utf-8"))
+            release.set()
+
+    def test_remote_vision_failure_preserves_ready_local_ocr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image = pathlib.Path(tmp) / "screen.png"
+            image.write_bytes(b"image")
+            sidecar = pathlib.Path(str(image) + ".txt")
+            sidecar.write_text("本机 OCR 快速识别结果\n状态: ocr_ready\n有用文字", encoding="utf-8")
+            with mock.patch.object(SERVER, "_extract_image_upload_text", return_value=""):
+                SERVER._deferred_upload_extract(str(image), "image")
+            self.assertIn("有用文字", sidecar.read_text(encoding="utf-8"))
+            self.assertNotIn("unavailable", sidecar.read_text(encoding="utf-8"))
+
+    def test_native_ocr_helper_is_python_runtime_independent(self):
+        self.assertIn("import Vision", SERVER._VISION_OCR_SOURCE)
+        self.assertIn("VNRecognizeTextRequest", SERVER._VISION_OCR_SOURCE)
+        self.assertIn("zh-Hans", SERVER._VISION_OCR_SOURCE)
+        self.assertIn("swiftc", pathlib.Path(SERVER.__file__).read_text(encoding="utf-8"))
+
     def test_frontend_queues_attachment_transport_but_not_image_recognition(self):
         tools = (ROOT / "web/js/tools.js").read_text(encoding="utf-8")
         stream = (ROOT / "web/js/stream.js").read_text(encoding="utf-8")
@@ -92,6 +132,9 @@ class LongTaskReliabilityTests(unittest.TestCase):
         self.assertIn("takeAttachmentBundle", export_block)
         self.assertIn("restoreAttachmentBundle", export_block)
         self.assertIn("attachmentPrompt", export_block)
+        self.assertIn("ocrText:d.ocr_text", tools)
+        self.assertIn("<attachment_ocr>", tools)
+        self.assertIn("不得忽略附件", tools)
         self.assertIn("附件已入队", stream)
         self.assertIn("state.queue[0].ready===false", stream)
         self.assertIn("附件准备失败，已恢复输入", stream)

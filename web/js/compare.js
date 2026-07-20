@@ -10,7 +10,7 @@ function cmpColRenderAttach(prov){
   bar.innerHTML=""; bar.hidden=!list.length;
   list.forEach((a,i)=>bar.appendChild(attachmentChip(a,()=>{ revokeAttachmentPreview(a); list.splice(i,1); cmpColRenderAttach(prov); })));
 }
-async function cmpColWithAttach(prov, text){   // 取走该栏附件包；只等落盘，识图在该栏任务内继续
+async function cmpColWithAttach(prov, text){   // 取走该栏附件包；等落盘 + 本机 OCR，远程视觉补充留在后台
   const list=(CMP.colAttach&&CMP.colAttach[prov])||[];
   if(!list.length) return text;
   const bundle=takeAttachmentBundle(list,()=>cmpColRenderAttach(prov));
@@ -974,7 +974,7 @@ async function cmpSend(){
     if(ready.length) cmpDispatch(item,ready);
     cmpSyncSendUI();
   };
-  // 多次快速发送也按输入顺序准备，避免“后一条无附件”越过前一条附件消息。
+  // 多次快速发送也按输入顺序准备，避免“后一条无附件”越过前一条的本机 OCR。
   const previous=CMP.prepareChain||Promise.resolve();
   const current=previous.catch(()=>{}).then(run); CMP.prepareChain=current;
   try{ return await current; }
