@@ -1225,9 +1225,10 @@ async function openModelSwitch(preselect){
     <div class="prow" id="mkeyrow"><input id="mkey" type="password" placeholder="API key"></div>
     <div class="prow"><button class="btn primary" id="mswitch">切换并应用到当前对话</button></div>
     <div id="mhint" class="panel-note">切换后<b>当前打开的对话下一条</b>会直接使用此模型;没有打开对话时,只会设置新对话默认模型。其它未打开的旧对话保持原模型。切换可能重启对应后端几秒,会话数据不丢。key 存本机,不外传。</div>`;
-  let keyed={}, curNc="", prefs={}, providerBases={};
+  let keyed={}, curNc="", prefs={}, providerBases={}, providerCredentials={};
   try{ const d=await api("/api/model"); keyed=d.keyed||{};
     providerBases=d.provider_bases||{};
+    providerCredentials=d.provider_credentials||{};
     try{ curNc=(await api("/api/newchat-provider")).provider||""; }catch(e){}
     try{ const mp=await api("/api/model-pref"); prefs=mp.prefs||{}; window._effortPrefs=mp.effort||{}; }catch(e){}   // 各 provider 当前所选模型变体 + claude effort
     $("#curmodel").textContent = (curNc && curNc!==d.current.provider)
@@ -1235,7 +1236,15 @@ async function openModelSwitch(preselect){
       : `${d.current.provider} / ${d.current.model||"(默认)"}`;
   }catch(e){ $("#curmodel").textContent="读取失败"; }
   const sel=$("#mprov");
-  sel.innerHTML=PROVIDERS.map(p=>`<option value="${p.id}">${p.name}${keyed[p.id]?"  ✓已配置":""}</option>`).join("");   // 含 claude-code(newchatOnly):单窗口可选,选它只设"新对话 provider"(见 mswitch),不动 launchd 主后端
+  const providerReadyLabel=p=>{
+    if(p.id!=="qwen") return keyed[p.id]?"  ✓已配置":"";
+    const qc=providerCredentials.qwen||{}, workspace=(qc.workspace||{}).configured, token=(qc.token_plan||{}).configured;
+    if(workspace&&token) return "  ✓普通 API + Token Plan";
+    if(token) return "  ✓Token Plan";
+    if(workspace) return "  ✓普通 API";
+    return "";
+  };
+  sel.innerHTML=PROVIDERS.map(p=>`<option value="${p.id}">${p.name}${providerReadyLabel(p)}</option>`).join("");   // 含 claude-code(newchatOnly):单窗口可选,选它只设"新对话 provider"(见 mswitch),不动 launchd 主后端
   if(preselect && PROVIDERS.some(p=>p.id===preselect)) sel.value=preselect;
   else if(curNc && PROVIDERS.some(p=>p.id===curNc)) sel.value=curNc;   // 预选当前"新对话 provider",打开即见实际状态
   const sync=()=>{ const p=PROVIDERS.find(x=>x.id===sel.value)||{};
@@ -1251,21 +1260,42 @@ async function openModelSwitch(preselect){
     } else { $("#mvariantrow").style.display="none"; $("#mvariant").onchange=null; $("#mmodel").parentElement.style.display="flex"; $("#mmodel").value=prefs[sel.value]||p.model||""; $("#mmodel").placeholder=p.freeModel?"模型 ID,如 hy3-preview":"模型名(可改)"; }
     if(EFFORT_PROVIDERS.includes(sel.value)){ $("#meffortrow").style.display="flex"; $("#meffort").value=(window._effortPrefs&&window._effortPrefs[sel.value])||""; }   // Claude / GPT 有推理 effort
     else $("#meffortrow").style.display="none";
-    const baseRow=$("#mbaserow"), baseInput=$("#mbase");
+    const baseRow=$("#mbaserow"), baseInput=$("#mbase"), keyInput=$("#mkey"), sw=$("#mswitch");
+    $("#mkeyrow").style.display=p.oauth?"none":"flex";
+    keyInput.placeholder=p.oauth?"OAuth 登录,无需 key":(keyed[p.id]?"已配置,留空=不改":(p.cmpKeyOnly?"必填:TokenHub 模型调用 api_key(sk- 开头)":"必填:该 provider 的 API key"));
+    keyInput.oninput=null;
+    if(sw){
+      sw.disabled=false;
+      sw.textContent=p.cmpKeyOnly?"保存并应用到当前对话":(p.newchatOnly||p.sidecar?"应用到当前对话":"切换并应用到当前对话");
+    }
     const qwenTokenPlanBase="https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
+    const qwenCred=providerCredentials.qwen||{}, qwenWorkspace=qwenCred.workspace||{}, qwenTokenPlan=qwenCred.token_plan||{};
     const updateQwenHint=()=>{
       const chosen=vars.length?$("#mvariant").value:$("#mmodel").value.trim();
-      if(chosen.startsWith("qwen3.8-")){
+      const tokenPlan=chosen.startsWith("qwen3.8-");
+      const profile=tokenPlan?"token_plan":"workspace";
+      if(keyInput.dataset.qwenProfile && keyInput.dataset.qwenProfile!==profile) keyInput.value="";
+      keyInput.dataset.qwenProfile=profile;
+      if(tokenPlan){
         if(!baseInput.value||baseInput.value===providerBases.qwen||baseInput.dataset.autoBase==="legacy"){
-          baseInput.value=qwenTokenPlanBase;
+          baseInput.value=qwenTokenPlan.base_url||qwenTokenPlanBase;
           baseInput.dataset.autoBase="token-plan";
         }
       } else if(baseInput.dataset.autoBase==="token-plan"){
-        baseInput.value=providerBases.qwen||"";
+        baseInput.value=qwenWorkspace.base_url||providerBases.qwen||"";
         baseInput.dataset.autoBase="legacy";
       }
-      $("#mhint").innerHTML=chosen.startsWith("qwen3.8-")
-        ? "<b>Qwen3.8 Max Preview 仅 Token Plan 可用。</b>请填写 Token Plan API Keys 页面提供的专用 base URL 与专用 key；校验成功后才会替换当前 3.7 配置。"
+      const ready=tokenPlan?!!qwenTokenPlan.configured:!!qwenWorkspace.configured;
+      keyInput.placeholder=tokenPlan
+        ? (ready?"Token Plan 已配置,留空=不改":"必填:Token Plan 专用 API key(普通千问 key 不会复用)")
+        : (ready?"普通千问 API 已配置,留空=不改":"必填:百炼/工作区 API key");
+      if(sw){
+        sw.disabled=!ready&&!keyInput.value.trim();
+        sw.textContent=sw.disabled?"先填写专用 API key":"应用到当前对话";
+      }
+      keyInput.oninput=()=>updateQwenHint();
+      $("#mhint").innerHTML=tokenPlan
+        ? `<b>Qwen3.8 Max Preview 仅 Token Plan 可用。</b>${ready?"已检测到保存过的 Token Plan 凭据,可直接应用。":"当前只有普通千问凭据；请填写 Token Plan API Keys 页面提供的专用 base URL 与专用 key。"}普通百炼/工作区 key 不会被拿来试请求；校验成功后才切换。`
         : "切换后<b>当前打开的对话下一条</b>会直接使用此模型；千问配置会先做最小请求校验，失败不会覆盖当前可用配置。";
     };
     if(sel.value==="qwen"){
@@ -1285,17 +1315,24 @@ async function openModelSwitch(preselect){
       if(p.freeModel) $("#mmodel").value=$("#mvariant").value;
       if(sel.value==="qwen") updateQwenHint();
     };
-    $("#mkeyrow").style.display=p.oauth?"none":"flex";
-    $("#mkey").placeholder=p.oauth?"OAuth 登录,无需 key":(keyed[p.id]?"已配置,留空=不改":(p.cmpKeyOnly?"必填:TokenHub 模型调用 api_key(sk- 开头)":"必填:该 provider 的 API key"));
-    const sw=$("#mswitch"); if(sw) sw.textContent=p.cmpKeyOnly?"保存并应用到当前对话":(p.newchatOnly||p.sidecar?"应用到当前对话":"切换并应用到当前对话"); };   // custom/claude-code/sidecar 不切主后端,但可 pin 当前 thread
-  sel.onchange=sync; sync();
+  };   // custom/claude-code/sidecar 不切主后端,但可 pin 当前 thread
+  sel.onchange=()=>{ $("#mkey").value=""; $("#mkey").dataset.qwenProfile=""; sync(); }; sync();
   if(window.loadProviderModels) window.loadProviderModels().then(()=>sync()).catch(()=>{});
   $("#mswitch").onclick=async()=>{
     const provider=sel.value, api_key=$("#mkey").value;
     const p=PROVIDERS.find(x=>x.id===provider)||{};
     const vars=MODEL_VARIANTS[provider]||[];
     const variant = vars.length ? (p.freeModel ? ($("#mmodel").value.trim() || $("#mvariant").value) : $("#mvariant").value) : $("#mmodel").value.trim();   // 所选模型变体/手填模型 ID
-    if(!p.oauth && !keyed[provider] && !api_key){ alert("该 provider 还没配置 key —— 请先填 API key"); return; }
+    const qwenState=providerCredentials.qwen||{};
+    const modelCredentialReady=provider==="qwen"
+      ? !!((variant.startsWith("qwen3.8-")?(qwenState.token_plan||{}):(qwenState.workspace||{})).configured)
+      : !!keyed[provider];
+    if(!p.oauth && !modelCredentialReady && !api_key){
+      alert(provider==="qwen"&&variant.startsWith("qwen3.8-")
+        ? "Qwen3.8 需要 Token Plan 专用 API key,普通千问 key 不会复用"
+        : "该 provider 还没配置可用于此模型的 key —— 请先填 API key");
+      return;
+    }
     const b=$("#mswitch"); b.textContent=p.cmpKeyOnly?"校验中…":(p.newchatOnly||p.sidecar?"切换中…":"切换中,重启后端…"); b.disabled=true;
     try{
       if(p.cmpKeyOnly||p.sidecar){

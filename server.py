@@ -3813,30 +3813,50 @@ def set_model(provider, model, api_key, base_url=""):
     if provider == "qwen":
         model = model if model and model != "auto" else _QWEN_DEFAULT_MODEL
         current = _provider_cfg("qwen") or {}
-        target_base = (base_url or current.get("base_url") or _QWEN_BASE_URL).strip().rstrip("/")
-        probe_key = (api_key or current.get("api_key") or _provider_key("qwen") or "").strip()
+        target_profile = _qwen_credential_profile(model, base_url)
+        current_profile = _qwen_credential_profile(current.get("model"), current.get("base_url"))
+        saved_profile = (_read_qwen_credential_profiles().get(target_profile) or {})
+        target_base = (base_url
+                       or (current.get("base_url") if current_profile == target_profile else "")
+                       or saved_profile.get("base_url")
+                       or (_QWEN_TOKEN_PLAN_BASE_URL if target_profile == "token_plan" else _QWEN_BASE_URL))
+        target_base = str(target_base or "").strip().rstrip("/")
+        if target_profile == "token_plan" and not _qwen_is_token_plan_base(target_base):
+            return {"error": "Qwen3.8 Max Preview 必须使用 Token Plan 页面提供的专用 base URL"}
+
+        # 普通百炼/工作区 key 与 Token Plan key 是两套凭据。切换端点类型时绝不拿
+        # 当前 key 试请求，否则界面会误显“已配置”，还会制造一次无意义的 401。
+        reusable_current_key = current.get("api_key") if current_profile == target_profile else ""
+        probe_key = (api_key or reusable_current_key or saved_profile.get("api_key") or "").strip()
+        if not probe_key:
+            label = "Token Plan 专用 API key" if target_profile == "token_plan" else "百炼/工作区 API key"
+            return {"error": f"{label} 未配置；不同千问端点的 key 不会互相复用"}
         probe = _qwen_probe(probe_key, target_base, model)
         if probe.get("fatal"):
             return {"error": probe.get("error") or "千问模型校验失败"}
         try:
+            _remember_qwen_credential_profile(current_profile, current)
+            _remember_qwen_credential_profile(target_profile, {
+                "kind": "openai-compatible",
+                "base_url": target_base,
+                "model": model,
+                "api_key": probe_key,
+            })
             values = {
                 "kind": "openai-compatible",
                 "base_url": target_base,
                 "model": model,
+                "api_key": probe_key,
             }
-            if api_key:
-                values["api_key"] = api_key
-            elif not _provider_key("qwen"):
-                return {"error": "千问 API key 未配置,请先在模型面板保存 DashScope/百炼 key"}
             _set_provider_table_values("qwen", values)
             _set_model_pref("qwen", model)
             _cmp_reset("qwen")
-            if api_key:
-                _restart_litellm()
+            _restart_litellm()
         except Exception as e:
             return {"error": "写入千问配置失败: " + str(e)[:150]}
         out = {"ok": True, "provider": "qwen", "model": model,
                "base_url": target_base, "newchatCapable": True, "restarted": False,
+               "credential_profile": target_profile,
                "note": "千问配置已校验并保存"}
         if probe.get("warning"):
             out["warning"] = probe["warning"]
@@ -3895,6 +3915,7 @@ _QWEN_BASE_URL = "https://ws-zazex2z3400vhsxs.cn-beijing.maas.aliyuncs.com/compa
 _QWEN_TOKEN_PLAN_BASE_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
 _QWEN_LATEST_MODEL = "qwen3.8-max-preview"
 _QWEN_DEFAULT_MODEL = "qwen3.7-max-2026-06-08"
+_QWEN_CREDENTIAL_PROFILES_FILE = os.path.expanduser("~/.codewhale-gui/qwen_credentials.json")
 _CMP_PIN_MODEL = {"zai": "GLM-5.2", "custom": "hy3-preview", "volcengine": _VOLCENGINE_DEFAULT_MODEL, "longcat": _LONGCAT_DEFAULT_MODEL, "qwen": _QWEN_DEFAULT_MODEL}
 # 真正生效的是「建线程时把 model 钉到 thread 级」——default_text_model="auto" 的自动路由会按 prompt 乱选模型、
 # 无视 provider 与 [providers].model;只有 thread.model 是具体 id 才压得住。建会话/对比建线程时注入这个。
@@ -4088,6 +4109,63 @@ def _qwen_model_for_chat():
 
 def _qwen_requires_token_plan(model):
     return str(model or "").strip().lower().startswith("qwen3.8-")
+
+def _qwen_is_token_plan_base(base_url):
+    try:
+        host = (urllib.parse.urlparse(str(base_url or "").strip()).hostname or "").lower()
+    except Exception:
+        host = ""
+    return host == "token-plan.ap-southeast-1.maas.aliyuncs.com"
+
+def _qwen_credential_profile(model="", base_url=""):
+    if _qwen_requires_token_plan(model) or _qwen_is_token_plan_base(base_url):
+        return "token_plan"
+    return "workspace"
+
+def _read_qwen_credential_profiles():
+    try:
+        with open(_QWEN_CREDENTIAL_PROFILES_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        profiles = data.get("profiles") if isinstance(data, dict) else {}
+        return profiles if isinstance(profiles, dict) else {}
+    except Exception:
+        return {}
+
+def _remember_qwen_credential_profile(profile, values):
+    profile = profile if profile in ("workspace", "token_plan") else ""
+    values = values if isinstance(values, dict) else {}
+    key = str(values.get("api_key") or "").strip()
+    if not profile or not key:
+        return
+    base = str(values.get("base_url") or "").strip().rstrip("/")
+    model = str(values.get("model") or "").strip()
+    data = {"profiles": _read_qwen_credential_profiles()}
+    data["profiles"][profile] = {
+        "kind": "openai-compatible",
+        "base_url": base or (_QWEN_TOKEN_PLAN_BASE_URL if profile == "token_plan" else _QWEN_BASE_URL),
+        "model": model or (_QWEN_LATEST_MODEL if profile == "token_plan" else _QWEN_DEFAULT_MODEL),
+        "api_key": key,
+    }
+    _atomic_write_json(_QWEN_CREDENTIAL_PROFILES_FILE, data, secret=True)
+
+def _qwen_credential_status():
+    current = _provider_cfg("qwen") or {}
+    profiles = dict(_read_qwen_credential_profiles())
+    current_profile = _qwen_credential_profile(current.get("model"), current.get("base_url"))
+    if current.get("api_key"):
+        profiles[current_profile] = {**(profiles.get(current_profile) or {}), **current}
+    def summary(name, default_base):
+        cfg = profiles.get(name) if isinstance(profiles.get(name), dict) else {}
+        return {
+            "configured": bool(cfg.get("api_key")),
+            "base_url": str(cfg.get("base_url") or default_base).rstrip("/"),
+            "model": str(cfg.get("model") or ""),
+        }
+    return {
+        "active_profile": current_profile,
+        "workspace": summary("workspace", _QWEN_BASE_URL),
+        "token_plan": summary("token_plan", _QWEN_TOKEN_PLAN_BASE_URL),
+    }
 
 def _qwen_probe(key, base, model, timeout=45):
     """Validate a Qwen key/base/model tuple before replacing the working config."""
@@ -7000,7 +7078,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 elif p == "/api/model":
                     qcfg = _provider_cfg("qwen") or {}
                     out = {"current": current_model(), "keyed": provider_key_status(),
-                           "provider_bases": {"qwen": qcfg.get("base_url") or _QWEN_BASE_URL}}
+                           "provider_bases": {"qwen": qcfg.get("base_url") or _QWEN_BASE_URL},
+                           "provider_credentials": {"qwen": _qwen_credential_status()}}
                 else:
                     q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                     out = read_skill(q.get("path", [""])[0])
