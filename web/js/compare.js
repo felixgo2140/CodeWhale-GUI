@@ -32,10 +32,10 @@ const CMP_HANDOFF_AGENT_CHARS=9000;
 const CMP_HANDOFF_USER_CHARS=2200;
 const cmpTitleTimers=new Map();
 // 建对比线程时直接把 model 钉到 thread 级,绕过 default_text_model="auto" 的自动路由(它会按 prompt 内容乱选、常落 deepseek,导致 GLM/GPT 栏答错)。
-const CMP_FORCE_MODEL={ deepseek:"deepseek-v4-pro", volcengine:"doubao-seed-2-1-pro-260628", longcat:"LongCat-2.0", qwen:"qwen3.7-max-2026-06-08", zai:"GLM-5.2", "openai-codex":"gpt-5.6-sol", "claude-code":"opus", moonshot:"k3", custom:"hy3-preview" };   // 各 provider 默认模型(徽章/下拉的默认选中);实际由 server.py model_prefs 决定
-// 每 provider 可选模型变体(下拉)。claude-code 用别名(opus/sonnet/haiku),server 端 env 传给 claude -p + 身份串跟着走。
+const CMP_FORCE_MODEL={ deepseek:"deepseek-v4-pro", volcengine:"doubao-seed-2-1-pro-260628", longcat:"LongCat-2.0", qwen:"qwen3.7-max-2026-06-08", zai:"GLM-5.2", "openai-codex":"gpt-5.6-sol", "claude-code":"fable", moonshot:"k3", custom:"hy3-preview" };   // 各 provider 默认模型(徽章/下拉的默认选中);实际由 server.py model_prefs 决定
+// 每 provider 可选模型变体(下拉)。claude-code 用别名(fable/opus/sonnet/haiku),server 端 env 传给 claude -p + 身份串跟着走。
 const MODEL_VARIANTS={
-  "claude-code":[{id:"opus",name:"Opus 4.8"},{id:"sonnet",name:"Sonnet 4.6"},{id:"haiku",name:"Haiku 4.5"}],
+  "claude-code":[{id:"fable",name:"Fable 5"},{id:"opus",name:"Opus 4.8"},{id:"sonnet",name:"Sonnet 4.6"},{id:"haiku",name:"Haiku 4.5"}],
   deepseek:[{id:"deepseek-v4-pro",name:"V4 Pro"},{id:"deepseek-v4-flash",name:"V4 Flash"}],
   volcengine:[{id:"doubao-seed-2-1-pro-260628",name:"Seed 2.1 Pro"},{id:"doubao-seed-2-1-turbo-260628",name:"Seed 2.1 Turbo"},{id:"doubao-seed-evolving",name:"Seed Evolving(需手动开通)"},{id:"doubao-seed-1-6-251015",name:"Seed 1.6"}],
   longcat:[{id:"LongCat-2.0",name:"LongCat-2.0"}],

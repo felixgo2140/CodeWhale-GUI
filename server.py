@@ -3937,22 +3937,19 @@ _LITELLM_COMPARE_ALIASES = {
     "longcat": "longcat",
     "qwen": "qwen",
 }
-_CLAUDE_CODE_MODEL = "opus"   # claude 订阅列实际调用的模型(显式钉 Opus 4.8;也可填 opus/sonnet/haiku 别名)。绕开注册表直传官方 CLI
-# claude -p 委派的模型常因训练截止误报旧版本(实测 claude-opus-4-8 自报 "Opus 4.6" 甚至否认 4.8 存在),
-# 注入一句权威身份纠正它。切模型时**同时**改这两行保持一致。
-_CLAUDE_CODE_IDENTITY = ("You are Claude Opus 4.8 (model id `claude-opus-4-8`), running via the official Claude CLI. "
-    "When asked which model or version you are, identify as Claude Opus 4.8. "
-    "Your training data may predate this release, so you might instinctively believe the newest model is 4.6 — that belief is outdated. "
-    "Do not deny that Claude Opus 4.8 exists, and do not claim to be 4.6.")
+_CLAUDE_CODE_MODEL = "fable"   # claude 订阅列实际调用的模型(显式钉 Fable 5;也可填 opus/sonnet/haiku 别名)。绕开注册表直传官方 CLI
 # ── 每 provider 可选模型变体:用户在 UI 选(存 model_prefs.json),thread 创建 + claude env 读它,无则回退默认钉死值。
 #    单窗口 + 对比窗口共用这份 pref(同一 provider 一处选、两窗口都生效)。
 _MODEL_PREFS_FILE = os.path.expanduser("~/.codewhale-gui/model_prefs.json")
-_CLAUDE_NAMES = {"claude-opus-4-8": "Claude Opus 4.8", "opus": "Claude Opus 4.8",
-                 "claude-sonnet-4-6": "Claude Sonnet 4.6", "sonnet": "Claude Sonnet 4.6",
-                 "claude-haiku-4-5": "Claude Haiku 4.5", "haiku": "Claude Haiku 4.5"}
+_CLAUDE_MODELS = {
+    "fable": ("Claude Fable 5", "claude-fable-5"), "claude-fable-5": ("Claude Fable 5", "claude-fable-5"),
+    "opus": ("Claude Opus 4.8", "claude-opus-4-8"), "claude-opus-4-8": ("Claude Opus 4.8", "claude-opus-4-8"),
+    "sonnet": ("Claude Sonnet 4.6", "claude-sonnet-4-6"), "claude-sonnet-4-6": ("Claude Sonnet 4.6", "claude-sonnet-4-6"),
+    "haiku": ("Claude Haiku 4.5", "claude-haiku-4-5"), "claude-haiku-4-5": ("Claude Haiku 4.5", "claude-haiku-4-5"),
+}
 def _claude_identity(model):                                          # 身份串跟着所选模型走(否则切 sonnet 还自报 Opus)
-    name = _CLAUDE_NAMES.get(model, "Claude (Anthropic)")
-    return (f"You are {name} (model id `{model}`), running via the official Claude CLI. "
+    name, model_id = _CLAUDE_MODELS.get(model, ("Claude (Anthropic)", model))
+    return (f"You are {name} (model id `{model_id}`), running via the official Claude CLI. "
             f"When asked which model or version you are, identify as {name}. "
             "Your training data may predate this release — do not claim to be an older version than your actual one.")
 def _model_prefs():
@@ -4924,7 +4921,14 @@ def _cmp_reset(prov):
     # 改 provider key/model 后,杀旧 per-provider 后端并删派生配置,下次请求用新配置重起。
     with _cmp_lock:
         port = CMP_PORTS.pop(prov, None)
-    _kill_cmp_provider(prov, port=port, remove_cfg=True)
+    return _kill_cmp_provider(prov, port=port, remove_cfg=True)
+def _reset_provider_after_model_pref(prov, model, effort_changed):
+    # GUI 重启后 CMP_PORTS 可能还没接管旧后端,仍要按配置路径清理旧进程;
+    # 否则界面已切模型,实际 claude -p 仍继承旧 CODEWHALE_CLAUDE_MODEL。
+    if (prov == "claude-code" and model) or effort_changed:
+        _cmp_reset(prov)
+        return True
+    return False
 def _provider_config_error(prov):
     if prov == "openai-codex":
         try:
@@ -5518,7 +5522,7 @@ def ensure_provider_server(prov):
                 if prov == "claude-code" and _CW_PATCHED_TUI:
                     env["DEEPSEEK_TUI_BIN"] = _CW_PATCHED_TUI         # 仅 Claude 订阅桥接委派给 patched tui;普通列由官方 app-server 选择同版本 runtime
                 if prov == "claude-code":
-                    _cm = _model_pref("claude-code")                  # 用户选的 claude 模型(默认 opus 4.8)
+                    _cm = _model_pref("claude-code")                  # 用户选的 claude 模型(默认 Fable 5)
                     env["CODEWHALE_CLAUDE_MODEL"] = _cm               # 强制 `claude -p` 用的模型;绕开模型注册表,直传官方 CLI
                     env["CODEWHALE_CLAUDE_IDENTITY"] = _claude_identity(_cm)  # 身份串跟着所选模型走
                     _ce = _claude_effort()                           # 推理 effort(low/medium/high);空则不传,claude 用默认
@@ -7359,15 +7363,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if effort_changed:                                    # 存该 provider 的推理 effort(空字符串=清掉,用默认)
                 _set_model_pref(prov + "__effort", effort if effort in ("low","medium","high","xhigh","max") else "")
             # 模型/effort 都走 env(后端启动时定):claude-code 改模型要重启;任意 provider 改 effort 要重启;其它改模型是 thread 级钉、不必重启。
-            restarted = False
-            if (prov == "claude-code" and model) or effort_changed:
-                port = CMP_PORTS.get(prov)
-                if port:
-                    try:
-                        pid = subprocess.run(["lsof","-nP","-tiTCP:%d"%port,"-sTCP:LISTEN"],capture_output=True,text=True).stdout.strip()
-                        for x in pid.split(): subprocess.run(["kill","-9",x],capture_output=True)
-                        CMP_PORTS.pop(prov, None); _PORT_UP.pop(port, None); restarted = True   # 下次 ensure 用新 env 重起
-                    except Exception: pass
+            restarted = _reset_provider_after_model_pref(prov, model, effort_changed)
             return self._json({"ok": True, "provider": prov, "model": model, "restarted": restarted})
         if p == "/api/pin-thread":   # 把对话锁定到某 provider(对比模式建会话后调,让主窗口侧栏正确标 provider,不再误显默认)
             if not self._authed():
