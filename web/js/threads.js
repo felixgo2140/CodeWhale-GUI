@@ -77,16 +77,22 @@ function ensureThreadContextMenuHandlers(){
 function contextAction(label,iconName,run,opts={}){ return {label,iconName,run,...opts}; }
 function fitThreadMenuToViewport(menu,clientX,clientY){
   const pad=8,vv=window.visualViewport;
-  const widths=[window.innerWidth,document.documentElement?.clientWidth,vv?.width].filter(v=>Number.isFinite(v)&&v>0);
-  const heights=[window.innerHeight,document.documentElement?.clientHeight,vv?.height].filter(v=>Number.isFinite(v)&&v>0);
-  const width=Math.min(...widths),height=Math.min(...heights);
-  menu.style.maxWidth=Math.max(160,width-pad*2)+"px";
-  menu.style.maxHeight=Math.max(80,height-pad*2)+"px";
+  menu.style.left="0px"; menu.style.top="0px";
+  const probe=menu.getBoundingClientRect(),offsetWidth=menu.offsetWidth;
+  const measured=offsetWidth>0?probe.width/offsetWidth:0;
+  const scale=Number.isFinite(measured)&&measured>.05?measured:(parseFloat(getComputedStyle(document.documentElement).zoom)||1);
+  const viewLeft=Number(vv?.offsetLeft)||0,viewTop=Number(vv?.offsetTop)||0;
+  const width=Number(vv?.width)||window.innerWidth,height=Number(vv?.height)||window.innerHeight;
+  const viewRight=viewLeft+width,viewBottom=viewTop+height;
+  menu.style.maxWidth=Math.max(160,(width-pad*2)/scale)+"px";
+  menu.style.maxHeight=Math.max(80,(height-pad*2)/scale)+"px";
   const rect=menu.getBoundingClientRect();
-  const left=clientX+rect.width+pad<=width ? clientX : clientX-rect.width;
-  const top=clientY+rect.height+pad<=height ? clientY : clientY-rect.height;
-  menu.style.left=Math.max(pad,Math.min(left,width-rect.width-pad))+"px";
-  menu.style.top=Math.max(pad,Math.min(top,height-rect.height-pad))+"px";
+  const left=clientX+rect.width+pad<=viewRight ? clientX : clientX-rect.width;
+  const top=clientY+rect.height+pad<=viewBottom ? clientY : clientY-rect.height;
+  const clampedLeft=Math.max(viewLeft+pad,Math.min(left,viewRight-rect.width-pad));
+  const clampedTop=Math.max(viewTop+pad,Math.min(top,viewBottom-rect.height-pad));
+  menu.style.left=(clampedLeft/scale)+"px";
+  menu.style.top=(clampedTop/scale)+"px";
 }
 function showThreadContextMenu(ev,actions){
   ev.preventDefault(); ev.stopPropagation(); closeThreadContextMenu(); ensureThreadContextMenuHandlers();

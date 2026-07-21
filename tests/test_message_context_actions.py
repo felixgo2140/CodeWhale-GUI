@@ -39,11 +39,14 @@ class MessageContextActionTests(unittest.TestCase):
 
         self.assertIn("function fitSelectionMenuToViewport", chat)
         self.assertIn("clientY-rect.height", chat)
-        self.assertIn("document.documentElement?.clientHeight", chat)
         self.assertIn("window.visualViewport", chat)
         self.assertIn("requestAnimationFrame(place)", chat)
         self.assertIn("function fitThreadMenuToViewport", threads)
         self.assertIn("clientY-rect.height", threads)
+        self.assertIn("probe.width/offsetWidth", threads)
+        self.assertIn("clampedTop/scale", threads)
+        self.assertIn("probe.width/offsetWidth", chat)
+        self.assertIn("clampedTop/scale", chat)
 
 
 if __name__ == "__main__":
