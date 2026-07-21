@@ -20,6 +20,19 @@ function defaultVoiceTarget(){
   return $("#input") || cmp;
 }
 
+function voiceTargetId(target){
+  return String(target?.id||"");
+}
+
+function resolveVoiceTarget(target,targetId=""){
+  if(target && document.contains(target)) return target;
+  if(targetId){
+    const live=document.getElementById(targetId);
+    if(live) return live;
+  }
+  return defaultVoiceTarget();
+}
+
 function voiceStatusFor(target=voiceTarget){
   return target && (target.id==="cmpInput" || target.classList?.contains("cmpcolin")) ? $("#cmpVoiceStatus") : $("#voiceStatus");
 }
@@ -138,34 +151,60 @@ function markVoiceTarget(event){
   if(target?.matches?.("#input,#cmpInput,.cmpcolin")) target.title=VOICE_TITLE;
 }
 
-function applyVoicePrompt(target,prompt,draft){
-  if(!target || !document.contains(target)) target=defaultVoiceTarget();
-  if(!target) return;
-  const current=target.value||"";
-  target.value=(current===draft) ? prompt : [current.trim(),prompt.trim()].filter(Boolean).join("\n\n");
+function refinedVoiceValue(current,prompt,draft,provisional=""){
+  if(current===draft || current===provisional) return prompt;
+  if(provisional && current.startsWith(provisional)) return prompt+current.slice(provisional.length);
+  return current;
+}
+
+function applyVoicePrompt(target,prompt,draft,{targetId="",provisional="",focus=true}={}){
+  target=resolveVoiceTarget(target,targetId);
+  if(!target) return {target:null,applied:false,value:""};
+  const current=String(target.value||"");
+  const next=refinedVoiceValue(current,String(prompt||""),String(draft||""),String(provisional||""));
+  if(next===current && current!==prompt) return {target,applied:false,value:current};
+  target.value=next;
   target.dispatchEvent(new Event("input",{bubbles:true}));
-  target.focus();
-  try{ target.setSelectionRange(target.value.length,target.value.length); }catch(e){}
+  if(focus){
+    target.focus();
+    try{ target.setSelectionRange(target.value.length,target.value.length); }catch(e){}
+  }
+  return {target,applied:true,value:next};
 }
 
 async function refineVoiceTranscript(text,target){
   const run=++voiceRun;
+  const targetId=voiceTargetId(target);
+  target=resolveVoiceTarget(target,targetId);
   const draft=target?.value||"";
+  const provisional=localVoiceCleanup(text,draft).trim();
+  if(provisional){
+    const immediate=applyVoicePrompt(target,provisional,draft,{targetId});
+    target=immediate.target||target;
+    voiceTarget=target;
+  }
   setVoiceStatus("processing","正在整理",text,target);
   let result;
+  const controller=typeof AbortController!=="undefined" ? new AbortController() : null;
+  const timeout=controller ? setTimeout(()=>controller.abort(),15000) : null;
   try{
     result=await api("/api/voice/refine",{method:"POST",body:JSON.stringify({
       transcript:text,draft,provider:voiceProvider(target)
-    })});
+    }),...(controller?{signal:controller.signal}:{})});
   }catch(e){
-    result={ok:true,prompt:localVoiceCleanup(text,draft),refined:false,warning:"模型整理失败,已保留转写"};
+    const timedOut=e?.name==="AbortError" || /abort/i.test(String(e?.message||""));
+    result={ok:true,prompt:provisional,refined:false,warning:timedOut?"模型整理超时,已保留转写":"模型整理失败,已保留转写"};
+  }finally{
+    if(timeout) clearTimeout(timeout);
   }
   if(run!==voiceRun) return;
-  const prompt=String(result?.prompt||localVoiceCleanup(text,draft)).trim();
+  const prompt=String(result?.prompt||provisional).trim();
   if(!prompt){ setVoiceControlState("idle",target); setVoiceStatus("error","没有听清","请重试",target); hideVoiceStatus(2200,target); return; }
-  applyVoicePrompt(target,prompt,draft);
+  const finalWrite=applyVoicePrompt(target,prompt,draft,{targetId,provisional,focus:false});
+  target=finalWrite.target||target;
+  voiceTarget=target;
   setVoiceControlState("idle",target);
-  setVoiceStatus("done",result?.refined===false?"已转写":"已整理",prompt,target);
+  setVoiceStatus("done",result?.refined===false?"已转写":"已整理",finalWrite.applied?prompt:"检测到你已继续编辑,未覆盖",target);
   if(result?.warning && typeof window.cwToast==="function") window.cwToast(result.warning);
   hideVoiceStatus(1600,target);
 }
@@ -232,4 +271,4 @@ function initVoiceInput(){
   syncVoiceButtons(voiceControlState,voiceTarget);
 }
 
-export {initVoiceInput,onNativeVoice,refineVoiceTranscript,onVoiceButtonClick};
+export {initVoiceInput,onNativeVoice,refineVoiceTranscript,onVoiceButtonClick,applyVoicePrompt,refinedVoiceValue,resolveVoiceTarget};

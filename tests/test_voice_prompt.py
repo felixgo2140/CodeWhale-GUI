@@ -1,6 +1,8 @@
 import importlib.util
+import json
 import pathlib
 import plistlib
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -59,6 +61,46 @@ class VoicePromptTests(unittest.TestCase):
         self.assertEqual(result["provider"], "deepseek")
         self.assertEqual(result["model"], "deepseek-chat")
         self.assertEqual(open_url.call_count, 2)
+        self.assertTrue(all(call.args[1] <= 8 for call in open_url.call_args_list))
+
+    def test_browser_voice_fill_recovers_live_input_and_preserves_new_typing(self):
+        voice_url = (ROOT / "web" / "js" / "voice.js").as_uri()
+        script = f"""
+globalThis.location={{origin:"http://127.0.0.1:3000",search:"",pathname:"/",hash:""}};
+globalThis.history={{replaceState(){{}}}};
+globalThis.localStorage={{getItem(){{return null}},setItem(){{}}}};
+globalThis.window={{}};
+const classList={{contains(){{return false}},add(){{}},remove(){{}}}};
+const live={{id:"input",value:"原稿",hidden:false,offsetWidth:100,offsetHeight:30,classList,
+  dispatchEvent(){{}},focus(){{}},setSelectionRange(){{}}}};
+const stale={{...live,value:"原稿"}};
+globalThis.document={{
+  activeElement:null,
+  contains(el){{return el===live}},
+  getElementById(id){{return id==="input"?live:null}},
+  querySelector(sel){{return sel==="#input"?live:null}},
+  querySelectorAll(){{return []}}
+}};
+const mod=await import({json.dumps(voice_url + '?voice-dom-regression')});
+const immediate=mod.applyVoicePrompt(stale,"原稿\\n口述","原稿",{{targetId:"input"}});
+live.value+="\\n继续输入";
+const refined=mod.applyVoicePrompt(stale,"整理后的指令","原稿",{{targetId:"input",provisional:"原稿\\n口述",focus:false}});
+live.value="用户主动改写";
+const preserved=mod.applyVoicePrompt(stale,"不应覆盖","原稿",{{targetId:"input",provisional:"原稿\\n口述",focus:false}});
+console.log(JSON.stringify({{immediate:immediate.value,refined:refined.value,preserved:preserved.value,applied:preserved.applied}}));
+"""
+        proc = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(proc.stdout.strip())
+
+        self.assertEqual(result["immediate"], "原稿\n口述")
+        self.assertEqual(result["refined"], "整理后的指令\n继续输入")
+        self.assertEqual(result["preserved"], "用户主动改写")
+        self.assertFalse(result["applied"])
 
 
 class NativeVoicePermissionTests(unittest.TestCase):

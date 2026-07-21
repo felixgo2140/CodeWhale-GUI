@@ -6269,7 +6269,11 @@ def refine_voice_prompt(transcript, draft="", provider=""):
         {"role": "user", "content": source},
     ]
     errors = []
-    for cfg in configs:
+    deadline = time.monotonic() + 12
+    for cfg in configs[:2]:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         payload = json.dumps({
             "model": cfg["model"],
             "messages": messages,
@@ -6282,7 +6286,7 @@ def refine_voice_prompt(transcript, draft="", provider=""):
                                      headers={"Authorization": "Bearer " + cfg["key"],
                                               "Content-Type": "application/json"})
         try:
-            with _open_url(req, 60) as r:
+            with _open_url(req, max(1, min(8, remaining))) as r:
                 data = json.loads(r.read().decode("utf-8", "replace"))
             prompt = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
             prompt = re.sub(r'^```(?:markdown|text)?\s*|\s*```$', '', prompt, flags=re.I).strip()
