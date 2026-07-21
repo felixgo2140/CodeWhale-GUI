@@ -743,6 +743,16 @@ function fileCanPreview(path){
 function fileDownloadHref(path, inline=false){
   return url("/api/file/download?path="+encodeURIComponent(path)+(inline?"&inline=1":""));
 }
+async function verifiedFileCardPath(path, base=""){
+  if(!path) return "";
+  try{
+    const q=`/api/file/stat?path=${encodeURIComponent(path)}`+(base?`&base=${encodeURIComponent(base)}`:"");
+    const r=await api(q);
+    return r&&r.exists&&r.path ? r.path : "";
+  }catch(e){
+    return "";
+  }
+}
 function fileMenuClose(card){ card?.querySelector(".chat-file-actions")?.removeAttribute("open"); }
 async function fileOpenAction(path, payload={}){
   const r=await api("/api/file/open",{method:"POST",body:JSON.stringify(Object.assign({path},payload))});
@@ -841,7 +851,12 @@ function appendFileDownloadCards(container, text){
     const cp=card.querySelector(".chat-file-copy");
     if(cp) cp.onclick=e=>{ e.preventDefault(); clipCopy(p).then(()=>cwToast("已复制文件路径")).catch(()=>{}); fileMenuClose(card); };
   };
-  paths.forEach(p=>addCard(p));
+  // A path mentioned in prose may only be a planned output. Render a file card
+  // after the backend confirms that the file exists and is allowed.
+  paths.forEach(async p=>{
+    const verified=await verifiedFileCardPath(p);
+    if(verified) addCard(verified);
+  });
   // 工作区相对路径(如 reports/xx/报告.md):解析到 thread workspace 并向后端校验存在后再出卡
   const exts="pdf|md|markdown|txt|csv|tsv|json|html?|docx?|xlsx?|pptx?|zip|png|jpe?g|gif|webp|svg";
   const relRe=new RegExp("(?:^|[\\s\"'“”‘’`(（\\[])((?:\\.\\/)?(?:[^\\s\\/\"'“”‘’`\\n\\r)）\\]]+\\/)+[^\\s\\/\"'“”‘’`\\n\\r)）\\]]+?\\.(?:"+exts+"))(?=$|[\\s\"'“”‘’`,，。;；)）\\]])","gi");
@@ -855,10 +870,8 @@ function appendFileDownloadCards(container, text){
   }
   if(rels.length && ws){
     rels.forEach(async rel=>{
-      try{
-        const r=await api(`/api/file/stat?path=${encodeURIComponent(rel)}&base=${encodeURIComponent(ws)}`);
-        if(r&&r.exists&&r.path) addCard(r.path);
-      }catch(e){}
+      const verified=await verifiedFileCardPath(rel,ws);
+      if(verified) addCard(verified);
     });
   }
 }
@@ -885,4 +898,4 @@ function setRunning(r){
 function refreshActiveMeta(){ loadThreads(); }
 
 
-export { cwToast, cwConfirm, esc, escAttr, ICONS, icon, iconLabel, setButtonIcon, hydrateIcons, keyboardButton, relTime, timelineTimeValue, timelineTimeLabel, timelinePreview, timelineReset, timelineHash, timelineRegisterUser, timelineRender, timelineOpen, timelineClose, timelineToggle, timelineJump, initTimelineControls, roughThreadTitle, normTurnStatus, isTurnRunning, isTurnDone, isStoppingTurn, statusText, isImportantStatus, activeSummary, turnInfoFromSnapshot, runFmt, runStatusReset, runStatusEnsure, runStatusTick, runStatusUpdate, runStatusStep, runLabelForItem, runStatusFromItem, runStatusFinish, pendingApprovalCards, approvalGoneError, markApproval, approvalRequired, decide, approvalResolved, row, sysnote, execCopy, clipCopy, msgText, copyMsg, editMsg, isImageAttachment, revokeAttachmentPreview, clearAttachmentList, uploadAttachmentRecord, optimisticUpload, takeAttachmentBundle, restoreAttachmentBundle, attachmentPrompt, attachmentReadRef, attachmentChip, filePathsFromText, fileDownloadHref, appendFileDownloadCards, pdfPathsFromText, pdfDownloadHref, appendPdfDownloadCards, setRunning, refreshActiveMeta };
+export { cwToast, cwConfirm, esc, escAttr, ICONS, icon, iconLabel, setButtonIcon, hydrateIcons, keyboardButton, relTime, timelineTimeValue, timelineTimeLabel, timelinePreview, timelineReset, timelineHash, timelineRegisterUser, timelineRender, timelineOpen, timelineClose, timelineToggle, timelineJump, initTimelineControls, roughThreadTitle, normTurnStatus, isTurnRunning, isTurnDone, isStoppingTurn, statusText, isImportantStatus, activeSummary, turnInfoFromSnapshot, runFmt, runStatusReset, runStatusEnsure, runStatusTick, runStatusUpdate, runStatusStep, runLabelForItem, runStatusFromItem, runStatusFinish, pendingApprovalCards, approvalGoneError, markApproval, approvalRequired, decide, approvalResolved, row, sysnote, execCopy, clipCopy, msgText, copyMsg, editMsg, isImageAttachment, revokeAttachmentPreview, clearAttachmentList, uploadAttachmentRecord, optimisticUpload, takeAttachmentBundle, restoreAttachmentBundle, attachmentPrompt, attachmentReadRef, attachmentChip, filePathsFromText, fileDownloadHref, verifiedFileCardPath, appendFileDownloadCards, pdfPathsFromText, pdfDownloadHref, appendPdfDownloadCards, setRunning, refreshActiveMeta };
