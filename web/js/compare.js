@@ -545,13 +545,26 @@ function cmpSummaryModelName(prov){
   const found=vars.find(v=>v.id===id);
   return (found&&found.name)||id;
 }
+function cmpSummaryQuestionMarkdown(question){
+  return String(question||"").trim().split("\n").map((line,index)=>`> ${index===0?"**问题：** ":""}${line}`).join("\n");
+}
 function cmpSummaryCopyPayload(pairs){
-  const sections=pairs.filter(x=>x&&x.pair&&x.pair.answer).map(({provider,pair})=>{
+  const answered=pairs.filter(x=>x&&x.pair&&x.pair.answer);
+  const questions=answered.map(x=>String(x.pair.question||"").trim()).filter(Boolean);
+  const normalized=questions.map(q=>q.replace(/\s+/g," "));
+  const sharedQuestion=questions.length===answered.length&&new Set(normalized).size===1?questions[0]:"";
+  const sections=answered.map(({provider,pair})=>{
     const name=PROV_SHORT[provider.id]||provider.name||provider.id;
     const model=cmpSummaryModelName(provider.id);
-    return `【${name}${model?` · ${model}`:""}】\n${pair.answer.trim()}`;
+    const section=[`## ${name}${model?` · ${model}`:""}`];
+    if(!sharedQuestion&&pair.question) section.push(cmpSummaryQuestionMarkdown(pair.question));
+    section.push(pair.answer.trim());
+    return section.join("\n\n");
   });
-  return {count:sections.length,text:sections.join("\n\n")};
+  const document=["# 多模型回复汇总"];
+  if(sharedQuestion) document.push(cmpSummaryQuestionMarkdown(sharedQuestion));
+  if(sections.length) document.push(sections.join("\n\n---\n\n"));
+  return {count:sections.length,text:document.join("\n\n")};
 }
 async function cmpCopySummaryText(text){
   try{
@@ -586,12 +599,12 @@ function cmpRenderSummary(){
   copyAll.innerHTML=`${icon("copy")}<span>复制全部回复</span>`;
   const copyPayload=cmpSummaryCopyPayload(pairs);
   copyAll.disabled=!copyPayload.count;
-  copyAll.title=copyPayload.count?`复制 ${copyPayload.count} 个模型的完整回复`:"暂无可复制的回复";
+  copyAll.title=copyPayload.count?`以 Markdown 复制 ${copyPayload.count} 个模型的完整回复`:"暂无可复制的回复";
   copyAll.addEventListener("click",async event=>{
     event.preventDefault(); event.stopPropagation();
     const current=cmpSummaryCopyPayload(PROVIDERS.filter(p=>CMP.sel.has(p.id)).map(p=>({provider:p,pair:cmpSummaryPair(p.id)})));
     if(!current.count){ window.cwToast("暂无可复制的模型回复"); return; }
-    try{ await cmpCopySummaryText(current.text); window.cwToast(`已复制 ${current.count} 个模型的完整回复`); }
+    try{ await cmpCopySummaryText(current.text); window.cwToast(`已复制 ${current.count} 个模型的完整回复（Markdown）`); }
     catch(err){ window.cwToast(err&&err.message||"复制失败"); }
   });
   head.append(headMain,copyAll); shell.appendChild(head);

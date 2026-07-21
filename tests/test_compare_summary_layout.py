@@ -46,12 +46,17 @@ class CompareSummaryLayoutTests(unittest.TestCase):
 
     def test_summary_exposes_copy_all_replies(self):
         self.assertIn("function cmpSummaryCopyPayload(pairs)", self.js)
+        self.assertIn("function cmpSummaryQuestionMarkdown(question)", self.js)
+        self.assertIn('["# 多模型回复汇总"]', self.js)
+        self.assertIn("`## ${name}${model?` · ${model}`:\"\"}`", self.js)
+        self.assertIn('sections.join("\\n\\n---\\n\\n")', self.js)
+        self.assertIn('"**问题：** "', self.js)
         self.assertIn("async function cmpCopySummaryText(text)", self.js)
         self.assertIn('api("/api/clipboard"', self.js)
         self.assertIn('copyAll.className="cmpsum-copy-all"', self.js)
         self.assertIn('copyAll.addEventListener("click",async event=>', self.js)
         self.assertIn("await cmpCopySummaryText(current.text)", self.js)
-        self.assertIn("已复制 ${current.count} 个模型的完整回复", self.js)
+        self.assertIn("已复制 ${current.count} 个模型的完整回复（Markdown）", self.js)
 
     def test_summary_answers_expand_without_nested_vertical_scrolling(self):
         self.assertIn(".cmpsum-answer{padding:12px", self.css)
