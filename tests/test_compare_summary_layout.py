@@ -48,6 +48,13 @@ class CompareSummaryLayoutTests(unittest.TestCase):
         self.assertIn(".cmpsum-grid{display:grid;grid-template-columns:minmax(0,1fr)", self.css)
         self.assertNotIn("repeat(2,minmax(0,1fr))", self.css)
 
+    def test_summary_questions_are_visually_secondary(self):
+        self.assertIn(
+            ".cmpsum-question .cmpsum-text,.cmpsum-card-question .cmpsum-text"
+            "{color:var(--ink-2);font-size:12px",
+            self.css,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

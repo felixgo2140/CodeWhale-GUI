@@ -481,7 +481,7 @@ input.cmpmodelinput:focus{border-color:var(--accent);box-shadow:var(--focus-ring
   background:var(--panel);
 }
 .cmpsum-label{margin-bottom:6px;color:var(--ink-3);font-size:11px;font-weight:650}
-.cmpsum-question .cmpsum-text,.cmpsum-card-question .cmpsum-text{color:var(--ink);font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.cmpsum-question .cmpsum-text,.cmpsum-card-question .cmpsum-text{color:var(--ink-2);font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
 .cmpsum-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:start}
 .cmpsum-card{
   display:block;
