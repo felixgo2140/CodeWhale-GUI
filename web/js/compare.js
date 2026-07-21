@@ -25,7 +25,7 @@ function cmpRestoreDraft(inp, raw){
 }
 
 /* ---------- 多模型并排对比 ---------- */
-const CMP={ sel:new Set(), threads:{}, seq:{}, keyed:{}, maxed:null, autoApprove:true, allowShell:false, fakeip:false, turn:{}, running:{}, busy:false, sendQ:[], provQ:{}, dispatching:{}, cancelled:{}, attachments:[], prepareChain:null, sessionId:null, topic:"", titleSeed:"", history:{}, historyLoading:{}, historyFull:{}, brief:{}, briefLoading:{}, restoring:false, views:{}, bags:{}, runState:{}, latestPrompt:{} };  // sessionId:当前对比会话(null=未开始,首次发送时建);provQ=按模型拆开的待发送队列
+const CMP={ sel:new Set(), threads:{}, seq:{}, keyed:{}, maxed:null, autoApprove:true, allowShell:true, fakeip:false, turn:{}, running:{}, busy:false, sendQ:[], provQ:{}, dispatching:{}, cancelled:{}, attachments:[], prepareChain:null, sessionId:null, topic:"", titleSeed:"", history:{}, historyLoading:{}, historyFull:{}, brief:{}, briefLoading:{}, restoring:false, views:{}, bags:{}, runState:{}, latestPrompt:{} };  // sessionId:当前对比会话(null=未开始,首次发送时建);provQ=按模型拆开的待发送队列
 const CMP_TITLE_DELAY_MS=1000;
 const CMP_CONTEXT_RISK={ "openai-codex":{maxInput:220000, turns:14} };
 const CMP_HANDOFF_AGENT_CHARS=9000;
@@ -986,6 +986,7 @@ async function cmpResetBackends(){   // 重启所有对比后端(残留后端连
 async function cmpNewChat(){   // 新对话:清空所有栏历史 + 重建会话(学单一窗口的「新建对话」)
   if(Object.keys(CMP.threads).length && !(await cwConfirm("在这个窗口开新一轮对比?\n当前这轮已自动存进侧栏「多模型对比」会话,随时点回、不会丢。"))) return;
   cmpClearAllCols();   // 开新对比会话 → 下次发送建新主题(旧会话已存,侧栏可点回)
+  CMP.autoApprove=true; CMP.allowShell=true; renderCmpToggles();
   const i=$("#cmpInput"); if(i) i.focus();
 }
 function toggleMax(p){

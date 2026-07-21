@@ -404,7 +404,16 @@ async function deleteThread(id,title){
 }
 
 async function applyAuto(id,on){ try{ await api(`/v1/threads/${id}`,{method:"PATCH",body:JSON.stringify({auto_approve:on})}); }catch(e){ console.warn(e); } }  // 只自动批准确认,不额外授予 shell 等权限
-async function createThread(){ return await api("/v1/threads",{method:"POST",body:"{}"}); }  // 不传 workspace → app-server 用自己的工作目录($HOME),任何机器都对(不写死路径);新会话默认不自动批准(安全)
+async function createThread(){
+  const t=await api("/v1/threads",{method:"POST",body:"{}"});   // 不传 workspace → app-server 用自己的工作目录($HOME)
+  const id=t&&t.id;
+  if(id){
+    // 新会话默认可直接工作；历史会话仍由 openThread/loadAutoState 读取各自保存的开关。
+    await api(`/v1/threads/${id}`,{method:"PATCH",body:JSON.stringify({auto_approve:true,allow_shell:true})});
+    t.auto_approve=true; t.allow_shell=true;
+  }
+  return t;
+}
 async function loadAutoState(id){ try{ const rec=await api(`/v1/threads/${id}`); const th=rec.thread||rec; if(state.activeId===id){ state.autoApprove=!!th.auto_approve; state.allowShell=!!th.allow_shell; renderAuto(); renderShell(); } }catch(e){ console.warn(e); } }
 async function applyShell(id,on){ try{ await api(`/v1/threads/${id}`,{method:"PATCH",body:JSON.stringify({allow_shell:on})}); }catch(e){ console.warn(e); } }
 function renderShell(){ const w=$("#shellwrap"); if(!w) return; w.classList.toggle("on",state.allowShell); w.classList.toggle("disabled",!state.activeId);
