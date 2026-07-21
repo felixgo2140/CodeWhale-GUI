@@ -63,6 +63,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     var voiceStopping = false
     var voiceDelivered = false
     var voiceButtonActive = false
+    var voiceCaptureGeneration = 0
 
     func applicationDidFinishLaunching(_ note: Notification) {
         buildMenu()      // 没主菜单 → Cmd+C/V/X/A 无处分发,文本框复制粘贴失灵
@@ -186,7 +187,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         } else if action == "stop" {
             voiceButtonActive = false
             if voiceRecording { stopVoiceCapture() }
-            else if !voiceStopping { emitVoice(["state": "ready", "message": "语音输入已停止"]) }
+            else if voiceStopping { finishVoiceTranscript() }
+            else { emitVoice(["state": "ready", "message": "语音输入已停止"]) }
+        } else if action == "cancel" {
+            voiceButtonActive = false
+            cancelVoiceCapture(message: nil)
         }
     }
 
@@ -285,6 +290,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         recognitionTask = nil
         recognitionRequest = nil
         voiceFinishWork?.cancel()
+        voiceCaptureGeneration += 1
+        let generation = voiceCaptureGeneration
         voiceTranscript = ""
         voiceStopping = false
         voiceDelivered = false
@@ -317,7 +324,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         emitVoice(["state": "recording"])
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             DispatchQueue.main.async {
-                guard let self = self, !self.voiceDelivered else { return }
+                guard let self = self,
+                      generation == self.voiceCaptureGeneration,
+                      !self.voiceDelivered else { return }
                 if let result = result {
                     let text = result.bestTranscription.formattedString.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !text.isEmpty {
@@ -365,6 +374,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     }
 
     func cancelVoiceCapture(message: String? = nil) {
+        voiceCaptureGeneration += 1
         voiceFinishWork?.cancel()
         if audioEngine.isRunning { audioEngine.stop() }
         audioEngine.inputNode.removeTap(onBus: 0)
@@ -377,6 +387,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         voiceButtonActive = false
         voiceDelivered = true
         if let message = message { emitVoice(["state": "error", "message": message]) }
+        else { emitVoice(["state": "ready", "message": "语音输入已停止"]) }
     }
 
     func emitVoice(_ detail: [String: Any]) {
@@ -466,7 +477,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     func applicationDidResignActive(_ notification: Notification) {
         voiceStartWork?.cancel()
         fnPressed = false
-        if voiceRecording { cancelVoiceCapture(message: nil) }
+        if voiceRecording || voiceStopping { cancelVoiceCapture(message: nil) }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ a: NSApplication) -> Bool { return false }
 }

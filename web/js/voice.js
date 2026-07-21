@@ -4,7 +4,10 @@ import {$, state} from "./state.js";
 let voiceTarget=null;
 let voiceRun=0;
 let voiceHideTimer=null;
+let voiceRecoveryTimer=null;
 let voiceControlState="idle";
+let voiceLastTranscript="";
+let voiceRefining=false;
 const VOICE_TITLE="按住 Fn 或点击麦克风语音输入,结束后自动整理到输入框";
 
 function isVisible(el){
@@ -52,7 +55,7 @@ function voiceButtonFor(target=voiceTarget){
 function syncVoiceButtons(kind="idle",target=voiceTarget){
   document.querySelectorAll(".voicebtn").forEach(button=>{
     button.classList.remove("starting","recording","processing");
-    button.disabled=kind==="processing";
+    button.disabled=false;
     button.setAttribute("aria-pressed","false");
     button.title=button.classList.contains("cmpcolvoice")
       ? "语音追问（点击开始,再次点击结束）"
@@ -62,7 +65,7 @@ function syncVoiceButtons(kind="idle",target=voiceTarget){
   if(!button || kind==="idle") return;
   button.classList.add(kind);
   button.setAttribute("aria-pressed",kind==="starting"||kind==="recording" ? "true" : "false");
-  button.title=kind==="recording" ? "结束语音输入" : (kind==="processing" ? "正在转写并整理" : "正在启动麦克风");
+  button.title=kind==="recording" ? "结束语音输入" : (kind==="processing" ? "停止等待并使用当前识别文字" : "正在启动麦克风");
 }
 
 function setVoiceControlState(kind,target=voiceTarget){
@@ -75,6 +78,55 @@ function postNativeVoice(action){
   if(!bridge || typeof bridge.postMessage!=="function") return false;
   bridge.postMessage({action});
   return true;
+}
+
+function clearVoiceRecovery(){
+  clearTimeout(voiceRecoveryTimer);
+  voiceRecoveryTimer=null;
+}
+
+function armVoiceRecovery(delay,target=voiceTarget){
+  clearVoiceRecovery();
+  const expectedTarget=target;
+  voiceRecoveryTimer=setTimeout(()=>forceFinishVoiceInput("语音服务响应超时,已恢复输入",expectedTarget),delay);
+}
+
+function focusVoiceTarget(target){
+  target=resolveVoiceTarget(target,voiceTargetId(target));
+  target?.focus();
+  try{ target?.setSelectionRange(target.value.length,target.value.length); }catch(e){}
+  return target;
+}
+
+function forceFinishVoiceInput(message="已停止语音输入",target=voiceTarget){
+  clearVoiceRecovery();
+  if(voiceRefining){
+    voiceRun++;
+    voiceRefining=false;
+    voiceLastTranscript="";
+    target=resolveVoiceTarget(target,voiceTargetId(target));
+    voiceTarget=focusVoiceTarget(target);
+    setVoiceControlState("idle",voiceTarget);
+    setVoiceStatus("done","已保留转写",message,voiceTarget);
+    hideVoiceStatus(1800,voiceTarget);
+    return;
+  }
+  postNativeVoice("cancel");
+  target=resolveVoiceTarget(target,voiceTargetId(target));
+  target?.classList.remove("voice-listening");
+  const text=String(voiceLastTranscript||"").trim();
+  if(text){
+    setVoiceControlState("processing",target);
+    refineVoiceTranscript(text,target);
+    return;
+  }
+  voiceRun++;
+  voiceRefining=false;
+  voiceLastTranscript="";
+  voiceTarget=focusVoiceTarget(target);
+  setVoiceControlState("idle",voiceTarget);
+  setVoiceStatus("done","语音输入已停止",message,voiceTarget);
+  hideVoiceStatus(1800,voiceTarget);
 }
 
 function targetForVoiceButton(button){
@@ -95,11 +147,12 @@ function onVoiceButtonClick(event){
     if(postNativeVoice("stop")){
       setVoiceControlState("processing",voiceTarget||target);
       setVoiceStatus("processing","正在转写","",voiceTarget||target);
+      armVoiceRecovery(6000,voiceTarget||target);
     }
     return;
   }
   if(voiceControlState==="processing"){
-    if(typeof window.cwToast==="function") window.cwToast("正在转写并整理,请稍候");
+    forceFinishVoiceInput("已使用当前识别结果",voiceTarget||target);
     return;
   }
   if(!postNativeVoice("start")){
@@ -107,9 +160,12 @@ function onVoiceButtonClick(event){
     return;
   }
   voiceTarget=target;
+  voiceLastTranscript="";
+  voiceRefining=false;
   voiceTarget?.focus();
   setVoiceControlState("starting",voiceTarget);
   setVoiceStatus("processing","正在启动麦克风","",voiceTarget);
+  armVoiceRecovery(12000,voiceTarget);
 }
 
 function setVoiceStatus(kind,label,preview="",target=voiceTarget){
@@ -173,6 +229,8 @@ function applyVoicePrompt(target,prompt,draft,{targetId="",provisional="",focus=
 }
 
 async function refineVoiceTranscript(text,target){
+  clearVoiceRecovery();
+  voiceRefining=true;
   const run=++voiceRun;
   const targetId=voiceTargetId(target);
   target=resolveVoiceTarget(target,targetId);
@@ -198,11 +256,13 @@ async function refineVoiceTranscript(text,target){
     if(timeout) clearTimeout(timeout);
   }
   if(run!==voiceRun) return;
+  voiceRefining=false;
   const prompt=String(result?.prompt||provisional).trim();
   if(!prompt){ setVoiceControlState("idle",target); setVoiceStatus("error","没有听清","请重试",target); hideVoiceStatus(2200,target); return; }
   const finalWrite=applyVoicePrompt(target,prompt,draft,{targetId,provisional,focus:false});
   target=finalWrite.target||target;
   voiceTarget=target;
+  voiceLastTranscript="";
   setVoiceControlState("idle",target);
   setVoiceStatus("done",result?.refined===false?"已转写":"已整理",finalWrite.applied?prompt:"检测到你已继续编辑,未覆盖",target);
   if(result?.warning && typeof window.cwToast==="function") window.cwToast(result.warning);
@@ -213,6 +273,7 @@ function onNativeVoice(event){
   const d=event?.detail||{};
   const stateName=String(d.state||"");
   if(stateName==="recording"){
+    clearVoiceRecovery();
     voiceRun++;
     voiceTarget=voiceControlState==="starting" && voiceTarget && document.contains(voiceTarget) ? voiceTarget : defaultVoiceTarget();
     voiceTarget?.classList.add("voice-listening");
@@ -221,31 +282,43 @@ function onNativeVoice(event){
     return;
   }
   if(stateName==="partial"){
+    clearVoiceRecovery();
+    voiceLastTranscript=String(d.text||voiceLastTranscript);
     setVoiceControlState("recording",voiceTarget);
     setVoiceStatus("recording","正在听",d.text||"",voiceTarget);
     return;
   }
   if(stateName==="processing"){
+    voiceLastTranscript=String(d.text||voiceLastTranscript);
     voiceTarget?.classList.remove("voice-listening");
     setVoiceControlState("processing",voiceTarget);
     setVoiceStatus("processing","正在转写",d.text||"",voiceTarget);
+    armVoiceRecovery(6000,voiceTarget);
     return;
   }
   if(stateName==="final"){
+    clearVoiceRecovery();
     voiceTarget?.classList.remove("voice-listening");
     setVoiceControlState("processing",voiceTarget);
-    const text=String(d.text||"").trim();
+    const text=String(d.text||voiceLastTranscript||"").trim();
+    voiceLastTranscript=text;
     if(text) refineVoiceTranscript(text,voiceTarget||defaultVoiceTarget());
     else { setVoiceControlState("idle",voiceTarget); setVoiceStatus("error","没有听清","请重试",voiceTarget); hideVoiceStatus(2200,voiceTarget); }
     return;
   }
   if(stateName==="ready"){
+    clearVoiceRecovery();
+    if(voiceRefining) return;
+    voiceLastTranscript="";
     setVoiceControlState("idle",voiceTarget);
     setVoiceStatus("done","语音输入已就绪",d.message||"",voiceTarget);
     hideVoiceStatus(2200,voiceTarget);
     return;
   }
   if(stateName==="error"){
+    clearVoiceRecovery();
+    voiceRefining=false;
+    voiceLastTranscript="";
     voiceTarget?.classList.remove("voice-listening");
     setVoiceControlState("idle",voiceTarget);
     const msg=String(d.message||"语音输入失败");
@@ -271,4 +344,4 @@ function initVoiceInput(){
   syncVoiceButtons(voiceControlState,voiceTarget);
 }
 
-export {initVoiceInput,onNativeVoice,refineVoiceTranscript,onVoiceButtonClick,applyVoicePrompt,refinedVoiceValue,resolveVoiceTarget};
+export {initVoiceInput,onNativeVoice,refineVoiceTranscript,onVoiceButtonClick,applyVoicePrompt,refinedVoiceValue,resolveVoiceTarget,forceFinishVoiceInput};

@@ -102,6 +102,45 @@ console.log(JSON.stringify({{immediate:immediate.value,refined:refined.value,pre
         self.assertEqual(result["preserved"], "用户主动改写")
         self.assertFalse(result["applied"])
 
+    def test_voice_button_can_force_unlock_while_processing(self):
+        voice_url = (ROOT / "web" / "js" / "voice.js").as_uri()
+        script = f"""
+globalThis.location={{origin:"http://127.0.0.1:3000",search:"",pathname:"/",hash:""}};
+globalThis.localStorage={{getItem(){{return null}},setItem(){{}}}};
+const actions=[];
+const classes=new Set();
+const classList={{contains(v){{return classes.has(v)}},add(...v){{v.forEach(x=>classes.add(x))}},remove(...v){{v.forEach(x=>classes.delete(x))}}}};
+const input={{id:"input",value:"",hidden:false,offsetWidth:100,offsetHeight:30,classList:{{contains(){{return false}},add(){{}},remove(){{}}}},
+  matches(sel){{return sel.includes("#input")}},dispatchEvent(){{}},focus(){{}},setSelectionRange(){{}},getClientRects(){{return [1]}}}};
+const button={{id:"voicebtn",disabled:false,title:"",classList,
+  setAttribute(){{}},closest(sel){{return sel===".voicebtn"?this:null}}}};
+globalThis.window={{webkit:{{messageHandlers:{{voiceControl:{{postMessage(v){{actions.push(v.action)}}}}}}}}}};
+globalThis.document={{activeElement:input,contains(el){{return el===input}},
+  getElementById(id){{return id==="input"?input:(id==="voicebtn"?button:null)}},
+  querySelector(sel){{return sel==="#input"?input:(sel==="#voicebtn"?button:null)}},
+  querySelectorAll(sel){{return sel===".voicebtn"?[button]:[]}}}};
+const mod=await import({json.dumps(voice_url + '?voice-unlock-regression')});
+mod.onNativeVoice({{detail:{{state:"recording"}}}});
+mod.onVoiceButtonClick({{target:button,preventDefault(){{}},stopPropagation(){{}}}});
+const afterStop={{disabled:button.disabled,processing:classes.has("processing")}};
+mod.onVoiceButtonClick({{target:button,preventDefault(){{}},stopPropagation(){{}}}});
+console.log(JSON.stringify({{actions,afterStop,processingAfterCancel:classes.has("processing"),disabledAfterCancel:button.disabled}}));
+process.exit(0);
+"""
+        proc = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(proc.stdout.strip())
+
+        self.assertEqual(result["actions"], ["stop", "cancel"])
+        self.assertFalse(result["afterStop"]["disabled"])
+        self.assertTrue(result["afterStop"]["processing"])
+        self.assertFalse(result["processingAfterCancel"])
+        self.assertFalse(result["disabledAfterCancel"])
+
 
 class NativeVoicePermissionTests(unittest.TestCase):
     def test_native_revision_is_read_from_info_plist(self):
@@ -133,6 +172,19 @@ class NativeVoicePermissionTests(unittest.TestCase):
 
         self.assertIn("done(p.runModal() == .OK ? p.urls : nil)", panel)
         self.assertNotIn("p.beginSheetModal(", panel)
+
+    def test_voice_processing_can_be_cancelled_and_always_emits_terminal_state(self):
+        frontend = (ROOT / "web" / "js" / "voice.js").read_text()
+        native = (ROOT / "native" / "main.swift").read_text()
+
+        self.assertIn('button.disabled=false', frontend)
+        self.assertIn('forceFinishVoiceInput("已使用当前识别结果"', frontend)
+        self.assertIn('armVoiceRecovery(6000', frontend)
+        self.assertIn('postNativeVoice("cancel")', frontend)
+        self.assertIn('else if action == "cancel"', native)
+        self.assertIn('else { emitVoice(["state": "ready", "message": "语音输入已停止"]) }', native)
+        self.assertIn('if voiceRecording || voiceStopping', native)
+        self.assertIn('generation == self.voiceCaptureGeneration', native)
 
 
 class ProviderRuntimeAdoptionTests(unittest.TestCase):
