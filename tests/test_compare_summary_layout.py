@@ -44,6 +44,20 @@ class CompareSummaryLayoutTests(unittest.TestCase):
         self.assertIn('card._cwRawMessage=()=>pair.answer', self.js)
         self.assertIn('card._cwInputSel="#cmpInput"', self.js)
 
+    def test_summary_exposes_copy_all_replies(self):
+        self.assertIn("function cmpSummaryCopyPayload(pairs)", self.js)
+        self.assertIn("async function cmpCopySummaryText(text)", self.js)
+        self.assertIn('api("/api/clipboard"', self.js)
+        self.assertIn('copyAll.className="cmpsum-copy-all"', self.js)
+        self.assertIn('copyAll.addEventListener("click",async event=>', self.js)
+        self.assertIn("await cmpCopySummaryText(current.text)", self.js)
+        self.assertIn("已复制 ${current.count} 个模型的完整回复", self.js)
+
+    def test_summary_answers_expand_without_nested_vertical_scrolling(self):
+        self.assertIn(".cmpsum-answer{padding:12px", self.css)
+        self.assertNotIn(".cmpsum-answer{max-height", self.css)
+        self.assertNotIn("overscroll-behavior:contain;padding:12px;font-size:var(--cmp-fs", self.css)
+
     def test_summary_is_responsive(self):
         self.assertIn(".cmpsum-grid{display:grid;grid-template-columns:minmax(0,1fr)", self.css)
         self.assertNotIn("repeat(2,minmax(0,1fr))", self.css)

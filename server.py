@@ -3155,6 +3155,25 @@ def _reveal_workspace(path):
     code, out = _run(["/usr/bin/open", target], timeout=15)
     return {"ok": code == 0, "path": target, "error": "" if code == 0 else (out or "Finder 打开失败")[:500]}
 
+def _copy_system_clipboard(text):
+    text = str(text or "")
+    payload = text.encode("utf-8")
+    if not payload:
+        return {"ok": False, "error": "没有可复制的内容"}
+    if len(payload) > 8 * 1024 * 1024:
+        return {"ok": False, "error": "复制内容超过 8MB"}
+    try:
+        proc = subprocess.run(
+            ["/usr/bin/pbcopy"], input=payload, stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE, timeout=8, check=False,
+        )
+        if proc.returncode == 0:
+            return {"ok": True, "bytes": len(payload)}
+        err = (proc.stderr or b"").decode("utf-8", "replace").strip()
+        return {"ok": False, "error": (err or "系统剪贴板复制失败")[:300]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
 def _remove_created_worktree(repo, path, branch):
     if path:
         _run(["git", "-C", repo, "worktree", "remove", "--force", path], timeout=30)
@@ -7225,6 +7244,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
     def do_POST(self):
         p = urllib.parse.urlparse(self.path).path
+        if p == "/api/clipboard":
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                if length > 9 * 1024 * 1024:
+                    return self._json({"ok": False, "error": "复制内容过大"}, 413)
+                data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                out = _copy_system_clipboard(data.get("text", "") if isinstance(data, dict) else "")
+                return self._json(out, 200 if out.get("ok") else 400)
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:300]}, 400)
         if p == "/api/workspace/reveal":
             if not self._authed():
                 return self._deny()

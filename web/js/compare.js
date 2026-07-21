@@ -545,6 +545,21 @@ function cmpSummaryModelName(prov){
   const found=vars.find(v=>v.id===id);
   return (found&&found.name)||id;
 }
+function cmpSummaryCopyPayload(pairs){
+  const sections=pairs.filter(x=>x&&x.pair&&x.pair.answer).map(({provider,pair})=>{
+    const name=PROV_SHORT[provider.id]||provider.name||provider.id;
+    const model=cmpSummaryModelName(provider.id);
+    return `【${name}${model?` · ${model}`:""}】\n${pair.answer.trim()}`;
+  });
+  return {count:sections.length,text:sections.join("\n\n")};
+}
+async function cmpCopySummaryText(text){
+  try{
+    const result=await api("/api/clipboard",{method:"POST",body:JSON.stringify({text})});
+    if(result&&result.ok) return;
+  }catch(e){}
+  await window.clipCopy(text);
+}
 function cmpHydrateSummary(){
   if(_cmpLay!=="summary") return;
   PROVIDERS.filter(p=>CMP.sel.has(p.id)).forEach(p=>{
@@ -563,9 +578,23 @@ function cmpRenderSummary(){
   host.innerHTML="";
   const shell=document.createElement("div"); shell.className="cmpsum-shell";
   const head=document.createElement("div"); head.className="cmpsum-head";
+  const headMain=document.createElement("div"); headMain.className="cmpsum-head-main";
   const title=document.createElement("h2"); title.textContent="最新问答汇总";
   const meta=document.createElement("span"); meta.textContent=`${providers.length} 个模型`;
-  head.append(title,meta); shell.appendChild(head);
+  headMain.append(title,meta);
+  const copyAll=document.createElement("button"); copyAll.type="button"; copyAll.className="cmpsum-copy-all";
+  copyAll.innerHTML=`${icon("copy")}<span>复制全部回复</span>`;
+  const copyPayload=cmpSummaryCopyPayload(pairs);
+  copyAll.disabled=!copyPayload.count;
+  copyAll.title=copyPayload.count?`复制 ${copyPayload.count} 个模型的完整回复`:"暂无可复制的回复";
+  copyAll.addEventListener("click",async event=>{
+    event.preventDefault(); event.stopPropagation();
+    const current=cmpSummaryCopyPayload(PROVIDERS.filter(p=>CMP.sel.has(p.id)).map(p=>({provider:p,pair:cmpSummaryPair(p.id)})));
+    if(!current.count){ window.cwToast("暂无可复制的模型回复"); return; }
+    try{ await cmpCopySummaryText(current.text); window.cwToast(`已复制 ${current.count} 个模型的完整回复`); }
+    catch(err){ window.cwToast(err&&err.message||"复制失败"); }
+  });
+  head.append(headMain,copyAll); shell.appendChild(head);
   if(sharedQuestion){
     const q=document.createElement("section"); q.className="cmpsum-question";
     const label=document.createElement("div"); label.className="cmpsum-label"; label.textContent="你的最新问题";

@@ -469,9 +469,14 @@ input.cmpmodelinput:focus{border-color:var(--accent);box-shadow:var(--focus-ring
 }
 #cmpSummary[hidden]{display:none}
 .cmpsum-shell{width:min(1440px,100%);margin:0 auto}
-.cmpsum-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:14px}
+.cmpsum-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px}
+.cmpsum-head-main{display:flex;align-items:baseline;gap:8px;min-width:0}
 .cmpsum-head h2{margin:0;color:var(--ink);font-size:18px;letter-spacing:0}
 .cmpsum-head span{color:var(--ink-3);font-size:12px}
+.cmpsum-copy-all{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:32px;padding:5px 10px;border:1px solid var(--line);border-radius:var(--r-s);background:var(--panel);color:var(--ink-2);font:600 12px/1 var(--font);white-space:nowrap;cursor:pointer}
+.cmpsum-copy-all svg{width:15px;height:15px}
+.cmpsum-copy-all:hover:not(:disabled){border-color:var(--line-strong);background:var(--surface-muted);color:var(--ink)}
+.cmpsum-copy-all:disabled{opacity:.45;cursor:default}
 .cmpsum-question{
   margin-bottom:14px;
   padding:14px 16px;
@@ -502,7 +507,7 @@ input.cmpmodelinput:focus{border-color:var(--accent);box-shadow:var(--focus-ring
 .cmpsum-card-model{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-3);font:11px/1.2 var(--mono)}
 .cmpsum-card-state{margin-left:auto;color:var(--ink-3);font-size:11px;white-space:nowrap}
 .cmpsum-card-question{padding:10px 12px;border-bottom:1px solid var(--line-soft);background:var(--bg)}
-.cmpsum-answer{max-height:460px;overflow:auto;overscroll-behavior:contain;padding:12px;font-size:var(--cmp-fs,13px);line-height:1.6;color:var(--ink)}
+.cmpsum-answer{padding:12px;font-size:var(--cmp-fs,13px);line-height:1.6;color:var(--ink)}
 .cmpsum-answer.content>:first-child{margin-top:0}
 .cmpsum-answer.content>:last-child{margin-bottom:0}
 .cmpsum-empty{padding:24px;border:1px dashed var(--line);border-radius:var(--r-m);background:var(--panel);color:var(--ink-3);text-align:center}
@@ -587,6 +592,7 @@ input.cmpmodelinput:focus{border-color:var(--accent);box-shadow:var(--focus-ring
   #cmpCols.lay-grid{grid-template-columns:1fr}
   #cmpCols.lay-stack .cmpcol{flex-basis:68vh;min-height:360px}
   #cmpSummary{padding:10px}
+  .cmpsum-head{align-items:flex-start;flex-direction:column;gap:9px}
   .cmpcol-h{padding:8px 10px}
   .cmpcol-b{padding:10px}
 }
