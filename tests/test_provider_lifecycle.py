@@ -76,6 +76,15 @@ class ProviderLifecycleTests(unittest.TestCase):
         self.assertIn('cp "$src" "$RUNTIME_BIN/$name"', installer)
         self.assertIn('chmod 755 "$RUNTIME_BIN/$name"', installer)
 
+    def test_provider_jobs_never_probe_browser_keychain_implicitly(self):
+        source = (ROOT / "server.py").read_text(encoding="utf-8")
+
+        self.assertIn("def _prepare_safe_twitter_cli", source)
+        self.assertIn('AGENT_REACH_ALLOW_BROWSER_KEYCHAIN"] = "0"', source)
+        self.assertIn('TWITTER_AUTH_TOKEN', source)
+        self.assertIn('TWITTER_CT0', source)
+        self.assertIn('env = _safe_child_env({"CODEWHALE_PROVIDER": runtime_prov})', source)
+
 
 if __name__ == "__main__":
     unittest.main()

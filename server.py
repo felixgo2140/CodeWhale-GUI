@@ -697,6 +697,52 @@ def _find_codewhale():   # Apple Silicon=/opt/homebrew, Intel=/usr/local, 直装
 CODEWHALE = _find_codewhale()
 _RUNTIME_BIN_DIR = os.path.expanduser("~/.codewhale-gui/bin")
 
+def _discover_twitter_cli():
+    """Find the real twitter-cli without resolving through our safety wrapper."""
+    explicit = os.environ.get("CODEWHALE_TWITTER_BIN", "").strip()
+    wrapper = os.path.join(_RUNTIME_BIN_DIR, "twitter")
+    search_path = ":".join(
+        part for part in os.environ.get("PATH", "").split(":")
+        if part and os.path.realpath(os.path.expanduser(part)) != os.path.realpath(_RUNTIME_BIN_DIR)
+    )
+    candidates = [explicit, shutil.which("twitter", path=search_path)]
+    for path in candidates:
+        if not path:
+            continue
+        path = os.path.realpath(os.path.expanduser(path))
+        if path != os.path.realpath(wrapper) and os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return ""
+
+def _prepare_safe_twitter_cli():
+    """Prevent unattended provider jobs from falling back to browser Keychain cookies."""
+    target = _discover_twitter_cli()
+    if not target:
+        return ""
+    os.makedirs(_RUNTIME_BIN_DIR, exist_ok=True)
+    wrapper = os.path.join(_RUNTIME_BIN_DIR, "twitter")
+    script = f"""#!/bin/sh
+if [ "${{AGENT_REACH_ALLOW_BROWSER_KEYCHAIN:-0}}" != "1" ] && {{ [ -z "${{TWITTER_AUTH_TOKEN:-}}" ] || [ -z "${{TWITTER_CT0:-}}" ]; }}; then
+  echo "twitter-cli browser credential discovery is disabled for CodeWhale automation; configure TWITTER_AUTH_TOKEN and TWITTER_CT0 explicitly" >&2
+  exit 78
+fi
+exec {shlex.quote(target)} "$@"
+"""
+    try:
+        current = ""
+        try:
+            with open(wrapper, "r", encoding="utf-8") as f:
+                current = f.read()
+        except (FileNotFoundError, UnicodeDecodeError):
+            pass
+        if current != script:
+            _atomic_write(wrapper, script)
+        os.chmod(wrapper, 0o755)
+        return wrapper
+    except OSError as exc:
+        print(f"[security] 无法创建 twitter-cli 安全代理: {exc}", flush=True)
+        return ""
+
 def _claude_version_key(path):
     match = re.search(r"/claude-code/([^/]+)/claude\.app/", path or "")
     if not match:
@@ -744,6 +790,7 @@ def _prepare_claude_cli():
         return target
 
 _CLAUDE_CLI = _prepare_claude_cli()
+_TWITTER_CLI = _prepare_safe_twitter_cli()
 _path_parts = [_RUNTIME_BIN_DIR, "/opt/homebrew/bin", "/usr/local/bin",
                os.path.expanduser("~/.local/bin"), "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
 if _CLAUDE_CLI and os.path.dirname(_CLAUDE_CLI) not in _path_parts:
@@ -756,9 +803,16 @@ def _proxy_env():
     if not p:
         return {}
     return {"HTTP_PROXY": p, "HTTPS_PROXY": p, "http_proxy": p, "https_proxy": p}
+def _safe_child_env(extra=None):
+    """Environment for unattended jobs; browser credential extraction is never implicit."""
+    env = {**_proxy_env(), **os.environ, "PATH": _PATH}
+    env["AGENT_REACH_ALLOW_BROWSER_KEYCHAIN"] = "0"
+    if extra:
+        env.update(extra)
+    return env
 def _run(cmd, timeout=120):
     try:
-        env = {**_proxy_env(), **os.environ, "PATH": _PATH}  # 已有 proxy 则不覆盖;launchd PATH 太精简需补 node/codewhale 路径
+        env = _safe_child_env()  # 已有 proxy 则不覆盖;launchd PATH 太精简需补 node/codewhale 路径
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
         return p.returncode, (p.stdout or "") + (p.stderr or "")
     except Exception as e:
@@ -5535,7 +5589,7 @@ def ensure_provider_server(prov):
                     port = _cmp_pick_port()
                     CMP_PORTS[prov] = port
                 runtime_prov = _cmp_runtime_provider(prov)
-                env = {**_proxy_env(), **os.environ, "PATH": _PATH, "CODEWHALE_PROVIDER": runtime_prov}
+                env = _safe_child_env({"CODEWHALE_PROVIDER": runtime_prov})
                 for _v in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"):
                     env.pop(_v, None)                                # claude-code 列会 spawn `claude -p`,带 CLAUDECODE 会被官方 CLI 拒绝嵌套;清掉(对其它 provider 无害)
                 if prov == "claude-code" and _CW_PATCHED_TUI:
