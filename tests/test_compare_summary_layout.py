@@ -45,8 +45,8 @@ class CompareSummaryLayoutTests(unittest.TestCase):
         self.assertIn('card._cwInputSel="#cmpInput"', self.js)
 
     def test_summary_is_responsive(self):
-        self.assertIn(".cmpsum-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))", self.css)
-        self.assertIn(".cmpsum-grid{grid-template-columns:1fr}", self.css)
+        self.assertIn(".cmpsum-grid{display:grid;grid-template-columns:minmax(0,1fr)", self.css)
+        self.assertNotIn("repeat(2,minmax(0,1fr))", self.css)
 
 
 if __name__ == "__main__":

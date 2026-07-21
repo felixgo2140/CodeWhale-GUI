@@ -482,7 +482,7 @@ input.cmpmodelinput:focus{border-color:var(--accent);box-shadow:var(--focus-ring
 }
 .cmpsum-label{margin-bottom:6px;color:var(--ink-3);font-size:11px;font-weight:650}
 .cmpsum-question .cmpsum-text,.cmpsum-card-question .cmpsum-text{color:var(--ink);font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
-.cmpsum-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
+.cmpsum-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:start}
 .cmpsum-card{
   display:block;
   margin:0;
@@ -586,7 +586,6 @@ input.cmpmodelinput:focus{border-color:var(--accent);box-shadow:var(--focus-ring
   #cmpLayout{margin-left:0}
   #cmpCols.lay-grid{grid-template-columns:1fr}
   #cmpCols.lay-stack .cmpcol{flex-basis:68vh;min-height:360px}
-  .cmpsum-grid{grid-template-columns:1fr}
   #cmpSummary{padding:10px}
   .cmpcol-h{padding:8px 10px}
   .cmpcol-b{padding:10px}
