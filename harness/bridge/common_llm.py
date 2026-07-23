@@ -4,10 +4,17 @@ import json
 import os
 import re
 import ssl
+import sys
 import time
 import tomllib
 import urllib.error
 import urllib.request
+
+BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BRIDGE_DIR not in sys.path:
+    sys.path.insert(0, BRIDGE_DIR)
+
+from tavily_pool import tavily_search_json
 
 try:
     import certifi
@@ -217,32 +224,16 @@ def chat(messages, model="", temperature=0.2, max_tokens=8000):
 
 
 def tavily_search(query, max_results=5):
-    key = os.environ.get("TAVILY_API_KEY") or read_env_file().get("TAVILY_API_KEY", "")
-    if looks_placeholder(key):
-        return [{"title": "Tavily 未配置", "url": "", "content": "缺 TAVILY_API_KEY,本轮只能做纯 LLM 研究。"}]
-    payload = json.dumps({
-        "api_key": key,
+    fallback = os.environ.get("TAVILY_API_KEY") or read_env_file().get("TAVILY_API_KEY", "")
+    payload = {
         "query": query,
         "search_depth": "advanced",
         "max_results": max_results,
         "include_answer": False,
         "include_raw_content": False,
-    }).encode()
-    req = urllib.request.Request(
-        "https://api.tavily.com/search",
-        data=payload,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
+    }
     try:
-        kwargs = {"timeout": 45}
-        if certifi:
-            kwargs["context"] = ssl.create_default_context(cafile=certifi.where())
-        with urllib.request.urlopen(req, **kwargs) as r:
-            data = json.loads(r.read().decode("utf-8", "replace"))
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "replace")[:300]
-        return [{"title": "Tavily 搜索失败", "url": "", "content": f"HTTP {e.code}: {body}"}]
+        data = tavily_search_json(payload, fallback=fallback)
     except Exception as e:
         return [{"title": "Tavily 搜索失败", "url": "", "content": redact(str(e))[:300]}]
     out = []

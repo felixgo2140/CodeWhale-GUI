@@ -31,6 +31,7 @@ function boot(){
   hydrateIcons();
   initPanelDocumentHandlers();
   initCompareNetenv();
+  initStopShortcut();
 
   $("#newbtn").onclick=newThread;
   $("#guirestart").onclick=restartGui;
@@ -146,6 +147,29 @@ function boot(){
   }
 
   initCompareDom();
+}
+
+function stopShortcutButton(){
+  const buttons=[$("#cmpStopAllBtn"),$("#interruptbtn")];
+  return buttons.find(button=>{
+    if(!button || button.hidden || button.disabled) return false;
+    const style=getComputedStyle(button);
+    return style.display!=="none" && style.visibility!=="hidden";
+  })||null;
+}
+
+function onStopShortcut(event){
+  if(event.key!=="Escape" || event.repeat || event.isComposing) return;
+  const button=stopShortcutButton();
+  if(!button) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  button.click();
+}
+
+function initStopShortcut(){
+  window.removeEventListener("keydown",onStopShortcut,true);
+  window.addEventListener("keydown",onStopShortcut,true);
 }
 
 function initCompareDom(){

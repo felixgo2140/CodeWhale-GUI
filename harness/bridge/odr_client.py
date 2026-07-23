@@ -17,6 +17,12 @@ from urllib.parse import urlparse
 
 import requests
 
+BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BRIDGE_DIR not in sys.path:
+    sys.path.insert(0, BRIDGE_DIR)
+
+from tavily_pool import select_tavily_key
+
 BASE = os.environ.get("ODR_BASE_URL", "http://127.0.0.1:2024")
 OUT = os.path.expanduser("~/harness-output/odr")
 ODR_DIR = os.path.expanduser("~/agent-harnesses/open_deep_research")
@@ -121,7 +127,9 @@ def _openai_spec(kind, vals=None):
 def _model_env(model):
     vals = _read_env_file(HARNESS_ENV)
     env = {
-        "TAVILY_API_KEY": vals.get("TAVILY_API_KEY", ""),
+        "TAVILY_API_KEY": select_tavily_key(
+            vals.get("TAVILY_API_KEY", "")
+        ),
         "DEEPSEEK_API_KEY": vals.get("DEEPSEEK_API_KEY", ""),
         "GET_API_KEYS_FROM_CONFIG": "false",
         "LANGSMITH_TRACING": "false",
@@ -142,7 +150,7 @@ def _model_env(model):
                 "OPENAI_API_BASE": "https://api.deepseek.com/v1",
             })
     if not env.get("TAVILY_API_KEY"):
-        raise RuntimeError("~/agent-harnesses/harness.env 缺 TAVILY_API_KEY")
+        raise RuntimeError("Tavily 凭据池为空或所有槽位暂时不可用")
     return env
 
 

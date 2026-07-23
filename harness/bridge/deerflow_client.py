@@ -46,6 +46,12 @@ from urllib.parse import urljoin
 
 import requests
 
+BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BRIDGE_DIR not in sys.path:
+    sys.path.insert(0, BRIDGE_DIR)
+
+from tavily_pool import preferred_tavily_key
+
 # ── 常量 ──────────────────────────────────────────────
 BASE_URL = os.environ.get("DEERFLOW_BASE_URL", "http://127.0.0.1:8002")
 OUTPUT_DIR = Path(os.environ.get("DEERFLOW_OUTPUT_DIR", os.path.expanduser("~/deerflow-output/")))
@@ -207,6 +213,43 @@ def _sync_glm_config() -> bool:
     return _update_model_block("glm", api_key=key)
 
 
+def _sync_tavily_config() -> bool:
+    """Keep DeerFlow's single-key Tavily tool on a healthy pool slot."""
+    key = preferred_tavily_key()
+    cfg = GATEWAY_DIR / "config.yaml"
+    if not key or not cfg.exists():
+        return False
+    lines = cfg.read_text().splitlines()
+    changed = False
+    for index, line in enumerate(lines):
+        if line.strip() != "name: web_search":
+            continue
+        start = index
+        while start > 0 and not lines[start].startswith("- group:"):
+            start -= 1
+        end = index + 1
+        while end < len(lines) and not lines[end].startswith("- group:"):
+            end += 1
+        block = lines[start:end]
+        if not any("deerflow.community.tavily" in item for item in block):
+            continue
+        for current in range(start, end):
+            if lines[current].strip().startswith("api_key:"):
+                prefix = lines[current][
+                    : len(lines[current]) - len(lines[current].lstrip())
+                ]
+                replacement = f"{prefix}api_key: {key}"
+                if lines[current] != replacement:
+                    lines[current] = replacement
+                    changed = True
+                break
+        break
+    if changed:
+        cfg.write_text("\n".join(lines) + "\n")
+        os.chmod(cfg, 0o600)
+    return changed
+
+
 def _stop_gateway():
     try:
         r = subprocess.run(["lsof", "-tiTCP:%s" % _port_from_url(), "-sTCP:LISTEN"],
@@ -225,6 +268,7 @@ def start_gateway():
     """启动 Gateway（如未运行）"""
     config_changed = False
     for sync in (
+        _sync_tavily_config,
         _sync_hunyuan_config,
         _sync_kimi_config,
         _sync_deepseek_config,

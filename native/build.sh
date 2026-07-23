@@ -38,7 +38,7 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
-  <key>NSMicrophoneUsageDescription</key><string>按住 Fn 或点击麦克风按钮时,CodeWhale 使用麦克风将语音转成输入文字。</string>
+  <key>NSMicrophoneUsageDescription</key><string>按下 Command-D 或点击麦克风按钮时,CodeWhale 使用麦克风将语音转成输入文字。</string>
   <key>NSSpeechRecognitionUsageDescription</key><string>CodeWhale 使用系统语音识别将口述内容整理为聊天输入。</string>
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict></plist>

@@ -133,6 +133,15 @@ function latestEndedTurnItems(rec, preferredTurnId, completedOnly=false){
   const items=ids.length ? ids.map(id=>byId.get(id)).filter(Boolean) : all;
   return {turn, items, status:st};
 }
+function missingVisibleFinalReply(rec, preferredTurnId){
+  const got=latestEndedTurnItems(rec,preferredTurnId,false);
+  if(!got) return false;
+  const final=[...got.items].reverse().find(meaningfulAgentText);
+  if(!final||!final.id) return false;
+  const el=[...document.querySelectorAll("#mwrap [data-id]")].find(node=>node.dataset.id===String(final.id));
+  const content=el&&el.querySelector(".content");
+  return !content || !content.textContent.trim();
+}
 function maybeUnexecutedWorkHint(rec, preferredTurnId){
   const got=latestEndedTurnItems(rec, preferredTurnId, true);
   if(!got || !got.items.length) return false;
@@ -233,6 +242,10 @@ async function maybeUnexecutedWorkHintForActive(turnId){
     const rec=await fetchThreadWindow(id);
     if(state.activeId!==id || state.running) return;
     threadCachePut(id, rec);
+    if(missingVisibleFinalReply(rec,turnId)){
+      await renderThreadSnapshot(rec,true);
+      if(state.activeId!==id || state.running) return;
+    }
     settleVisibleFileCards();
     await renderTurnArtifacts(turnId);
     settleVisibleFileCards();
@@ -492,14 +505,16 @@ async function syncActiveTurn(){
     const info=turnInfoFromSnapshot(rec, summary);
     if(info.turnId) state.turnId=info.turnId;
     if(info.done){
+      const missingFinal=missingVisibleFinalReply(rec,info.turnId);
       if(isFinishedTurn(info.turnId)){   // 该轮已被(快照播种)标记完成,但状态卡可能还开着 → 补关卡再退出
+        if(missingFinal) await renderThreadSnapshot(rec,true);
         if(state.running || state.runUI){ runStatusFinish(normTurnStatus(info.status)==="failed"?"已结束(失败)":"已完成","done"); procGroupFinish(); state._procGroup=null; setRunning(false); processQueue(); }
         return;
       }
       markTurnFinished(info.turnId);
       if(isStoppingTurn(info.turnId)){ state.stopTurnId=null; state.stopRequestedAt=0; }
       runStatusFinish(normTurnStatus(info.status)==="completed"?"已完成":(normTurnStatus(info.status)==="interrupted"?"已停止":"已结束"), normTurnStatus(info.status)==="failed"||normTurnStatus(info.status)==="error"?"err":"done");
-      if((rec.latest_seq||0)>(state.latestSeq||0)) renderThreadSnapshot(rec,true);
+      if((rec.latest_seq||0)>(state.latestSeq||0) || missingFinal) await renderThreadSnapshot(rec,true);
       setRunning(false); refreshActiveMeta(); processQueue();
     }else if(info.running){
       const freshStop=isStoppingTurn(info.turnId) && Date.now()-state.stopRequestedAt<15000;

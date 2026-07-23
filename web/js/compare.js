@@ -875,7 +875,7 @@ function renderCmpCols(){   // diff:保留已有栏内容,只增删变化的
       `<div class="cmprunbar" id="cmprun-${p.id}" hidden><span class="pulse"></span><span class="txt">启动中</span><button class="cmpstopbar" title="停止这一栏当前回答">停止</button></div>`+
       `<div class="cmpcol-b" id="cmpb-${p.id}"></div>`+
       `<div class="cmpcatt" id="cmpcatt-${p.id}" hidden></div>`+
-      `<div class="cmpcol-f"><button class="cmpcolattach" id="cmpcattbtn-${p.id}" title="给 ${nm} 加附件（只随这一栏的追问发出）">📎</button><button class="cmpcolvoice voicebtn" id="cmpvoice-${p.id}" type="button" title="语音追问 ${nm}（点击开始,再次点击结束）">${icon("mic")}</button><input type="file" class="cmpcolfile" id="cmpcfile-${p.id}" multiple hidden><textarea class="cmpcolin" id="cmpin-${p.id}" rows="1" wrap="soft" placeholder="只追问 ${nm}…（Enter 发送）"></textarea><button class="cmpcolsend" id="cmpcsend-${p.id}" title="只发给 ${nm}（单独继续这个对话）">→</button></div>`;
+      `<div class="cmpcol-f"><button class="cmpcolattach" id="cmpcattbtn-${p.id}" title="给 ${nm} 加附件（只随这一栏的追问发出）">📎</button><button class="cmpcolvoice voicebtn" id="cmpvoice-${p.id}" type="button" title="语音追问 ${nm}（⌘D 或点击开始/结束）">${icon("mic")}</button><input type="file" class="cmpcolfile" id="cmpcfile-${p.id}" multiple hidden><textarea class="cmpcolin" id="cmpin-${p.id}" rows="1" wrap="soft" placeholder="只追问 ${nm}…（Enter 发送）"></textarea><button class="cmpcolsend" id="cmpcsend-${p.id}" title="只发给 ${nm}（单独继续这个对话）">→</button></div>`;
 	    box.appendChild(d);
 	    cmpEnsureView(p.id);
     const sel=d.querySelector(".cmpmodelsel"); if(sel){ sel.addEventListener("click",e=>e.stopPropagation()); sel.addEventListener("change",e=>{ e.stopPropagation(); cmpSetModel(p.id, e.target.value); }); }

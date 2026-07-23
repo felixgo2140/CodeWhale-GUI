@@ -28,14 +28,14 @@ No Chrome dependency. Universal binary for both Intel and Apple Silicon (~82 KB)
 
 ## 📦 Install (macOS 12+)
 
-**Prerequisites**: Node.js, python3 (usually preinstalled on macOS). **No Chrome or any browser needed.**
+**Prerequisites**: Node.js LTS and Python 3 (recent macOS versions may not include Python; follow the installer's official-download guidance if it is missing). **No Chrome or any browser needed.**
 
 1. Download `codewhale-installer.tar.gz` from [Releases](../../releases) and unpack it;
 2. Double-click `install.command` (first run: if Gatekeeper blocks it, right-click → "Open" → "Open" again, just once);
-3. **One-click install & auto-launch** — no API key typed into the terminal at any point;
+3. **One-click install & auto-launch** — the installer pins a compatible CodeWhale CLI in the current user's home directory, never uses `sudo`, and never asks for an API key;
 4. Configure providers in **Settings → Models**. ChatGPT may reuse Codex OAuth; other providers accept their API key only when needed.
 
-Later open from Launchpad / Spotlight by searching "CodeWhale"; to switch model / key, use "🧠 Model" at the bottom-left of the app anytime.
+Reinstalling or upgrading preserves model configuration, MCP servers, plugins, and login state. Later open from Launchpad / Spotlight by searching "CodeWhale"; to switch model / key, use "🧠 Model" at the bottom-left of the app anytime.
 
 ---
 
@@ -50,7 +50,7 @@ Later open from Launchpad / Spotlight by searching "CodeWhale"; to switch model 
 ## 🚀 Publishing an update (maintainer)
 
 ```bash
-CODEWHALE_SIGNING_KEY=/path/to/signing-key.pem ./publish-release.sh 2.7.0
+CODEWHALE_SIGNING_KEY=/path/to/signing-key.pem ./publish-release.sh 2.8.0
 # Builds, signs, checksums, and publishes the GUI, harness, native app, and full installer assets.
 ```
 

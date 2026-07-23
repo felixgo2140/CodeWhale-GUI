@@ -12,6 +12,12 @@ import time
 import tomllib
 import uuid
 
+BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BRIDGE_DIR not in sys.path:
+    sys.path.insert(0, BRIDGE_DIR)
+
+from tavily_pool import select_tavily_key
+
 VENV_PY = os.path.expanduser("~/agent-harnesses/storm-venv/bin/python")
 OUT = os.path.expanduser("~/harness-output/storm")
 JOBS = os.path.join(OUT, "jobs")
@@ -110,7 +116,6 @@ def _openai_spec(kind):
 
 _K = _keys()
 DEEPSEEK_KEY = _K.get("DEEPSEEK_API_KEY", "")
-TAVILY_KEY = _K.get("TAVILY_API_KEY", "")
 
 
 def cmd_submit(prompt, model=""):
@@ -130,8 +135,9 @@ def cmd_submit(prompt, model=""):
 def cmd_run(jid):
     job = json.load(open(f"{JOBS}/{jid}.json"))
     try:
-        if not TAVILY_KEY:
-            raise RuntimeError("~/agent-harnesses/harness.env 缺 TAVILY_API_KEY")
+        tavily_key = select_tavily_key(_K.get("TAVILY_API_KEY", ""))
+        if not tavily_key:
+            raise RuntimeError("Tavily 凭据池为空或所有槽位暂时不可用")
         from knowledge_storm import STORMWikiRunnerArguments, STORMWikiRunner, STORMWikiLMConfigs
         import knowledge_storm.lm as storm_lm
         from knowledge_storm.lm import LitellmModel
@@ -273,7 +279,7 @@ def cmd_run(jid):
         lm.set_outline_gen_lm(smart)
         lm.set_article_gen_lm(smart)
         lm.set_article_polish_lm(smart)
-        rm = TavilySearchRM(tavily_search_api_key=TAVILY_KEY, k=5, include_raw_content=True)
+        rm = TavilySearchRM(tavily_search_api_key=tavily_key, k=5, include_raw_content=True)
         args = STORMWikiRunnerArguments(output_dir=os.path.join(OUT, "runs", jid),
                                         max_conv_turn=3, max_perspective=3, search_top_k=5, max_thread_num=3)
         runner = STORMWikiRunner(args, lm, rm)

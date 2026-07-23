@@ -28,14 +28,14 @@
 
 ## 📦 安装(macOS 12+)
 
-**先决条件**:Node.js、python3(Mac 一般自带 python)。**不需要 Chrome 或任何浏览器。**
+**先决条件**:Node.js LTS、Python 3(macOS 可能没有预装;没有时按安装器提示从官网安装)。**不需要 Chrome 或任何浏览器。**
 
 1. 从 [Releases](../../releases) 下载 `codewhale-installer.tar.gz`,解压;
 2. 双击 `install.command`(首次若提示「身份不明的开发者」→ 右键点它 → 「打开」→ 再「打开」,仅此一次);
-3. **一键装好并自动打开** —— 全程不需要在终端输入任何 API key;
+3. **一键装好并自动打开** —— 安装器固定安装兼容的 CodeWhale CLI 到当前用户目录,不使用 `sudo`,全程不要求输入 API key;
 4. 首次打开在「设置 → 大模型」配置需要的 provider;ChatGPT 可使用 Codex OAuth,其他 provider 按需填写 API key。
 
-以后从启动台 / Spotlight 搜 "CodeWhale" 打开;想换模型 / 换 key,app 左下角「🧠 模型」随时切。
+重装或升级会保留模型配置、MCP、插件和登录状态。以后从启动台 / Spotlight 搜 "CodeWhale" 打开;想换模型 / 换 key,app 左下角「🧠 模型」随时切。
 
 ---
 
@@ -50,7 +50,7 @@
 ## 🚀 发布更新(维护者)
 
 ```bash
-CODEWHALE_SIGNING_KEY=/path/to/signing-key.pem ./publish-release.sh 2.7.0
+CODEWHALE_SIGNING_KEY=/path/to/signing-key.pem ./publish-release.sh 2.8.0
 # 一次生成 GUI、harness、原生 App、完整安装包、签名清单与 SHA256SUMS,并发布 GitHub Release
 ```
 

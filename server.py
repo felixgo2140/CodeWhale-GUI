@@ -7402,7 +7402,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json(_switch_single_thread_provider(tid, prov, model or None))
             except Exception as e:
                 return self._json({"error": str(e)[:200]}, 502)
-        if p == "/api/voice/refine":   # 原生 Fn 语音转写 → 精练、连贯、可执行 prompt;只填输入框,不自动发送
+        if p == "/api/voice/refine":   # ⌘D/麦克风语音转写 → 精练、连贯、可执行 prompt;只填输入框,不自动发送
             if not self._authed():
                 return self._deny()
             try:
@@ -8086,19 +8086,21 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 if __name__ == "__main__":
     _ensure_default_output_config()   # 新线程/插件/harness 默认中文输出;含 api_key 的主配置用 0600 tmp 原子写
+    release_verify = os.environ.get("CODEWHALE_RELEASE_VERIFY") == "1"
     # GUI 本身重启不应杀 provider 后端:它们可能仍承载正在运行的 turn。接管健康实例,
     # 只有更新 runtime、显式重置或 provider 配置变化时才走 _kill_cmp_backends/_cmp_reset。
-    try:
-        _adopt_cmp_backends()
-    except Exception as exc:
-        print(f"[cmp] warning: 接管现有 provider 后端失败: {exc}", flush=True)
-    # 后台检查补丁二进制 + 原生 App:缺则下载,SHA 变了则刷新(OCR/二进制/原生壳 升级经此自动传播);不阻塞启动
-    threading.Thread(target=lambda: _ensure_patched_binaries(block=False, refresh=True), daemon=True).start()
-    threading.Thread(target=_refresh_native_app, daemon=True).start()
-    threading.Thread(target=_refresh_research_harness, daemon=True).start()   # harness 安装器刷新 + 有密钥即自动装引擎
-    threading.Thread(target=_ensure_vision_ocr_helper, daemon=True, name="vision-ocr-warmup").start()
-    threading.Thread(target=_fetch_threads_now, daemon=True).start()   # 启动即后台预热线程列表缓存(落盘)→ 首个请求秒命中,不阻塞启动
-    threading.Thread(target=_watch_turn_notifications, daemon=True, name="turn-notifications").start()
-    _seed_cmp_from_tprov()   # 一次性回溯:把历史对比对话登记进侧栏分组
+    if not release_verify:
+        try:
+            _adopt_cmp_backends()
+        except Exception as exc:
+            print(f"[cmp] warning: 接管现有 provider 后端失败: {exc}", flush=True)
+        # 后台检查补丁二进制 + 原生 App:缺则下载,SHA 变了则刷新(OCR/二进制/原生壳 升级经此自动传播);不阻塞启动
+        threading.Thread(target=lambda: _ensure_patched_binaries(block=False, refresh=True), daemon=True).start()
+        threading.Thread(target=_refresh_native_app, daemon=True).start()
+        threading.Thread(target=_refresh_research_harness, daemon=True).start()   # harness 安装器刷新 + 有密钥即自动装引擎
+        threading.Thread(target=_ensure_vision_ocr_helper, daemon=True, name="vision-ocr-warmup").start()
+        threading.Thread(target=_fetch_threads_now, daemon=True).start()   # 启动即后台预热线程列表缓存(落盘)→ 首个请求秒命中,不阻塞启动
+        threading.Thread(target=_watch_turn_notifications, daemon=True, name="turn-notifications").start()
+        _seed_cmp_from_tprov()   # 一次性回溯:把历史对比对话登记进侧栏分组
     print(f"CodeWhale GUI server on {BIND}:{PORT}  (token {'ENABLED' if TOKEN else 'off'})")
     Server((BIND, PORT), Handler).serve_forever()

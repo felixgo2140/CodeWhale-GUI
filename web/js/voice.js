@@ -8,7 +8,7 @@ let voiceRecoveryTimer=null;
 let voiceControlState="idle";
 let voiceLastTranscript="";
 let voiceRefining=false;
-const VOICE_TITLE="按住 Fn 或点击麦克风语音输入,结束后自动整理到输入框";
+const VOICE_TITLE="按 ⌘D 或点击麦克风开始/结束语音输入,结束后自动整理到输入框";
 
 function isVisible(el){
   return !!el && !el.hidden && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
@@ -58,8 +58,8 @@ function syncVoiceButtons(kind="idle",target=voiceTarget){
     button.disabled=false;
     button.setAttribute("aria-pressed","false");
     button.title=button.classList.contains("cmpcolvoice")
-      ? "语音追问（点击开始,再次点击结束）"
-      : "语音输入（点击开始,再次点击结束）";
+      ? "语音追问（⌘D 或点击开始/结束）"
+      : "语音输入（⌘D 或点击开始/结束）";
   });
   const button=voiceButtonFor(target);
   if(!button || kind==="idle") return;
@@ -137,12 +137,7 @@ function targetForVoiceButton(button){
   return button?.id==="cmpVoiceBtn" ? $("#cmpInput") : $("#input");
 }
 
-function onVoiceButtonClick(event){
-  const button=event.target.closest?.(".voicebtn");
-  if(!button) return;
-  event.preventDefault();
-  event.stopPropagation();
-  const target=targetForVoiceButton(button)||defaultVoiceTarget();
+function toggleVoiceInput(target=defaultVoiceTarget()){
   if(voiceControlState==="recording" || voiceControlState==="starting"){
     if(postNativeVoice("stop")){
       setVoiceControlState("processing",voiceTarget||target);
@@ -166,6 +161,23 @@ function onVoiceButtonClick(event){
   setVoiceControlState("starting",voiceTarget);
   setVoiceStatus("processing","正在启动麦克风","",voiceTarget);
   armVoiceRecovery(12000,voiceTarget);
+}
+
+function onVoiceButtonClick(event){
+  const button=event.target.closest?.(".voicebtn");
+  if(!button) return;
+  event.preventDefault();
+  event.stopPropagation();
+  toggleVoiceInput(targetForVoiceButton(button)||defaultVoiceTarget());
+}
+
+function onVoiceShortcut(event){
+  if(event.defaultPrevented || event.repeat || event.isComposing) return;
+  if(!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+  if(String(event.key||"").toLowerCase()!=="d") return;
+  event.preventDefault();
+  event.stopPropagation();
+  toggleVoiceInput(defaultVoiceTarget());
 }
 
 function setVoiceStatus(kind,label,preview="",target=voiceTarget){
@@ -337,6 +349,8 @@ function initVoiceInput(){
   document.addEventListener("mouseover",markVoiceTarget);
   document.removeEventListener("click",onVoiceButtonClick);
   document.addEventListener("click",onVoiceButtonClick);
+  document.removeEventListener("keydown",onVoiceShortcut,true);
+  document.addEventListener("keydown",onVoiceShortcut,true);
   const single=$("#input"), compare=$("#cmpInput");
   if(single) single.title=VOICE_TITLE;
   if(compare) compare.title=VOICE_TITLE;
@@ -344,4 +358,4 @@ function initVoiceInput(){
   syncVoiceButtons(voiceControlState,voiceTarget);
 }
 
-export {initVoiceInput,onNativeVoice,refineVoiceTranscript,onVoiceButtonClick,applyVoicePrompt,refinedVoiceValue,resolveVoiceTarget,forceFinishVoiceInput};
+export {initVoiceInput,onNativeVoice,refineVoiceTranscript,onVoiceButtonClick,onVoiceShortcut,toggleVoiceInput,applyVoicePrompt,refinedVoiceValue,resolveVoiceTarget,forceFinishVoiceInput};

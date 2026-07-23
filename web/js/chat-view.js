@@ -682,6 +682,9 @@ function createChatView(opts={}){
 
   function isReplayedOldItem(m,p){
     const tid=eventTurnId(m,p)||m.turn_id;
+    const item=p&&p.item;
+    const recoverableFinal=item&&item.kind==="agent_message"&&String(item.detail||item.summary||"").trim();
+    if(recoverableFinal) return false;
     return !!(tid && isFinishedTurn(tid) && m.item_id && !bag.items.has(m.item_id));
   }
 
@@ -935,7 +938,13 @@ function createChatView(opts={}){
 
   function completeItem(id, item, failed){
     initBag();
-    const it=bag.items.get(id); if(!it) { if(item) startItem(id,item); return; }
+    let it=bag.items.get(id);
+    if(!it){
+      if(!item) return;
+      startItem(id,item);
+      it=bag.items.get(id);
+      if(!it) return;
+    }
     cancelPlainStreamUpdate(it);
     const snap = item?.detail!=null && item.detail!=="" ? item.detail : "";
     const shouldPreserveStream = it.kind==="agent_message" || it.kind==="agent_reasoning" || !["tool_call","command_execution","file_change","user_message","status","context_compaction","error"].includes(it.kind);

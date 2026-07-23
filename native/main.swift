@@ -49,9 +49,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     var window: NSWindow!
     var web: WKWebView!
     var extraWindows: [NSWindow] = []   // window.open() 开的独立窗口(多模型对比单独开窗),保留引用避免被释放
-    var fnMonitor: Any?
-    var fnPressed = false
-    var voiceStartWork: DispatchWorkItem?
     var voiceFinishWork: DispatchWorkItem?
     var voiceTargetWeb: WKWebView?
     let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
@@ -87,7 +84,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         window.minSize = NSSize(width: 720, height: 480)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        installVoiceShortcut()
         load()
     }
     func load() {
@@ -146,10 +142,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         let redo = editMenu.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "z")
         redo.keyEquivalentModifierMask = [.command, .shift]
         editMenu.addItem(NSMenuItem.separator())
-        editMenu.addItem(withTitle: "剪切", action: Selector(("cut:")), keyEquivalent: "x")
-        editMenu.addItem(withTitle: "拷贝", action: Selector(("copy:")), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "粘贴", action: Selector(("paste:")), keyEquivalent: "v")
-        editMenu.addItem(withTitle: "全选", action: Selector(("selectAll:")), keyEquivalent: "a")
+        editMenu.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         // 显示菜单:重新载入(⌘R)——拿到界面更新而不必退出重开
         let viewItem = NSMenuItem(); mainMenu.addItem(viewItem)
         let viewMenu = NSMenu(title: "显示"); viewItem.submenu = viewMenu
@@ -159,17 +155,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         NSApp.mainMenu = mainMenu
     }
     @objc func reloadPage(_ sender: Any?) { load() }   // 重新加载页面(load() 会带 token 重新拉 :3000)
-
-    // ── 按住 Fn 语音输入 ──
-    // WKWebView 通常拿不到 Fn/Globe 修饰键,所以由原生壳监听 flagsChanged。
-    // 仅 App 在前台时生效;按住 180ms 后开始,松开后结束,避免轻触误触。
-    func installVoiceShortcut() {
-        guard fnMonitor == nil else { return }
-        fnMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged]) { [weak self] event in
-            self?.handleModifierFlags(event)
-            return event
-        }
-    }
 
     func activeWebView() -> WKWebView? {
         if let w = NSApp.keyWindow?.contentView as? WKWebView { return w }
@@ -195,28 +180,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         }
     }
 
-    func voiceIntentActive() -> Bool { fnPressed || voiceButtonActive }
-
-    func handleModifierFlags(_ event: NSEvent) {
-        let down = event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.function)
-        if down == fnPressed { return }
-        fnPressed = down
-        if down {
-            guard NSApp.isActive else { return }
-            voiceTargetWeb = activeWebView()
-            voiceStartWork?.cancel()
-            let work = DispatchWorkItem { [weak self] in
-                guard let self = self, self.fnPressed, NSApp.isActive else { return }
-                self.authorizeAndStartVoice()
-            }
-            voiceStartWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
-        } else {
-            voiceStartWork?.cancel()
-            voiceStartWork = nil
-            if voiceRecording { stopVoiceCapture() }
-        }
-    }
+    func voiceIntentActive() -> Bool { voiceButtonActive }
 
     func authorizeAndStartVoice() {
         requestSpeechAuthorization { [weak self] speechStatus in
@@ -244,7 +208,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
                     return
                 }
                 guard self.voiceIntentActive(), NSApp.isActive else {
-                    self.emitVoice(["state": "ready", "message": "权限已就绪,请再次按住 Fn 或点击麦克风"])
+                    self.emitVoice(["state": "ready", "message": "权限已就绪,请再次按 ⌘D 或点击麦克风"])
                     return
                 }
                 self.startVoiceCapture()
@@ -475,8 +439,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         return true
     }
     func applicationDidResignActive(_ notification: Notification) {
-        voiceStartWork?.cancel()
-        fnPressed = false
         if voiceRecording || voiceStopping { cancelVoiceCapture(message: nil) }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ a: NSApplication) -> Bool { return false }

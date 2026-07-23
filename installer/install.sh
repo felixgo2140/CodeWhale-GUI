@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# CodeWhale GUI 一键安装。装:codewhale CLI + GUI 前端 + DeepSeek key + 开机自启 + Dock 图标。
+# CodeWhale GUI 一键安装。装:codewhale CLI + GUI 前端 + 开机自启 + Dock 图标。
 # 用法:解压后,双击 install.command,或终端里 bash install.sh
-set -e
+set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 UID_N="$(id -u)"
+INSTALL_TEST="${CODEWHALE_INSTALL_TEST:-0}"
+SKIP_NETWORK="${CODEWHALE_SKIP_NETWORK:-0}"
+REQUIRED_CLI_VERSION="${CODEWHALE_CLI_VERSION:-0.9.0}"
 echo "════════ CodeWhale GUI 安装 ════════"
-echo "用户: $USER    家目录: $HOME"
+echo "用户: ${USER:-$(id -un)}    家目录: $HOME"
 echo
 
 # ── 1. 前置检查 ──
@@ -18,18 +21,54 @@ if ! command -v node >/dev/null 2>&1; then
   echo "    · 或去 https://nodejs.org/ 下载 LTS 版,双击装好(一路点继续)。"
   miss=1
 fi
-command -v python3 >/dev/null 2>&1 || { echo "✗ 还没装 python3 → 终端运行  xcode-select --install  (弹窗点「安装」,几分钟)。"; miss=1; }
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "✗ 还没装 Python 3（新版 macOS 可能没有预装）。装法二选一:"
+  if command -v brew >/dev/null 2>&1; then
+    echo "    · 你已有 Homebrew → 终端运行:  brew install python"
+  fi
+  echo "    · 或去 https://www.python.org/downloads/macos/ 下载 Universal2 安装包。"
+  miss=1
+fi
 [ "$miss" = 1 ] && { echo; echo "把上面缺的装好,再双击 install.command 重跑一次就行。"; exit 1; }
 # CodeWhale 现在是原生 app(WKWebView),不需要 Chrome。联网工具的 playwright 会自带 Chromium。
 
-# ── 2. codewhale CLI ──
-if command -v codewhale >/dev/null 2>&1; then
-  echo "→ codewhale 已安装"
+# ── 2. codewhale CLI(固定兼容版本,装在用户目录,不需要 sudo)──
+PY="$(command -v python3)"
+NODE="$(command -v node)"
+NODEDIR="$(dirname "$NODE")"
+CLI_PREFIX="$HOME/.codewhale-gui/npm"
+CLI_LOCAL="$CLI_PREFIX/node_modules/.bin/codewhale"
+CW="${CODEWHALE_CLI:-}"
+
+cli_version() {
+  "$1" --version 2>/dev/null | sed -nE 's/^codewhale ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -1
+}
+
+if [ -n "$CW" ]; then
+  [ -x "$CW" ] || { echo "✗ CODEWHALE_CLI 不可执行:$CW"; exit 1; }
+elif command -v codewhale >/dev/null 2>&1 && [ "$(cli_version "$(command -v codewhale)")" = "$REQUIRED_CLI_VERSION" ]; then
+  CW="$(command -v codewhale)"
+  echo "→ 检测到兼容的 CodeWhale CLI v$REQUIRED_CLI_VERSION"
+elif [ -x "$CLI_LOCAL" ] && [ "$(cli_version "$CLI_LOCAL")" = "$REQUIRED_CLI_VERSION" ]; then
+  CW="$CLI_LOCAL"
+  echo "→ 检测到用户目录里的 CodeWhale CLI v$REQUIRED_CLI_VERSION"
 else
-  echo "→ 安装 codewhale CLI(npm,可能要一分钟)…"
-  npm install -g codewhale || { echo "✗ codewhale 没装上 —— 多半是权限问题。请在终端运行(会让你输开机密码):"; echo "      sudo npm install -g codewhale"; echo "  装好后,再双击 install.command 重跑一次。"; exit 1; }
+  [ "$SKIP_NETWORK" != "1" ] || {
+    echo "✗ 测试/离线安装未提供兼容的 CODEWHALE_CLI"
+    exit 1
+  }
+  echo "→ 安装 CodeWhale CLI v$REQUIRED_CLI_VERSION 到用户目录(不需要管理员密码)…"
+  mkdir -p "$CLI_PREFIX"
+  npm install --prefix "$CLI_PREFIX" "codewhale@$REQUIRED_CLI_VERSION" || {
+    echo "✗ CodeWhale CLI 下载失败。请确认网络可访问 registry.npmjs.org,然后重新双击 install.command。"
+    exit 1
+  }
+  CW="$CLI_LOCAL"
 fi
-CW="$(command -v codewhale)"; PY="$(command -v python3)"; NODEDIR="$(dirname "$(command -v node)")"
+[ "$(cli_version "$CW")" = "$REQUIRED_CLI_VERSION" ] || {
+  echo "✗ CodeWhale CLI 版本不兼容:需要 $REQUIRED_CLI_VERSION,当前 $("$CW" --version 2>/dev/null || echo 未知)"
+  exit 1
+}
 echo "  codewhale=$CW"
 
 # ── 3. 默认配置(免 key 一键安装;模型与 API key 在 app 里「🧠 模型」配置)──
@@ -55,6 +94,7 @@ echo "  ✓ key 仅存本机 ~/.codewhale/config.toml,不外传"
 # ── 4. GUI 文件 ──
 echo "→ 部署 GUI 到 ~/codewhale-gui…"
 mkdir -p "$HOME/codewhale-gui"
+rm -rf "$HOME/codewhale-gui/web"
 cp -R "$HERE/web" "$HOME/codewhale-gui/"
 cp "$HERE/server.py" "$HOME/codewhale-gui/server.py"
 cp "$HERE/VERSION" "$HOME/codewhale-gui/VERSION" 2>/dev/null || echo "0.0.0" > "$HOME/codewhale-gui/VERSION"   # 当前 GUI 版本(在线更新比对用)
@@ -64,8 +104,6 @@ if [ -d "$HERE/harness" ]; then
   chmod +x "$HOME/codewhale-gui/harness/install_harnesses.sh" 2>/dev/null || true
   echo "  + 已部署研究 harness 脚本(密钥仍只从 ~/agent-harnesses/harness.env 读取)"
 fi
-sed -i '' "s#/Users/test#$HOME#g" "$HOME/codewhale-gui/web/index.html"   # 把示例家目录换成本机
-
 # 完整安装包可携带 Claude 订阅桥接运行时。只安装与本机架构匹配的二进制,
 # 避免把 arm64 构建放到 Intel Mac 后造成 provider 反复启动失败。
 RUNTIME_BIN="$HOME/.codewhale-gui/bin"
@@ -89,16 +127,18 @@ done
 
 # ── 5. GUI token(本机生成,LAN 防护)──
 mkdir -p "$HOME/.codewhale-gui"
-"$PY" -c "import secrets;open('$HOME/.codewhale-gui/token','w').write(secrets.token_urlsafe(24))"
+[ -s "$HOME/.codewhale-gui/token" ] || "$PY" -c "import secrets;open('$HOME/.codewhale-gui/token','w').write(secrets.token_urlsafe(24))"
 chmod 600 "$HOME/.codewhale-gui/token"
 # 在线更新配置(默认关;发布者改 repo 为自己 GitHub 仓 + enabled:true 即开)。公钥已内嵌 server.py 验签。
 [ -f "$HOME/.codewhale-gui/update.json" ] || cp "$HERE/update.json" "$HOME/.codewhale-gui/update.json" 2>/dev/null || true
 # 更新验签需要 cryptography(失败也不阻断安装,只是自动更新会暂时禁用)
-"$PY" -m pip install --user cryptography >/dev/null 2>&1 || "$PY" -m pip install --break-system-packages cryptography >/dev/null 2>&1 || echo "  (cryptography 没装上:在线更新会暂时禁用,不影响其他功能)"
+if [ "$SKIP_NETWORK" != "1" ]; then
+  "$PY" -m pip install --user cryptography >/dev/null 2>&1 || "$PY" -m pip install --break-system-packages cryptography >/dev/null 2>&1 || echo "  (cryptography 没装上:在线更新会暂时禁用,不影响其他功能)"
+fi
 
 # ── 5.5 联网工具(MCP: fetch 读网页 + playwright 浏览器)──
 echo "→ 配置联网工具(MCP)… 这步会下载组件(含浏览器 ~150MB),可能几分钟,请耐心"
-if ! command -v uvx >/dev/null 2>&1; then
+if ! command -v uvx >/dev/null 2>&1 && [ "$SKIP_NETWORK" != "1" ]; then
   echo "  安装 uv(给 fetch 用)…"
   # 优先用有完整性保障的包管理器;curl|sh 只作最后兜底(供应链/中间人风险最高)
   if command -v brew >/dev/null 2>&1; then
@@ -128,19 +168,56 @@ command -v "$NPX" >/dev/null 2>&1 || NPX="$(command -v npx || echo npx)"
 exec "$NPX" -y @playwright/mcp@latest "$@"
 PWL
 chmod +x "$PWLAUNCH"
-cat > "$HOME/.codewhale/mcp.json" <<MCP
-{
-  "timeouts": { "connect_timeout": 60, "execute_timeout": 120, "read_timeout": 180 },
-  "servers": {
-    "fetch": { "command": "$UVX", "args": ["mcp-server-fetch"], "env": {}, "url": null, "connect_timeout": null, "execute_timeout": null, "read_timeout": null, "disabled": false, "enabled": true, "required": false, "enabled_tools": [], "disabled_tools": [] },
-    "playwright": { "command": "$PWLAUNCH", "args": [], "env": { "CW_NPX": "$NPX2" }, "url": null, "connect_timeout": null, "execute_timeout": null, "read_timeout": null, "disabled": false, "enabled": true, "required": false, "enabled_tools": [], "disabled_tools": [] }
-  }
-}
-MCP
+# 只补齐 CodeWhale 自带 MCP,绝不覆盖用户已经配置的 Twitter/Tavily/插件。
+"$PY" - "$HOME/.codewhale/mcp.json" "$UVX" "$PWLAUNCH" "$NPX2" <<'PY'
+import json
+import os
+import shutil
+import sys
+import time
+
+path, uvx, launcher, npx = sys.argv[1:]
+data = {}
+if os.path.exists(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        backup = f"{path}.invalid.{int(time.time())}"
+        shutil.copy2(path, backup)
+        print(f"  ⚠ 原 MCP 配置不是有效 JSON,已备份到 {backup}")
+if not isinstance(data, dict):
+    data = {}
+timeouts = data.setdefault("timeouts", {})
+for name, value in (("connect_timeout", 60), ("execute_timeout", 120), ("read_timeout", 180)):
+    timeouts.setdefault(name, value)
+servers = data.setdefault("servers", {})
+servers.setdefault("fetch", {
+    "command": uvx, "args": ["mcp-server-fetch"], "env": {}, "url": None,
+    "connect_timeout": None, "execute_timeout": None, "read_timeout": None,
+    "disabled": False, "enabled": True, "required": False,
+    "enabled_tools": [], "disabled_tools": [],
+})
+servers.setdefault("playwright", {
+    "command": launcher, "args": [], "env": {"CW_NPX": npx}, "url": None,
+    "connect_timeout": None, "execute_timeout": None, "read_timeout": None,
+    "disabled": False, "enabled": True, "required": False,
+    "enabled_tools": [], "disabled_tools": [],
+})
+os.makedirs(os.path.dirname(path), exist_ok=True)
+temp = f"{path}.tmp"
+with open(temp, "w", encoding="utf-8") as handle:
+    json.dump(data, handle, ensure_ascii=False, indent=2)
+    handle.write("\n")
+os.chmod(temp, 0o600)
+os.replace(temp, path)
+PY
 chmod 600 "$HOME/.codewhale/mcp.json"
-echo "  下载 fetch 组件…";  ( "$UVX" mcp-server-fetch </dev/null >/dev/null 2>&1 & ); sleep 10; pkill -f mcp-server-fetch 2>/dev/null || true
-echo "  下载 playwright…";   ( "$NPX2" -y @playwright/mcp@latest </dev/null >/dev/null 2>&1 & ); sleep 30; pkill -f "@playwright/mcp" 2>/dev/null || true
-echo "  下载 Chromium 浏览器(最久)…"; "$NPX2" -y playwright install chromium >/dev/null 2>&1 || echo "  ⚠ Chromium 没下完,首次用浏览器时会自动补"
+if [ "$SKIP_NETWORK" != "1" ]; then
+  echo "  下载 fetch 组件…"; "$UVX" mcp-server-fetch --help >/dev/null 2>&1 || echo "  ⚠ fetch 预热失败,首次使用时会重试"
+  echo "  下载 playwright…"; "$NPX2" -y @playwright/mcp@latest --help >/dev/null 2>&1 || echo "  ⚠ playwright 预热失败,首次使用时会重试"
+  echo "  下载 Chromium 浏览器(最久)…"; "$NPX2" -y playwright install chromium >/dev/null 2>&1 || echo "  ⚠ Chromium 没下完,首次用浏览器时会自动补"
+fi
 echo "  ✓ 联网工具就绪"
 
 # ── 6. 开机自启(launchd,路径参数化)──
@@ -177,12 +254,17 @@ cat > "$LA/com.codewhale.frontend.plist" <<PLIST
   <key>StandardErrorPath</key><string>$HOME/codewhale-gui/webserver.log</string>
 </dict></plist>
 PLIST
-launchctl bootout "gui/$UID_N/com.codewhale.appserver" 2>/dev/null || true
-launchctl bootout "gui/$UID_N/com.codewhale.frontend"  2>/dev/null || true
-rm -f "$HOME/codewhale-gui/app-server.log"
-: > "$HOME/codewhale-gui/app-server.err.log"
-launchctl load -w "$LA/com.codewhale.appserver.plist"
-launchctl load -w "$LA/com.codewhale.frontend.plist"
+if [ "$INSTALL_TEST" != "1" ]; then
+  launchctl bootout "gui/$UID_N/com.codewhale.appserver" 2>/dev/null || true
+  launchctl bootout "gui/$UID_N/com.codewhale.frontend"  2>/dev/null || true
+  rm -f "$HOME/codewhale-gui/app-server.log"
+  : > "$HOME/codewhale-gui/app-server.err.log"
+  launchctl bootstrap "gui/$UID_N" "$LA/com.codewhale.appserver.plist" 2>/dev/null || launchctl load -w "$LA/com.codewhale.appserver.plist"
+  launchctl bootstrap "gui/$UID_N" "$LA/com.codewhale.frontend.plist" 2>/dev/null || launchctl load -w "$LA/com.codewhale.frontend.plist"
+else
+  plutil -lint "$LA/com.codewhale.appserver.plist" "$LA/com.codewhale.frontend.plist" >/dev/null
+  echo "  ✓ 隔离安装测试:launchd 配置有效(未注册服务)"
+fi
 
 # ── 7. CodeWhale.app(原生 Swift / WKWebView,预编译通用二进制 arm64+Intel,零 Chrome 依赖)──
 echo "→ 安装原生 CodeWhale.app(无需 Chrome)…"
@@ -197,10 +279,24 @@ echo "  ✓ 原生 app 已装(WKWebView 窗口,arm64+Intel 通用,不依赖 Chro
 
 # ── 8. 等后端就绪 + 打开 ──
 echo "→ 启动后端…"
-for i in $(seq 1 40); do curl -fsS -m2 http://127.0.0.1:7878/health >/dev/null 2>&1 && break; sleep 0.5; done
+if [ "$INSTALL_TEST" != "1" ]; then
+  ready=0
+  for _ in $(seq 1 40); do
+    if curl -fsS -m2 http://127.0.0.1:7878/health >/dev/null 2>&1; then ready=1; break; fi
+    sleep 0.5
+  done
+  [ "$ready" = "1" ] || {
+    echo "✗ CodeWhale 后端未能启动。日志:$HOME/codewhale-gui/app-server.err.log"
+    exit 1
+  }
+fi
 echo
 echo "✅ 安装完成!正在打开 CodeWhale…"
 echo "   • 以后从 启动台/Spotlight 搜 “CodeWhale” 打开(白鲸图标),已设开机自启"
 echo "   • 若首次打开弹「身份不明的开发者」→ 右键点 CodeWhale → 「打开」→ 再点「打开」,只需这一次"
 echo "   • 想换模型:app 左下角「🧠 模型」随时切"
-open "$APP" 2>/dev/null || true
+if [ "$INSTALL_TEST" != "1" ]; then
+  open "$APP" 2>/dev/null || true
+else
+  echo "   • 隔离安装测试完成,未启动或注册任何后台服务"
+fi

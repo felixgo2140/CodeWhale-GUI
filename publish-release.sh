@@ -26,6 +26,7 @@ fi
 MANIFEST_NOTES="${CODEWHALE_MANIFEST_NOTES:-CodeWhale GUI v$VERSION 正式整合发布}"
 CODEWHALE_RELEASE_OUT="$OUT" "$HERE/make-release.sh" "$VERSION" "$MANIFEST_NOTES"
 "$HERE/package-installer.sh" "$OUT/codewhale-installer.tar.gz"
+"$HERE/verify-release.sh" "$OUT/codewhale-installer.tar.gz"
 
 (
   cd "$OUT"

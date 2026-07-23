@@ -1,13 +1,14 @@
 CodeWhale GUI —— 安装说明
 ==============================
 
-这是一个本地 AI 编程助手的桌面界面(后端用 DeepSeek V4)。
+这是一个本地多模型 AI 助手的原生 macOS 桌面界面。
 
   界面是一个原生 macOS 应用(WKWebView),不依赖 Chrome 或任何浏览器。
 
 【先决条件】(装之前确认有)
   1. Node.js          —— 没有就去 https://nodejs.org/ 下载安装(LTS 版即可)
-  2. python3          —— 一般 Mac 自带;若提示缺,运行:xcode-select --install
+  2. Python 3         —— 新版 macOS 可能没预装;没有时去 https://www.python.org/downloads/macos/
+                         下载 Universal2 安装包,双击安装
   (不需要 Chrome;界面是自带的原生 app,Intel 和 Apple 芯片都支持)
 
 【怎么装】
@@ -16,10 +17,9 @@ CodeWhale GUI —— 安装说明
      - 若弹“无法打开,因为来自身份不明的开发者”:
        右键点 install.command → 选「打开」→ 再点「打开」。
        (或终端里运行:xattr -dr com.apple.quarantine <本文件夹路径>)
-  3. 装到一半会让你「选模型服务商」(DeepSeek / GLM 智谱 / Kimi / OpenAI / 其他),
-     输数字回车;然后「粘贴对应的 API key」回车(粘贴时屏幕不显示,是正常的)。
-     —— 装完也能在 app 左下角「🧠 模型」随时换。
-  4. 之后自动装好其余部分(会下载 codewhale + 联网组件 + 浏览器,可能几分钟,
+  3. 安装器不会要求 API key,会先把完整程序装好。
+     打开后在 app 左下角「🧠 模型」选择服务商并填写自己的 API key/OAuth。
+  4. 安装器会自动装好其余部分(会下载 CodeWhale 0.9.0、联网组件和浏览器,可能几分钟,
      终端窗口别关),最后自动打开 CodeWhale。
      若首次打开弹「身份不明的开发者」→ 右键点 CodeWhale →「打开」→ 再点「打开」,只需一次。
 
@@ -29,7 +29,9 @@ CodeWhale GUI —— 安装说明
   • 已设开机自启,以后开机自动在后台运行。
 
 【说明】
-  • DeepSeek API key 在安装时手动输入(由发你安装包的人单独提供);用量计入他的账户。
+  • API key/OAuth 由用户在 app 内自行配置;安装包不含发布者或其他用户的密钥。
+  • CodeWhale CLI 安装在当前用户目录,无需 sudo 或管理员密码。
+  • 重装/升级会保留已有模型配置、MCP、插件和登录信息。
   • 全程在本机运行,数据不外传;后端只绑本机 127.0.0.1。
   • 已内置联网工具:可读网页、可自动操作浏览器(让 AI 帮你查资料、抓网页、填表)。
   • 想卸载:

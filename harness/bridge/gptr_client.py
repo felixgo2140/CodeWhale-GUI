@@ -13,6 +13,12 @@ import tomllib
 import uuid
 import re
 
+BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BRIDGE_DIR not in sys.path:
+    sys.path.insert(0, BRIDGE_DIR)
+
+from tavily_pool import select_tavily_key
+
 VENV_PY = os.path.expanduser("~/agent-harnesses/gptr-venv/bin/python")
 OUT = os.path.expanduser("~/harness-output/gptr")
 JOBS = os.path.join(OUT, "jobs")
@@ -198,8 +204,11 @@ def _load_env(model=""):
         os.environ[k] = v
     for k in shadowed:
         os.environ.pop(k, None)
+    os.environ["TAVILY_API_KEY"] = select_tavily_key(
+        os.environ.get("TAVILY_API_KEY") or vals.get("TAVILY_API_KEY", "")
+    )
     if not os.environ.get("TAVILY_API_KEY"):
-        raise RuntimeError("~/agent-harnesses/harness.env 缺 TAVILY_API_KEY")
+        raise RuntimeError("Tavily 凭据池为空或所有槽位暂时不可用")
     os.environ["LANGUAGE"] = "chinese"
     os.environ.setdefault("TOTAL_WORDS", "1800")
     os.environ.setdefault("MAX_ITERATIONS", "3")
