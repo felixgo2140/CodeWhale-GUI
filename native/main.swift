@@ -61,6 +61,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
     var voiceDelivered = false
     var voiceButtonActive = false
     var voiceCaptureGeneration = 0
+    var voiceRestartAttempts = 0
 
     func applicationDidFinishLaunching(_ note: Notification) {
         buildMenu()      // 没主菜单 → Cmd+C/V/X/A 无处分发,文本框复制粘贴失灵
@@ -243,7 +244,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         }
     }
 
-    func startVoiceCapture() {
+    func startVoiceCapture(isRecovery: Bool = false) {
         guard !voiceRecording else { return }
         guard let recognizer = speechRecognizer, recognizer.isAvailable else {
             voiceButtonActive = false
@@ -256,7 +257,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         voiceFinishWork?.cancel()
         voiceCaptureGeneration += 1
         let generation = voiceCaptureGeneration
-        voiceTranscript = ""
+        if !isRecovery {
+            voiceTranscript = ""
+            voiceRestartAttempts = 0
+        }
         voiceStopping = false
         voiceDelivered = false
 
@@ -299,10 +303,46 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
                     }
                     if result.isFinal { self.finishVoiceTranscript() }
                 }
-                if error != nil {
+                if let error = error {
+                    let details = error as NSError
+                    print("CodeWhale voice recognition interrupted: \(details.domain) \(details.code) \(details.localizedDescription)")
                     if self.voiceStopping, !self.voiceTranscript.isEmpty { self.finishVoiceTranscript() }
-                    else if self.voiceRecording { self.cancelVoiceCapture(message: "语音识别中断,请重试") }
+                    else if self.voiceRecording, !self.voiceTranscript.isEmpty { self.finishVoiceTranscript() }
+                    else if self.voiceRecording,
+                            self.voiceIntentActive(),
+                            self.voiceRestartAttempts < 1 {
+                        self.restartVoiceCaptureAfterInterruption(generation: generation)
+                    } else if self.voiceRecording {
+                        self.cancelVoiceCapture(message: "语音服务短暂中断,输入框内容已保留,请重试", isError: false)
+                    }
                 }
+            }
+        }
+    }
+
+    func restartVoiceCaptureAfterInterruption(generation: Int) {
+        guard generation == voiceCaptureGeneration,
+              voiceRecording,
+              voiceIntentActive() else { return }
+        voiceRestartAttempts += 1
+        voiceCaptureGeneration += 1
+        voiceFinishWork?.cancel()
+        if audioEngine.isRunning { audioEngine.stop() }
+        audioEngine.inputNode.removeTap(onBus: 0)
+        recognitionRequest?.endAudio()
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        recognitionRequest = nil
+        voiceRecording = false
+        voiceStopping = false
+        voiceDelivered = false
+        emitVoice(["state": "processing", "message": "语音服务短暂中断,正在自动恢复"])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self = self else { return }
+            if self.voiceIntentActive() {
+                self.startVoiceCapture(isRecovery: true)
+            } else {
+                self.emitVoice(["state": "ready", "message": "语音输入已停止"])
             }
         }
     }
@@ -337,7 +377,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         emitVoice(["state": "final", "text": text])
     }
 
-    func cancelVoiceCapture(message: String? = nil) {
+    func cancelVoiceCapture(message: String? = nil, isError: Bool = true) {
         voiceCaptureGeneration += 1
         voiceFinishWork?.cancel()
         if audioEngine.isRunning { audioEngine.stop() }
@@ -350,7 +390,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDe
         voiceStopping = false
         voiceButtonActive = false
         voiceDelivered = true
-        if let message = message { emitVoice(["state": "error", "message": message]) }
+        if let message = message { emitVoice(["state": isError ? "error" : "ready", "message": message]) }
         else { emitVoice(["state": "ready", "message": "语音输入已停止"]) }
     }
 

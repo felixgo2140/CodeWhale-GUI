@@ -50,7 +50,7 @@
 ## 🚀 发布更新(维护者)
 
 ```bash
-CODEWHALE_SIGNING_KEY=/path/to/signing-key.pem ./publish-release.sh 2.8.0
+CODEWHALE_SIGNING_KEY=/path/to/signing-key.pem ./publish-release.sh 2.8.1
 # 一次生成 GUI、harness、原生 App、完整安装包、签名清单与 SHA256SUMS,并发布 GitHub Release
 ```
 

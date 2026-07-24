@@ -304,7 +304,7 @@ function onNativeVoice(event){
     voiceLastTranscript=String(d.text||voiceLastTranscript);
     voiceTarget?.classList.remove("voice-listening");
     setVoiceControlState("processing",voiceTarget);
-    setVoiceStatus("processing","正在转写",d.text||"",voiceTarget);
+    setVoiceStatus("processing","正在转写",d.text||d.message||"",voiceTarget);
     armVoiceRecovery(6000,voiceTarget);
     return;
   }

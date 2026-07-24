@@ -50,7 +50,7 @@ Reinstalling or upgrading preserves model configuration, MCP servers, plugins, a
 ## 🚀 Publishing an update (maintainer)
 
 ```bash
-CODEWHALE_SIGNING_KEY=/path/to/signing-key.pem ./publish-release.sh 2.8.0
+CODEWHALE_SIGNING_KEY=/path/to/signing-key.pem ./publish-release.sh 2.8.1
 # Builds, signs, checksums, and publishes the GUI, harness, native app, and full installer assets.
 ```
 

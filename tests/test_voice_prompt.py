@@ -186,6 +186,18 @@ class NativeVoicePermissionTests(unittest.TestCase):
         self.assertIn('if voiceRecording || voiceStopping', native)
         self.assertIn('generation == self.voiceCaptureGeneration', native)
 
+    def test_native_voice_salvages_partial_text_and_retries_one_interruption(self):
+        native = (ROOT / "native" / "main.swift").read_text()
+        frontend = (ROOT / "web" / "js" / "voice.js").read_text()
+
+        self.assertIn("voiceRestartAttempts < 1", native)
+        self.assertIn("restartVoiceCaptureAfterInterruption(generation: generation)", native)
+        self.assertIn("self.voiceRecording, !self.voiceTranscript.isEmpty { self.finishVoiceTranscript() }", native)
+        self.assertIn("self.startVoiceCapture(isRecovery: true)", native)
+        self.assertIn('isError: false', native)
+        self.assertIn("输入框内容已保留", native)
+        self.assertIn('d.text||d.message||""', frontend)
+
 
 class ProviderRuntimeAdoptionTests(unittest.TestCase):
     def test_adopts_healthy_existing_provider_without_killing_it(self):
