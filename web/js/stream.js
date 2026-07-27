@@ -693,6 +693,7 @@ async function send(queuedText){
   }
 }
 function enterSend(){
+  if(window.COMBO?.active) return comboEnterSend();
   const inp=$("#input"); const raw=inp.value.trim();
   // 外部研究 harness: /df /gptr /odr /storm /agentloop /pydai /browser /crew /obsidian 前缀
   const hm=raw.match(/^\/(df|deerflow|gptr|odr|storm|agentloop|loop|pydai|pydantic|browser|browseruse|browse|crew|crewai|obsidian|vault|method|skill)\s+([\s\S]+)$/i);
@@ -704,8 +705,40 @@ function enterSend(){
     const engine={df:"deerflow",deerflow:"deerflow",gptr:"gptr",odr:"odr",storm:"storm",agentloop:"agentloop",loop:"agentloop",pydai:"pydai",pydantic:"pydai",browser:"browser",browseruse:"browser",browse:"browser",crew:"crew",crewai:"crew",obsidian:"obsidian",vault:"obsidian",method:"skill",skill:"skill"}[key]||"deerflow";
     submitDeerFlowFromInput(prompt, engine); return;
   }
-  if(state.running || state._preparingSend) queueFromInput(); else send();
-}   // 运行中=排队,空闲=直接发
+  if(state._preparingSend) queueFromInput();
+  else if(state.running) steerFromInput();
+  else send();
+}   // 运行中=插入当前 turn；后端尚未就绪或带附件时回退排队
+async function steerFromInput(){
+  const inp=$("#input"), raw=inp.value.trim();
+  if(!raw && !state.attachments.length) return;
+  if(state.attachments.length || !state.activeId || !state.turnId){
+    queueFromInput();
+    if(raw) cwToast("当前轮尚未准备好实时引导，已排队在本轮结束后发送");
+    return;
+  }
+  inp.value=""; inp.style.height="auto"; $("#sendbtn").disabled=true;
+  const optimistic=row("user","⤵ 引导");
+  const content=optimistic.querySelector(".content");
+  content.innerHTML=md(raw);
+  optimistic.classList.add("steer");
+  $("#mwrap").appendChild(optimistic);
+  state._optimUser=optimistic;
+  scrollDown(true);
+  try{
+    await api(`/v1/threads/${state.activeId}/turns/${state.turnId}/steer`,{
+      method:"POST",body:JSON.stringify({prompt:raw})
+    });
+    runStatusStep("已插入用户引导");
+    cwToast("已插入当前任务，模型会按新信息继续");
+  }catch(error){
+    if(state._optimUser===optimistic) state._optimUser=null;
+    optimistic.remove();
+    restoreComposerDraft(inp,raw);
+    queueFromInput();
+    cwToast("当前模型未接受实时引导，已保留为下一条消息");
+  }
+}
 function queueFromInput(){
   const inp=$("#input"); const raw=inp.value.trim(); if(!raw && !state.attachments.length) return;
   const prepared=withAttachments(raw);   // 立即取走这一条的附件包，解析未完成也不会占住下一条输入
@@ -729,6 +762,7 @@ function processQueue(){   // 当前任务结束后,自动发下一条排队消�
   if(item.text) send(item.text); else processQueue();
 }
 async function interrupt(){
+  if(window.COMBO?.active) return comboStop();
   if(!state.activeId) return;
   let turn=state.turnId;
   if(!turn){ try{ const rec=await api(`/v1/threads/${state.activeId}`); turn=(rec.thread||rec).latest_turn_id; }catch{} }  // turnId 丢了就查回来
@@ -788,4 +822,4 @@ function initMessageScroll(){
     if(b.classList.contains("copy")) copyMsg(b,msg); else if(b.classList.contains("edit")) editMsg(msg); });   // 消息操作:复制 / 编辑(委托,#mwrap 持久)
 }
 
-export { updateContextRisk, isRiskyContext, maybeResponsesApiHint, ensureContextCapacityBeforeSend, renderTurnArtifacts, scrollDown, closeStream, renderThreadSnapshot, syncActiveTurn, openThread, onEvent, startItem, deltaItem, preferLongerText, completeItem, detectOptions, optionTextFromSelection, fillOptionInput, optionTargets, buildOptPicker, augmentOptions, scheduleSmartTitle, send, enterSend, queueFromInput, processQueue, interrupt, uploadOne, uploadFiles, renderAttach, withAttachments, initMessageScroll };
+export { updateContextRisk, isRiskyContext, maybeResponsesApiHint, ensureContextCapacityBeforeSend, renderTurnArtifacts, scrollDown, closeStream, renderThreadSnapshot, syncActiveTurn, openThread, onEvent, startItem, deltaItem, preferLongerText, completeItem, detectOptions, optionTextFromSelection, fillOptionInput, optionTargets, buildOptPicker, augmentOptions, scheduleSmartTitle, send, enterSend, steerFromInput, queueFromInput, processQueue, interrupt, uploadOne, uploadFiles, renderAttach, withAttachments, initMessageScroll };

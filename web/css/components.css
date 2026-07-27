@@ -165,6 +165,9 @@ body.sideresizing,body.previewresizing{cursor:col-resize;user-select:none}
 .grp-cron{color:var(--cron-ink)}
 .grp-cron:hover{color:var(--cron)}
 .grp:hover{color:var(--ink-2)}
+.grp.grp-norm,.grp.grp-norm:hover{color:var(--thread-single-ink)}
+.grp.grp-cmp,.grp.grp-cmp:hover{color:var(--thread-compare-ink)}
+.grp.grp-combo,.grp.grp-combo:hover{color:var(--thread-combo-ink)}
 .grp:focus-visible,.thread:focus-visible,.runstatus-h:focus-visible{outline:2px solid var(--accent-tint-2);outline-offset:2px}
 .grp .glabel{display:inline-flex;align-items:center;gap:5px;min-width:0}
 .grp .glabel .ico{width:13px;height:13px}
@@ -184,11 +187,17 @@ body.sideresizing,body.previewresizing{cursor:col-resize;user-select:none}
 }
 .thread:hover{background:var(--panel);border-color:var(--line)}
 .thread.active{background:var(--panel);border-color:var(--line-strong);box-shadow:inset 3px 0 0 var(--accent),var(--sh-1)}
+.thread.singlesess{background:var(--thread-single-bg);border-color:var(--thread-single-line)}
+.thread.singlesess:hover{background:var(--thread-single-hover);border-color:var(--thread-single-line)}
+.thread.singlesess.active{background:var(--panel);border-color:var(--thread-single-line);box-shadow:inset 3px 0 0 var(--thread-single-ink),var(--sh-1)}
+.thread.cmpsess{background:var(--thread-compare-bg);border-color:var(--thread-compare-line)}
+.thread.cmpsess:hover{background:var(--thread-compare-hover);border-color:var(--thread-compare-line)}
+.thread.cmpsess.active{background:#FFF9F5;border-color:var(--thread-compare-line);box-shadow:inset 3px 0 0 var(--thread-compare-ink),var(--sh-1)}
+.thread.combosess{background:var(--thread-combo-bg);border-color:var(--thread-combo-line)}
+.thread.combosess:hover{background:var(--thread-combo-hover);border-color:var(--thread-combo-line)}
+.thread.combosess.active{background:#F7FCFA;border-color:var(--thread-combo-line);box-shadow:inset 3px 0 0 var(--thread-combo-ink),var(--sh-1)}
 .thread.cronjob{background:var(--cron-bg);border-color:var(--cron-line)}
-.thread.cronjob.active{box-shadow:inset 3px 0 0 var(--cron),var(--sh-1)}
-.thread.cmpsess{background:var(--accent-tint)}
-.thread.cmpsess:hover{background:var(--accent-tint-2)}
-.thread.cmpsess.active{background:var(--panel)}
+.thread.cronjob.active{background:var(--cron-bg);box-shadow:inset 3px 0 0 var(--cron),var(--sh-1)}
 .thread .t1{display:flex;align-items:center;gap:7px;min-width:0}
 .thread .dot{width:6px;height:6px;border-radius:var(--r-full);background:var(--idle-dot);flex:0 0 auto}
 .thread .dot.ok{background:var(--ok)}

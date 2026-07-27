@@ -4,6 +4,7 @@ const state = { threads:[], activeId:null, es:null, items:new Map(), seen:new Se
   cronJobs:new Set(JSON.parse(localStorage.getItem("cw_cron_jobs")||"[]")),              // 手动标记的定时任务 thread/session,服务端同步后进入侧栏最上方
   cmpThreads:new Set(JSON.parse(localStorage.getItem("cw_cmp")||"[]")),                 // 多模型对比建的 thread → 侧栏单独归一组
   cmpSessions:JSON.parse(localStorage.getItem("cw_cmp_sessions")||"[]"),                // 对比会话:[{id,topic,ts,threads:{prov:tid}}] → 侧栏每会话一行,点击回到当时对比
+  comboSessions:JSON.parse(localStorage.getItem("cw_combo_sessions")||"[]"),            // 组合会话:Kimi 规划 → GPT 一次复核修订 → DeepSeek 执行 → GPT 审结果
   grpCollapsed:new Set(JSON.parse(localStorage.getItem("cw_grpcollapsed")||"[]")),      // 折叠的分组(Cron/置顶/对比/对话)
   // 乐观新建、还没进服务端慢缓存(summary 刷新最长 2-3 分钟)的新对话:持久化到 localStorage——
   // 否则这窗口刷新页面就丢(felix 撞过两次"新对话找不到"),留 48h 兜底,真出现在列表后由 loadThreads 清掉

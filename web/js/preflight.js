@@ -2,3 +2,4 @@ try{
   localStorage.removeItem("cw_sidebar_collapsed");
 }catch(e){}
 if(location.search.indexOf("compare=1")>=0) document.documentElement.classList.add("cmpwin");
+if(location.search.indexOf("combo=1")>=0) document.documentElement.classList.add("combowin");

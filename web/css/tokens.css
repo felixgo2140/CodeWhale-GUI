@@ -55,6 +55,19 @@
   --spinner-track:rgba(255,255,255,.35);
   --compare-ok-line:rgba(57,126,102,.28);
   --compare-ok-bg:rgba(57,126,102,.1);
+  /* Sidebar conversation-type palette: neutral blue / comparison orange / workflow teal. */
+  --thread-single-bg:#F5F9FC;
+  --thread-single-hover:#EAF2F8;
+  --thread-single-line:#D5E0EA;
+  --thread-single-ink:#49677C;
+  --thread-compare-bg:#FFF3EA;
+  --thread-compare-hover:#FCE6D5;
+  --thread-compare-line:#EBC8AE;
+  --thread-compare-ink:#A54A1B;
+  --thread-combo-bg:#ECF8F5;
+  --thread-combo-hover:#DCF1EA;
+  --thread-combo-line:#B8DDD2;
+  --thread-combo-ink:#176C5C;
   --cron:#2563EB;
   --cron-ink:#1D4ED8;
   --cron-bg:rgba(37,99,235,.08);

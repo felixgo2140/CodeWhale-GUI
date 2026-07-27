@@ -12,6 +12,7 @@ const modulePaths = [
   "./threads.js",
   "./stream.js",
   "./panels.js",
+  "./combo.js",
   "./compare.js"
 ];
 const moduleRev = Date.now().toString(36);
@@ -38,6 +39,7 @@ function boot(){
   $("#skillsbtn").onclick=openSkills;
   $("#mcpbtn").onclick=openConnectors;
   $("#settingsbtn").onclick=openSettings;
+  const comboBtn=$("#combobtn"); if(comboBtn) comboBtn.onclick=()=>openComboWindow();
   $("#modelchip").onclick=openModelSwitch;
   $("#modalClose").onclick=closeModal;
   $("#modal").onclick=e=>{ if(e.target.id==="modal") closeModal(); };
@@ -126,20 +128,26 @@ function boot(){
   });
 
   renderAuto(); renderShell();
-  const IS_CMP_WIN = new URLSearchParams(location.search).get("compare")==="1";
+  const params=new URLSearchParams(location.search);
+  const IS_CMP_WIN = params.get("compare")==="1";
+  const IS_COMBO_WIN = params.get("combo")==="1";
   if(IS_CMP_WIN){
     loadCmpSessions();   // 独立对比窗口:主 UI 被对比层盖住,只需会话数据(?session 还原);跳过 loadThreads(慢~4.5s)/balance/pins/cmp/model/checkSetup,显著加快
+  }else if(IS_COMBO_WIN){
+    loadComboSessions().then(()=>initComboWindow(params.get("session")||""));
   }else{
-    const initialThreads=loadThreads(); loadBalance(); loadPins(); loadCronJobs(); loadCmp(); loadCmpSessions(); loadModelLabel(); checkSetup(); loadPlugins(); loadResearchSkills();   // pins/Cron:服务端拉跨窗口标签;loadCmp:对比 thread 分组;loadCmpSessions:对比会话归集;loadModelLabel:侧栏显当前模型
-    const deepThread=new URLSearchParams(location.search).get("thread");
-    if(/^thr_[A-Za-z0-9_-]+$/.test(deepThread||"")) Promise.resolve(initialThreads).then(()=>openThread(deepThread)).catch(e=>cwToast(e?.message||"任务链接打开失败"));
+    const initialThreads=loadThreads(); loadBalance(); loadPins(); loadCronJobs(); loadCmp(); loadCmpSessions(); loadComboSessions(); loadModelLabel(); checkSetup(); loadPlugins(); loadResearchSkills();   // pins/Cron:服务端拉跨窗口标签;loadCmp:对比 thread 分组;loadComboSessions:组合会话归集;loadModelLabel:侧栏显当前模型
+    const deepThread=params.get("thread");
+    if(/^thr_[A-Za-z0-9_-]+$/.test(deepThread||"")) Promise.resolve(initialThreads).then(()=>openThread(deepThread)).then(()=>{ if(typeof consumeTaskPrefill==="function") consumeTaskPrefill(deepThread); }).catch(e=>cwToast(e?.message||"任务链接打开失败"));
   }
   if(IS_CMP_WIN){
     setInterval(loadCmpSessions, 15000);   // 独立对比窗口只需要轻量同步 session,不跑完整侧栏/余额/版本轮询
+  }else if(IS_COMBO_WIN){
+    setInterval(loadComboSessions,15000);
   }else{
     // 原生 App 后台刷新(在线更新带来的新壳):下载替换需几秒,延迟轮询几次,更新了就提示退出重开
     setTimeout(async()=>{ for(let i=0;i<5;i++){ try{ const s=await api("/api/app-refresh-status"); if(s&&s.updated){ cwToast("✅ CodeWhale 原生 App 已更新 — 退出(⌘Q)再打开即生效"); break; } }catch(e){} await new Promise(r=>setTimeout(r,4000)); } }, 5000);
-    setInterval(()=>{ loadThreads(); loadCmpSessions(); }, 4000);   // 轮询刷新侧栏状态点 + 对比会话收编(独立对比窗口写入后主窗口自动合组)
+    setInterval(()=>{ loadThreads(); loadCmpSessions(); loadComboSessions(); }, 4000);   // 轮询刷新侧栏状态点 + 组合/对比会话收编
     setInterval(syncActiveTurn, 4000);   // 单聊兜底:不依赖侧栏 stale cache,直接查当前 thread 收尾,避免 SSE 漏完成事件后输入框卡住
     setInterval(loadBalance, 60000);  // 每分钟刷新当前 provider 余额/额度/用量
     loadVersion(); checkUpdate(); setInterval(checkUpdate, 3600000);   // CodeWhale 后端版本号 + 启动/每小时查新版

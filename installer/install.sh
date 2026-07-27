@@ -6,7 +6,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 UID_N="$(id -u)"
 INSTALL_TEST="${CODEWHALE_INSTALL_TEST:-0}"
 SKIP_NETWORK="${CODEWHALE_SKIP_NETWORK:-0}"
-REQUIRED_CLI_VERSION="${CODEWHALE_CLI_VERSION:-0.9.0}"
+REQUIRED_CLI_VERSION="${CODEWHALE_CLI_VERSION:-0.9.1}"
 echo "════════ CodeWhale GUI 安装 ════════"
 echo "用户: ${USER:-$(id -un)}    家目录: $HOME"
 echo

@@ -86,6 +86,14 @@ CRON_JOBS_FILE = os.path.expanduser("~/.codewhale-gui/cron_jobs.json")
 CMP_THREADS_FILE = os.path.expanduser("~/.codewhale-gui/cmp_threads.json")   # 多模型对比建的 thread id 集合 → 侧栏按组归类(对比/普通分开),跨窗口共享
 CMP_SESSIONS_FILE = os.path.expanduser("~/.codewhale-gui/cmp_sessions.json")  # 对比会话 [{id,topic,ts,threads:{prov:tid}}] → 侧栏每会话一行、点回当时对比,跨窗口共享
 CMP_THREAD_SESSIONS_FILE = os.path.expanduser("~/.codewhale-gui/cmp_thread_sessions.json")  # thread_id -> {session_id,provider}:对比归组的权威唯一编码索引
+COMBO_SESSIONS_FILE = os.path.expanduser("~/.codewhale-gui/combo_sessions.json")  # 组合任务: session_id 是唯一归组依据
+COMBO_ROLE_NAMES = ("controller", "executor")
+COMBO_LEGACY_ROLE_ALIASES = {
+    "dispatcher": "controller", "auditor": "controller",
+    "planner": "executor", "worker": "executor", "operator": "executor",
+    "planAuditor": "controller", "resultAuditor": "controller",
+}
+COMBO_ACCEPTED_ROLE_NAMES = frozenset((*COMBO_ROLE_NAMES, *COMBO_LEGACY_ROLE_ALIASES))
 TITLE_STATE_FILE = os.path.expanduser("~/.codewhale-gui/title_state.json")  # thread_id -> {locked,kind,title}:自动标题只改一次;手动改名后永久锁定
 RUNTIME_DIR = os.path.expanduser("~/.codewhale/tasks/runtime")
 NOTIFICATION_STATE_FILE = os.path.expanduser("~/.codewhale-gui/notification_state.json")
@@ -103,6 +111,11 @@ MCP_ALLOWED_BINS = {"npx", "node", "uvx", "python", "python3", "bun", "deno"}
 MCP_SAFE_DIRS = tuple(os.path.realpath(os.path.expanduser(p)) for p in (
     "~/codewhale-gui", "~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"))
 _TITLE_STATE_LOCK = threading.Lock()
+
+def combo_role_key(role):
+    """Normalize historical combo role labels without changing stored thread ids."""
+    value = str(role or "").strip()
+    return COMBO_LEGACY_ROLE_ALIASES.get(value, value)
 
 # ── 外部研究 harness 注册表:桥接脚本与 deerflow_client 同契约(submit/progress/result 输出 JSON),
 #    /api/harness/<name>/research|poll|file 三端点通用。新装 harness → 写桥接脚本 + 这里加一条即可。──
@@ -142,7 +155,7 @@ def read_harnesses():
 # 内嵌发布公钥(Ed25519,验签锚点)。私钥仅发布者持有,绝不随包分发。
 # 安全保证:更新清单必须用对应私钥签名,本端用此公钥验签 + 校验 SHA-256 后才应用;
 # 服务器/GitHub 即使被黑也推不了未签名/被篡改的更新。
-GUI_UPDATE_PUBKEY_B64 = "c9Cx493xoX5YLHoZ9E84DMIUkliRLmMOvgNg7VUggrU="
+GUI_UPDATE_PUBKEY_B64 = "Eq+nqZig4I7r2oQPdrlp3dSpHTks4Hyk+ovAeFGOz/c="
 UPDATE_CFG = os.path.expanduser("~/.codewhale-gui/update.json")   # {"repo":"owner/repo","enabled":true,"base_url":可选覆盖}
 VERSION_FILE = os.path.join(ROOT, "VERSION")
 try:
@@ -2685,6 +2698,175 @@ def upsert_cmp_sessions(incoming, delete_ids=None):
         except Exception as e:
             print("[cmp-session] delete map cleanup failed:", e, flush=True)
     return out
+
+# ── 组合任务会话 ──
+# 同一组合任务的子线程必须由 session id 归组，不能依赖标题或模型名。标题会改、模型也可换，
+# 只有 cmbs_* 是稳定的身份标识。
+def read_combo_sessions():
+    try:
+        with open(COMBO_SESSIONS_FILE, encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+def _valid_combo_session(session):
+    return (
+        isinstance(session, dict)
+        and re.match(r"^cmbs_[A-Za-z0-9_-]+$", str(session.get("id") or ""))
+        and isinstance(session.get("roles"), dict)
+        and isinstance(session.get("threads"), dict)
+    )
+
+def write_combo_sessions(sessions):
+    cleaned = []
+    for session in sessions or []:
+        if not _valid_combo_session(session):
+            continue
+        record = dict(session)
+        record["topic"] = str(record.get("topic") or "组合任务")[:160]
+        source_threads = record.get("threads") or {}
+        old_schema = int(record.get("combo_schema") or 0) < 2
+        preferred = {
+            "controller": ("controller", "dispatcher", "auditor"),
+            "executor": (("worker", "planner", "executor", "operator") if old_schema
+                         else ("executor", "worker", "planner", "operator")),
+        }
+        threads = {}
+        for normalized_role, source_roles in preferred.items():
+            for role in source_roles:
+                tid = source_threads.get(role)
+                if re.match(r"^thr_[A-Za-z0-9_-]+$", str(tid or "")):
+                    threads[normalized_role] = str(tid)
+                    break
+        if old_schema:
+            legacy_tool = source_threads.get("operator") or source_threads.get("executor")
+            if re.match(r"^thr_[A-Za-z0-9_-]+$", str(legacy_tool or "")):
+                tool_threads = dict(record.get("tool_threads") or {})
+                tool_threads.setdefault("executor", str(legacy_tool))
+                record["tool_threads"] = tool_threads
+        record["threads"] = threads
+        source_roles = record.get("roles") or {}
+        role_records = {}
+        for normalized_role, source_roles_order in preferred.items():
+            for role in source_roles_order:
+                metadata = source_roles.get(role)
+                if isinstance(metadata, dict):
+                    role_records[normalized_role] = metadata
+                    break
+        record["roles"] = role_records
+        record["combo_schema"] = 2
+        record["messages"] = [
+            {
+                "id": str(message.get("id") or "")[:120],
+                "role": str(message.get("role") or "")[:24],
+                "kind": str(message.get("kind") or "assistant")[:24],
+                "text": str(message.get("text") or "")[:120000],
+                "created_at": str(message.get("created_at") or "")[:80],
+                "who": str(message.get("who") or "")[:80],
+                "failed": bool(message.get("failed")),
+            }
+            for message in (record.get("messages") or [])[-80:]
+            if isinstance(message, dict) and str(message.get("text") or "").strip()
+        ]
+        cleaned.append(record)
+    cleaned.sort(key=lambda session: int(session.get("ts") or 0), reverse=True)
+    cleaned = cleaned[:300]
+    os.makedirs(os.path.dirname(COMBO_SESSIONS_FILE), exist_ok=True)
+    _atomic_write_json(COMBO_SESSIONS_FILE, cleaned, ensure_ascii=False)
+    return cleaned
+
+def upsert_combo_sessions(incoming, delete_ids=None):
+    deleted = {str(value) for value in (delete_ids or [])}
+    by_id = {
+        session["id"]: session
+        for session in read_combo_sessions()
+        if _valid_combo_session(session) and session["id"] not in deleted
+    }
+    for session in incoming or []:
+        if not _valid_combo_session(session) or session["id"] in deleted:
+            continue
+        old = by_id.get(session["id"]) or {}
+        merged = {**old, **session}
+        merged["roles"] = {**(old.get("roles") or {}), **(session.get("roles") or {})}
+        merged["threads"] = {**(old.get("threads") or {}), **(session.get("threads") or {})}
+        merged["tool_threads"] = {**(old.get("tool_threads") or {}), **(session.get("tool_threads") or {})}
+        if len(old.get("messages") or []) > len(session.get("messages") or []):
+            merged["messages"] = old.get("messages")
+        by_id[session["id"]] = merged
+    return write_combo_sessions(list(by_id.values()))
+
+def combo_thread_index(sessions=None):
+    """Return thread_id -> combo identity/role; session id is the grouping authority."""
+    out = {}
+    for session in sessions if sessions is not None else read_combo_sessions():
+        if not _valid_combo_session(session):
+            continue
+        for role, tid in (session.get("threads") or {}).items():
+            normalized_role = combo_role_key(role)
+            if (
+                role in COMBO_ACCEPTED_ROLE_NAMES
+                and normalized_role in COMBO_ROLE_NAMES
+                and re.match(r"^thr_[A-Za-z0-9_-]+$", str(tid or ""))
+            ):
+                out[str(tid)] = {
+                    "session_id": session["id"],
+                    "role": normalized_role,
+                    "topic": str(session.get("topic") or "组合任务")[:160],
+                }
+    return out
+
+def upsert_combo_session_thread(session_id, topic, role, provider, tid, roles=None, ts=None):
+    """Register a combo child immediately so a refresh cannot scatter it in the sidebar."""
+    if not re.match(r"^cmbs_[A-Za-z0-9_-]+$", session_id or ""):
+        return None
+    role = combo_role_key(role)
+    if role not in COMBO_ROLE_NAMES:
+        return None
+    if not re.match(r"^[A-Za-z0-9_-]+$", provider or ""):
+        return None
+    if not re.match(r"^thr_[A-Za-z0-9_-]+$", tid or ""):
+        return None
+    sessions = read_combo_sessions()
+    record = next((item for item in sessions if isinstance(item, dict) and item.get("id") == session_id), None)
+    now = int(ts or time.time() * 1000)
+    if record is None:
+        record = {
+            "id": session_id, "topic": str(topic or "组合任务")[:160], "ts": now,
+            "status": "running", "phase": role, "combo_schema": 2,
+            "roles": {}, "threads": {}, "messages": [], "guidance": [],
+            "artifacts": {"task": "", "controllerPlan": "", "executionResult": "",
+                          "finalAudit": "", "route": "", "toolRequired": False,
+                          "repairRound": 0, "checkpoints": []},
+            "plan_passed": False, "audit_passed": False,
+        }
+        sessions.insert(0, record)
+    if topic and (not record.get("topic") or record.get("topic") == "组合任务"):
+        record["topic"] = str(topic)[:160]
+    record["ts"] = max(int(record.get("ts") or 0), now)
+    if record.get("status") in (None, "", "idle"):
+        record["status"] = "running"
+    record["phase"] = record.get("phase") or role
+    role_records = record.get("roles") if isinstance(record.get("roles"), dict) else {}
+    if isinstance(roles, dict):
+        for role_name, metadata in roles.items():
+            normalized_role = combo_role_key(role_name)
+            if normalized_role not in COMBO_ROLE_NAMES or not isinstance(metadata, dict):
+                continue
+            role_records[normalized_role] = {
+                key: metadata[key]
+                for key in ("title", "provider", "model", "thinking", "contextLength", "toolProvider", "toolModel")
+                if isinstance(metadata.get(key), str)
+            }
+    current_role = role_records.get(role) if isinstance(role_records.get(role), dict) else {}
+    current_role["provider"] = provider
+    role_records[role] = current_role
+    record["roles"] = role_records
+    threads = record.get("threads") if isinstance(record.get("threads"), dict) else {}
+    threads[role] = tid
+    record["threads"] = threads
+    written = write_combo_sessions(sessions)
+    return next((item for item in written if item.get("id") == session_id), None)
 
 def upsert_cmp_session_thread(session_id, topic, provider, tid, title_seed="", ts=None):
     if not re.match(r'^cmps_[A-Za-z0-9_-]+$', session_id or ""):
@@ -5895,6 +6077,8 @@ def _tag_compare(arr):
     两个信号任一命中即对比 → 杜绝"对比对话散落进单聊列表"。"""
     try: cmp_set = set(read_cmp_threads())
     except Exception: cmp_set = set()
+    try: combo_map = combo_thread_index()
+    except Exception: combo_map = {}
     nc = _newchat_provider(); dflt = _cfg_get("provider") or "deepseek"
     single_set = set(read_single_threads())
     single_prov = nc if nc != dflt else None   # newchat≠默认 → 单聊会 pin 到 nc(不算对比);newchat=默认 → 单聊不 pin,_tprov 全是对比
@@ -5902,8 +6086,18 @@ def _tag_compare(arr):
         if isinstance(t, dict):
             tid = t.get("id")
             is_single = tid in single_set
+            combo = combo_map.get(tid)
             t["single"] = is_single
-            t["compare"] = False if is_single else ((tid in cmp_set) or (tid in _tprov and _tprov.get(tid) != single_prov))
+            t["combo"] = bool(combo)
+            if combo:
+                t["combo_session_id"] = combo["session_id"]
+                t["combo_role"] = combo["role"]
+                t["combo_topic"] = combo["topic"]
+            else:
+                t.pop("combo_session_id", None)
+                t.pop("combo_role", None)
+                t.pop("combo_topic", None)
+            t["compare"] = False if (is_single or combo) else ((tid in cmp_set) or (tid in _tprov and _tprov.get(tid) != single_prov))
     return arr
 def aggregate_threads():     # SWR:有缓存立刻返回,过期只后台刷新,绝不阻塞请求(开程序不再干等 8s)
     cached = _threads_cache["v"]
@@ -6240,6 +6434,65 @@ def _provider_chat_config(prov):
             "model": _research_provider_model("qwen") or _QWEN_DEFAULT_MODEL,
         }
     return _provider_chat_config("deepseek")
+
+def _combo_text_once(provider, model, prompt, max_tokens=6000):
+    """Text-only call for combo planning/review.
+
+    This intentionally does not touch /api/qwen-chat.  Qwen's dedicated
+    Token Plan route keeps its current connection implementation and tests;
+    combo text is a separate tool-free endpoint with no function schema.
+    """
+    provider = re.sub(r"[^A-Za-z0-9._-]", "", str(provider or ""))[:80]
+    allowed = {"deepseek", "zai", "moonshot", "custom", "volcengine", "longcat", "qwen"}
+    if provider not in allowed:
+        raise ValueError("当前角色模型不支持无工具文本调用")
+    model = re.sub(r"[^A-Za-z0-9._:-]", "", str(model or ""))[:160]
+    prompt = str(prompt or "").strip()[:60000]
+    if not prompt:
+        raise ValueError("角色提示为空")
+    cfg = _provider_chat_config(provider)
+    if not cfg.get("key"):
+        raise RuntimeError(f"{provider} API key 未配置")
+    if model:
+        cfg = dict(cfg)
+        cfg["model"] = model
+    try:
+        budget = max(512, min(int(max_tokens or 6000), 12000))
+    except Exception:
+        budget = 6000
+    payload = {
+        "model": cfg["model"],
+        "messages": [
+            {"role": "system", "content": "你处于无工具模式。严格遵守用户提示中的角色边界，不调用工具，不展示内部思维过程。"},
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": budget,
+        "stream": False,
+    }
+    request = urllib.request.Request(
+        cfg["base"].rstrip("/") + "/chat/completions",
+        data=json.dumps(payload, ensure_ascii=False).encode(),
+        method="POST",
+        headers={"Authorization": "Bearer " + cfg["key"], "Content-Type": "application/json"},
+    )
+    try:
+        with _open_url(request, 240) as response:
+            data = json.loads(response.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        raw = exc.read(1600).decode("utf-8", "replace")
+        try:
+            detail = str((json.loads(raw).get("error") or {}).get("message") or raw)
+        except Exception:
+            detail = raw
+        raise RuntimeError(f"{provider} 无工具文本调用失败（HTTP {exc.code}）：{detail[:360]}") from None
+    message = ((data.get("choices") or [{}])[0].get("message") or {})
+    content = message.get("content") or data.get("text") or ""
+    if isinstance(content, list):
+        content = "\n".join(str(part.get("text") or "") for part in content if isinstance(part, dict))
+    text = str(content or "").strip()
+    if not text:
+        raise RuntimeError(f"{provider} 没有返回文本结果")
+    return {"ok": True, "provider": provider, "model": cfg["model"], "text": text}
 
 def _chat_title_once(messages, prov):
     cfg = _provider_chat_config(prov)
@@ -7177,6 +7430,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p == "/api/combo-sessions":
+            if not self._authed():
+                return self._deny()
+            try:
+                out = read_combo_sessions()
+            except Exception:
+                out = []
+            b = json.dumps(out, ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+            return
         if p == "/api/cmp-session":   # 按唯一 session_id 取单个对比会话;新窗口恢复时不用猜 localStorage
             if not self._authed():
                 return self._deny()
@@ -7479,6 +7747,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 except Exception as e:
                     print("[cmp-session] pin-thread upsert failed:", e, flush=True)
             return self._json({"ok": True})
+        if p == "/api/pin-combo-thread":
+            if not self._authed():
+                return self._deny()
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            tid = str(data.get("tid") or data.get("thread_id") or "").strip()
+            provider = str(data.get("provider") or "").strip()
+            session_id = str(data.get("session_id") or "").strip()
+            role = str(data.get("role") or "").strip()
+            if not re.match(r"^thr_[A-Za-z0-9_-]+$", tid) or not re.match(r"^[A-Za-z0-9_-]+$", provider):
+                return self._json({"error": "非法 tid/provider"}, 400)
+            if not re.match(r"^cmbs_[A-Za-z0-9_-]+$", session_id) or combo_role_key(role) not in COMBO_ROLE_NAMES:
+                return self._json({"error": "非法组合会话或角色"}, 400)
+            _pin_thread(tid, provider)
+            session = upsert_combo_session_thread(
+                session_id,
+                str(data.get("topic") or "组合任务")[:160],
+                role,
+                provider,
+                tid,
+                data.get("roles"),
+            )
+            return self._json({"ok": True, "session": session})
         if p == "/v1/threads":   # 新对话:建在"新对话默认 provider"的独立后端,并记 tid->port(每对话锁模型)
             if not self._authed():
                 return self._deny()
@@ -7563,6 +7854,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json(_qwen_chat_once(data.get("provider"), data.get("prompt")))
             except Exception as e:
                 return self._json({"ok": False, "error": str(e)[:240]}, 500)
+        if p == "/api/combo-text":
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                return self._json(_combo_text_once(
+                    data.get("provider"), data.get("model"), data.get("prompt"), data.get("max_tokens"),
+                ))
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:420]}, 400)
         if p == "/api/compare/reset":   # 杀掉所有 per-provider 后端 + 清端口表 → 下次按需用当前配置/key 重启,杜绝残留旧后端答错模型(三栏都答 DeepSeek 的根治)
             if not self._authed():
                 return self._deny()
@@ -7754,6 +8056,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 sessions = data.get("sessions", []) if isinstance(data, dict) else data
                 delete_ids = data.get("delete_ids", []) if isinstance(data, dict) else []
                 out = upsert_cmp_sessions(sessions if isinstance(sessions, list) else [], delete_ids=delete_ids if isinstance(delete_ids, list) else [])
+            except Exception as e:
+                out = {"error": str(e)[:200]}
+            b = json.dumps(out, ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+            return
+        if p == "/api/combo-sessions":
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                raw = self.rfile.read(length) if length else b"{}"
+                data = json.loads(raw or b"{}")
+                sessions = data.get("sessions", []) if isinstance(data, dict) else data
+                delete_ids = data.get("delete_ids", []) if isinstance(data, dict) else []
+                out = upsert_combo_sessions(
+                    sessions if isinstance(sessions, list) else [],
+                    delete_ids=delete_ids if isinstance(delete_ids, list) else [],
+                )
             except Exception as e:
                 out = {"error": str(e)[:200]}
             b = json.dumps(out, ensure_ascii=False).encode()

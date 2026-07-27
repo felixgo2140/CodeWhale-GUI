@@ -9,7 +9,7 @@ class FreshInstallTests(unittest.TestCase):
     def test_installer_uses_a_user_local_pinned_cli_without_sudo(self):
         source = (ROOT / "installer" / "install.sh").read_text(encoding="utf-8")
 
-        self.assertIn('REQUIRED_CLI_VERSION="${CODEWHALE_CLI_VERSION:-0.9.0}"', source)
+        self.assertIn('REQUIRED_CLI_VERSION="${CODEWHALE_CLI_VERSION:-0.9.1}"', source)
         self.assertIn('npm install --prefix "$CLI_PREFIX"', source)
         self.assertNotIn("sudo npm install", source)
         self.assertNotIn("npm install -g", source)

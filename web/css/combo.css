@@ -1,0 +1,165 @@
+#comboBar{
+  flex:0 0 auto;
+  min-height:58px;
+  padding:7px 18px;
+  border-bottom:1px solid var(--line);
+  background:var(--bg);
+  display:flex;
+  align-items:center;
+  gap:14px;
+}
+#comboBar[hidden]{display:none}
+.combo-ident{display:flex;align-items:baseline;gap:8px;white-space:nowrap}
+.combo-ident b{font-size:18px}
+#comboPhase{font-size:14px;color:var(--ink-3)}
+#comboRoles{display:flex;align-items:center;gap:6px;min-width:0;flex:1;overflow:hidden}
+.combo-role{
+  flex:0 1 210px;
+  min-width:155px;
+  max-width:250px;
+  height:44px;
+  box-sizing:border-box;
+  padding:5px 9px;
+  display:grid;
+  grid-template-columns:auto minmax(0,1fr);
+  grid-template-rows:auto auto;
+  column-gap:7px;
+  text-align:left;
+  border-radius:var(--r-s);
+  background:var(--panel);
+}
+.combo-role span{grid-column:1;grid-row:1;color:var(--ink-3);font-size:12px;white-space:nowrap}
+.combo-role b{grid-column:2;grid-row:1;font-size:15px;line-height:1.1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.combo-role small{grid-column:1 / -1;grid-row:2;font-size:12px;color:var(--ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.combo-role.active{border-color:var(--accent);background:var(--accent-tint)}
+.combo-role.done{border-color:var(--ok);background:var(--ok-tint)}
+.combo-role.blocked{border-color:var(--err);background:var(--err-tint)}
+.combo-intervene{
+  flex:0 0 auto;
+  min-height:38px;
+  padding:5px 10px;
+  border-radius:var(--r-s);
+  color:var(--ink-2);
+  font-size:15px;
+}
+.combo-gate{
+  flex:0 0 auto;
+  padding:6px 10px;
+  border:1px solid var(--line);
+  border-radius:var(--r-full);
+  color:var(--ink-3);
+  font-size:14px;
+  white-space:nowrap;
+}
+.combo-checkpoint{
+  margin:12px 0;
+  padding:12px 14px;
+  border:1px solid var(--line-strong,var(--line));
+  border-left:3px solid var(--accent);
+  border-radius:var(--r-s);
+  background:var(--surface-muted);
+  display:flex;
+  align-items:center;
+  gap:10px;
+  color:var(--ink-2);
+  font-size:16px;
+}
+.combo-checkpoint b{color:var(--ink)}
+.combo-checkpoint>div{display:grid;gap:3px;min-width:0;flex:1}
+.combo-checkpoint span{min-width:0;overflow-wrap:anywhere}
+.combo-checkpoint button{flex:0 0 auto;min-height:32px;padding:4px 9px;font-size:13px}
+.combo-checkpoint.running{border-left-color:var(--accent);background:var(--accent-tint)}
+.combo-checkpoint.ready{border-left-color:var(--line-strong,var(--line))}
+.combo-checkpoint.blocked{border-left-color:var(--err);background:var(--err-tint)}
+.combo-checkpoint.pass{border-left-color:var(--ok);background:var(--ok-tint)}
+.combo-gate.pass{color:var(--ok);border-color:var(--ok);background:var(--ok-tint)}
+.combo-phase-note{
+  margin:14px 0 10px;
+  padding:12px 15px;
+  border-left:3px solid var(--accent);
+  background:var(--surface-muted);
+  color:var(--ink-2);
+  font-size:18px;
+}
+.combo-phase-note{display:flex;align-items:center;gap:10px}
+.combo-phase-note b{color:var(--ink)}
+.combo-history-note{
+  margin:12px 0 14px;
+  padding:10px 12px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  border:1px solid var(--line);
+  border-radius:var(--r-s);
+  background:var(--surface-muted);
+  color:var(--ink-3);
+  font-size:16px;
+}
+.combo-history-note button{flex:0 0 auto;min-height:34px;padding:5px 10px;font-size:15px}
+.combo-blocked{
+  margin:14px 0;
+  padding:15px;
+  border:1px solid var(--err);
+  border-radius:var(--r-s);
+  background:var(--err-tint);
+  color:var(--err);
+  font-size:18px;
+}
+.combo-understanding{
+  margin:10px 0 14px;
+  padding:14px 16px;
+  display:grid;
+  gap:4px;
+  border:1px solid var(--line-strong,var(--line));
+  border-radius:var(--r-s);
+  background:var(--surface-muted);
+  color:var(--ink-2);
+  font-size:18px;
+}
+.combo-understanding b{color:var(--ink);font-size:20px}
+.combo-config{display:grid;gap:14px;max-width:680px}
+.combo-config>label,.combo-config details label{display:grid;grid-template-columns:170px minmax(0,1fr);align-items:center;gap:10px;font-size:12px;color:var(--ink-2)}
+.combo-config select,.combo-config input{width:100%;min-height:38px;padding:7px 10px;border:1px solid var(--line);border-radius:var(--r-s);background:var(--panel);color:var(--ink)}
+.combo-config input:disabled,.combo-config select:disabled{opacity:.55;cursor:not-allowed}
+.combo-config details{padding:12px;border:1px solid var(--line);border-radius:var(--r-s);background:var(--surface-muted)}
+.combo-config details summary{margin-bottom:12px;font-weight:700;cursor:pointer}
+.combo-config details label+label{margin-top:10px}
+.combo-config small{grid-column:2;color:var(--ink-3)}
+.combo-cap-note{margin:0;padding:10px 12px;border-left:3px solid var(--accent);background:var(--accent-tint);color:var(--ink-2);font-size:12px}
+.combo-config .primary{justify-self:start}
+.combo-role-config-row{
+  width:100%;
+  display:grid;
+  grid-template-columns:minmax(120px,.75fr) minmax(0,1.45fr) auto;
+  align-items:center;
+  gap:10px;
+  padding:12px 13px;
+  text-align:left;
+  border:1px solid var(--line);
+  border-radius:var(--r-s);
+  background:var(--panel);
+  color:var(--ink);
+}
+.combo-role-config-row:hover{border-color:var(--accent);background:var(--accent-tint)}
+.combo-role-config-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2)}
+.combo-role-config-row small{grid-column:auto;color:var(--ink-3);white-space:nowrap}
+.combo-intervention{display:grid;gap:10px}
+.combo-intervention-status{padding:10px 12px;border-left:3px solid var(--accent);background:var(--accent-tint);color:var(--ink-2);font-size:12px}
+.combo-intervention-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.combo-intervention-actions button{justify-content:flex-start;min-height:40px;padding:8px 12px}
+.combo-intervention-actions button.danger{color:var(--err);border-color:var(--err)}
+.combo-intervention-note{margin:0;color:var(--ink-3);font-size:11px}
+html.combowin{--chat-fs:26px}
+html.combowin #sidebar,html.combowin #sideresize{display:none!important}
+html.combowin #main{width:100%;min-width:0}
+html.combowin #sidebarToggle{display:none}
+html.combowin #mwrap{max-width:1100px}
+html.combowin #input{font-size:20px;line-height:1.45}
+@media(max-width:900px){
+  #comboBar{align-items:flex-start;flex-wrap:wrap;padding:9px 10px;gap:8px}
+  #comboRoles{order:3;width:100%;overflow-x:auto;padding-bottom:2px}
+  .combo-role{min-width:148px}
+  .combo-gate{margin-left:auto}
+  .combo-intervention-actions{grid-template-columns:1fr}
+}

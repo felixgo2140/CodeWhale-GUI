@@ -16,7 +16,7 @@ async function loadThreads(){
       setRunning(true); runStatusUpdate("同步中","后端仍在运行,正在恢复工作状态"); syncActiveTurn();
     }
     if(at && state.running && isTurnDone(at.latest_turn_status)){ setRunning(false); processQueue(); }
-    const sig=JSON.stringify(state.threads.map(x=>[x.id,x.title,x.latest_turn_status,threadTimeSig(x),x.provider,x.compare,x.single]))+"|"+[...state.pinned].sort().join(",")+"|"+[...state.cronJobs].sort().join(",")+"|"+[...state.cmpThreads].sort().join(",")+"|"+state.cmpSessions.map(s=>s.id+":"+(s.topic||"")+":"+Object.keys(s.threads||{}).length).join(",")+"|"+[...state.grpCollapsed].sort().join(",")+"|"+state.activeId;   // 从合并后列表算(含 pending):含 provider/标签/对比集/会话/折叠态,任一变都重渲染;时间只按分钟入签名,避免运行中秒级 updated_at 导致闪
+    const sig=JSON.stringify(state.threads.map(x=>[x.id,x.title,x.latest_turn_status,threadTimeSig(x),x.provider,x.compare,x.single,x.combo,x.combo_session_id,x.combo_role]))+"|"+[...state.pinned].sort().join(",")+"|"+[...state.cronJobs].sort().join(",")+"|"+[...state.cmpThreads].sort().join(",")+"|"+state.cmpSessions.map(s=>s.id+":"+(s.topic||"")+":"+Object.keys(s.threads||{}).length).join(",")+"|"+state.comboSessions.map(s=>s.id+":"+(s.topic||"")+":"+(s.status||"")+":"+Object.keys(s.threads||{}).length).join(",")+"|"+[...state.grpCollapsed].sort().join(",")+"|"+state.activeId;
     if(sig!==state._sig){ state._sig=sig; renderThreads(); }   // 仅当列表真变化才重建 DOM,避免轮询吞掉点击
     repairBadThreadTitles();
   }catch(e){ setConn(false); console.warn(e); }
@@ -128,6 +128,9 @@ function taskDeepLink(id){
 function comparisonDeepLink(id){
   const u=new URL(location.pathname,location.origin); u.searchParams.set("compare","1"); u.searchParams.set("session",id); return u.toString();
 }
+function comboDeepLink(id){
+  const u=new URL(location.pathname,location.origin); u.searchParams.set("combo","1"); u.searchParams.set("session",id); return u.toString();
+}
 async function threadDetail(t){
   if(t?.workspace) return t;
   const rec=await api(`/v1/threads/${t.id}`);
@@ -200,10 +203,26 @@ function comparisonContextActions(s){
     contextAction("在新窗口中打开","external",()=>openCompareWindow(s.id))
   ];
 }
+function comboContextActions(s){
+  const pinned=state.pinned.has(s.id), cron=state.cronJobs.has(s.id);
+  const ids=Object.entries(s.threads||{}).map(([role,id])=>`${role}: ${id}`).join("\n");
+  return [
+    contextAction(pinned?"取消置顶":"置顶","pin",()=>togglePin(s.id)),
+    contextAction("重命名","edit",()=>renameComboSession(s.id,s.topic)),
+    contextAction(cron?"移出 Cron Jobs":"加入 Cron Jobs","calendar",()=>toggleCronJob(s.id)),
+    contextAction("归档整组组合任务","trash",()=>deleteComboSession(s.id,s.topic),{danger:true}),
+    {separator:true},
+    contextAction("复制组合任务 ID","hash",()=>copyContextValue(s.id,"已复制组合任务 ID")),
+    contextAction("复制各角色会话 ID","layers",()=>copyContextValue(ids,"已复制各角色会话 ID")),
+    contextAction("复制深度链接","external",()=>copyContextValue(comboDeepLink(s.id),"已复制深度链接")),
+    contextAction("在新窗口中打开","external",()=>openComboWindow(s.id))
+  ];
+}
 function threadEl(t){   // 单条对话 DOM
   const pinned=state.pinned.has(t.id);
   const cron=state.cronJobs.has(t.id);
-  const d=document.createElement("div"); d.className="thread"+(cron?" cronjob":"")+(t.id===state.activeId?" active":"");
+  const typeClass=(t.compare===true||(t.single!==true&&state.cmpThreads.has(t.id)))?" cmpsess":" singlesess";
+  const d=document.createElement("div"); d.className="thread"+typeClass+(cron?" cronjob":"")+(t.id===state.activeId?" active":"");
   const st=t.latest_turn_status||"";
   let dotCls = isTurnRunning(st) ? "running"   // summary 返回的是 inprogress(无下划线)
                : normTurnStatus(st)==="completed" ? "ok"
@@ -238,6 +257,103 @@ function cmpSessionEl(s){   // 对比会话行:点=回到当时整场对比
   d.querySelector(".more").onclick=e=>showThreadActionMenu(e,comparisonContextActions(s));
   return d;
 }
+const COMBO_SESSION_HEARTBEAT_MS=10*60*1000;
+const COMBO_CHILD_THREAD_FRESH_MS=2*60*1000;
+function comboSessionIsLive(s){
+  const current=window.COMBO;
+  if(current?.active&&current?.busy&&current.session?.id===s.id) return true;
+  const now=Date.now(), roleThreadIds=new Set(Object.values(s.threads||{}));
+  const hasFreshLiveChild=(state.threads||[]).some(thread=>{
+    if(!roleThreadIds.has(thread.id)||!isTurnRunning(thread.latest_turn_status)) return false;
+    const updatedAt=new Date(thread.updated_at||0).getTime();
+    return Number.isFinite(updatedAt)&&now-updatedAt<COMBO_CHILD_THREAD_FRESH_MS;
+  });
+  if(hasFreshLiveChild) return true;
+  const heartbeat=Number(s.heartbeat_at||0);
+  return s.status==="running"&&Number.isFinite(heartbeat)&&heartbeat>0&&now-heartbeat<COMBO_SESSION_HEARTBEAT_MS;
+}
+function comboSessionEl(s){
+  const d=document.createElement("div");
+  const passed=s.audit_passed===true;
+  const running=comboSessionIsLive(s);
+  const pinned=state.pinned.has(s.id), cron=state.cronJobs.has(s.id);
+  d.className="thread combosess"+(cron?" cronjob":"");
+  const roles=s.roles||{};
+  const controller=roles.controller||roles.dispatcher||roles.auditor||{};
+  const executor=s.combo_schema>=2?roles.executor:(roles.worker||roles.planner||roles.executor||roles.operator||{});
+  const modelMeta=`总调度 ${controller.model||controller.provider||"未配置"} · 执行 ${executor.model||executor.provider||"未配置"}${passed?" · 已通过":""}`;
+  d.innerHTML=`<div class="t1"><span class="dot ${running?"running":passed?"ok":"idle"}" title="${running?"组合流程运行中":"组合任务历史记录"}"></span><span class="title">${pinned?icon("pin"):""}${icon("layers")}${esc(s.topic||"组合任务")}</span>`+
+    `<span class="time">${relTime(s.ts||0)}</span><span class="actions"><button class="act more" type="button" title="更多操作" aria-label="更多操作">${icon("more")}</button></span></div>`+
+    `<div class="meta"><span class="models">${esc(modelMeta)}</span></div>`;
+  d.onclick=()=>openComboWindow(s.id);
+  d.oncontextmenu=e=>showThreadContextMenu(e,comboContextActions(s));
+  keyboardButton(d,()=>openComboWindow(s.id),`打开组合任务: ${s.topic||"组合任务"}`);
+  d.querySelector(".more").onclick=e=>showThreadActionMenu(e,comboContextActions(s));
+  return d;
+}
+function comboSessionsForSidebar(){
+  const byId=new Map();
+  for(const session of state.comboSessions||[]){
+    if(!session?.id) continue;
+    byId.set(session.id,{...session,threads:{...(session.threads||{})}});
+  }
+  for(const thread of state.threads||[]){
+    const sessionId=String(thread?.combo_session_id||"");
+    if(!sessionId) continue;
+    const updatedAt=new Date(thread.updated_at||0).getTime();
+    const session=byId.get(sessionId)||{
+      id:sessionId,
+      topic:thread.combo_topic||"组合任务",
+      ts:Number.isFinite(updatedAt)?updatedAt:0,
+      status:isTurnRunning(thread.latest_turn_status)?"running":"idle",
+      roles:{},
+      threads:{},
+      messages:[],
+      artifacts:{}
+    };
+    if(["controller","executor","worker","operator","planner","auditor"].includes(thread.combo_role)){
+      session.threads[thread.combo_role]=thread.id;
+    }
+    if((!session.topic||session.topic==="组合任务")&&thread.combo_topic) session.topic=thread.combo_topic;
+    if(Number.isFinite(updatedAt)) session.ts=Math.max(Number(session.ts)||0,updatedAt);
+    byId.set(sessionId,session);
+  }
+  return [...byId.values()].filter(session=>{
+    const artifacts=session.artifacts||{};
+    return Object.keys(session.threads||{}).length>0||
+      (session.messages||[]).length>0||
+      Boolean(String(artifacts.task||"").trim());
+  }).sort((a,b)=>{
+    const pinDiff=Number(state.pinned.has(b.id))-Number(state.pinned.has(a.id));
+    return pinDiff||(b.ts||0)-(a.ts||0);
+  });
+}
+function renameComboSession(id,cur){
+  const t=prompt("重命名组合任务:",cur||"");
+  if(t===null) return;
+  const name=t.trim(); if(!name) return;
+  const s=state.comboSessions.find(x=>x.id===id); if(!s) return;
+  s.topic=name; s.topic_ts=Date.now(); s.ts=Date.now();
+  saveComboSessions(); state._sig=null; renderThreads();
+}
+async function deleteComboSession(id,topic){
+  const s=comboSessionsForSidebar().find(x=>x.id===id);
+  const tids=s?Object.values(s.threads||{}).filter(Boolean):[];
+  if(!(await cwConfirm(`归档组合任务「${topic||"组合任务"}」及其 ${tids.length} 个角色对话?\n(整组移出列表，后端可恢复)`))) return;
+  await Promise.allSettled(tids.map(tid=>api(`/v1/threads/${tid}`,{method:"PATCH",body:JSON.stringify({archived:true})})));
+  state.threads=state.threads.filter(t=>!tids.includes(t.id));
+  tids.forEach(tid=>{
+    state.cmpThreads.delete(tid);
+    state.pinned.delete(tid);
+    state.cronJobs.delete(tid);
+  });
+  state.pinned.delete(id);
+  state.cronJobs.delete(id);
+  saveCmp(); savePins(); saveCronJobs();
+  state.comboSessions=state.comboSessions.filter(x=>x.id!==id);
+  saveComboSessions({deleteIds:[id]});
+  state._sig=null; renderThreads();
+}
 function renameCmpSession(id,cur){   // topic_ts=重命名时间戳,合并平局时新者胜(否则别的窗口旧副本会把名字盖回去)
   const t=prompt("重命名对比会话:",cur||"");
   if(t===null) return;
@@ -267,6 +383,9 @@ function renderThreads(){
   const visibleThreadIds=new Set(state.threads.filter(t=>t&&t.id&&!t.archived).map(t=>t.id));
   const sessionVisible=s=>Object.values(s.threads||{}).some(tid=>visibleThreadIds.has(tid)&&!serverSingleTids.has(tid));   // 不显示所有子线程都已归档/缺失的空 session,避免点开空白
   const sessionsAll=[...state.cmpSessions].filter(sessionVisible).sort((a,b)=>(b.ts||0)-(a.ts||0));
+  const comboSessions=comboSessionsForSidebar();
+  const comboTids=new Set(comboSessions.flatMap(s=>Object.values(s.threads||{})));
+  state.threads.forEach(thread=>{ if(thread?.combo===true) comboTids.add(thread.id); });
   const sessionTids=new Set();                            // 已被某对比会话收编的 thread → 不再单独显示(由会话行代表)
   for(const s of sessionsAll) for(const tid of Object.values(s.threads||{})){ if(!serverSingleTids.has(tid)) sessionTids.add(tid); }
   // 对比归组判定只信明确登记:服务端 t.compare 或本地 cmpThreads。
@@ -274,6 +393,7 @@ function renderThreads(){
   const isCmp=t=>t.compare===true||(t.single!==true&&state.cmpThreads.has(t.id));
   const cronG=[], pinG=[], cmpLeftover=[], normG=[];      // Cron / 置顶 / 对比散条(无会话的历史) / 普通对话
   for(const t of state.threads){
+    if(comboTids.has(t.id)) continue;
     if(state.cronJobs.has(t.id)){ cronG.push(t); continue; } // Cron Jobs 是最高展示优先级,同时保留其 pinned 属性
     if(state.pinned.has(t.id)){ pinG.push(t); continue; }  // 置顶优先
     if(sessionTids.has(t.id)) continue;                    // 属某会话 → 跳过,会话行代表它
@@ -289,6 +409,7 @@ function renderThreads(){
   if(state.threads.length||sessionsAll.length) groups.push({key:"cron", icon:"calendar", label:"Cron Jobs", count:cronG.length+cronS.length, render:b=>{ cronS.forEach(s=>b.appendChild(cmpSessionEl(s))); cronG.forEach(t=>b.appendChild(threadEl(t))); }});
   if(pinG.length||pinS.length)  groups.push({key:"pin", icon:"pin", label:"置顶", count:pinG.length+pinS.length, render:b=>{ pinS.forEach(s=>b.appendChild(cmpSessionEl(s))); pinG.forEach(t=>b.appendChild(threadEl(t))); }});
   if(cmpCount)     groups.push({key:"cmp", icon:"layout", label:"多模型对比", count:cmpCount, render:b=>{ sessions.forEach(s=>b.appendChild(cmpSessionEl(s))); cmpLeftover.forEach(t=>b.appendChild(threadEl(t))); }});
+  if(comboSessions.length) groups.push({key:"combo",icon:"layers",label:"组合模型",count:comboSessions.length,render:b=>comboSessions.forEach(s=>b.appendChild(comboSessionEl(s)))});
   if(normG.length) groups.push({key:"norm",icon:"message",label:"对话", count:normG.length, render:b=>normG.forEach(t=>b.appendChild(threadEl(t)))});
   if(!groups.length){ box.innerHTML='<div class="empty-thread-note">还没有对话,点上方新建</div>'; return; }
   const showHeaders=groups.length>1;                     // 只有一组时不显分组头,保持简洁
@@ -383,6 +504,25 @@ async function loadCmpSessions(){ try{ const r=await api("/api/cmp-sessions"); i
     if(changed){ state._sig=null; renderThreads(); }
     return state.cmpSessions;
   }catch(e){ /* 离线:沿用 localStorage */ } }
+function saveComboSessions(opts={}){
+  state.comboSessions=(state.comboSessions||[]).slice(0,300);
+  try{ localStorage.setItem("cw_combo_sessions",JSON.stringify(state.comboSessions)); }catch(e){}
+  const body={sessions:state.comboSessions};
+  if(opts.deleteIds?.length) body.delete_ids=opts.deleteIds;
+  api("/api/combo-sessions",{method:"POST",body:JSON.stringify(body)}).catch(()=>{});
+}
+async function loadComboSessions(){
+  try{
+    const rows=await api("/api/combo-sessions");
+    if(!Array.isArray(rows)) return state.comboSessions;
+    const byId=new Map((state.comboSessions||[]).map(s=>[s.id,s]));
+    rows.forEach(s=>{ if(s?.id) byId.set(s.id,{...(byId.get(s.id)||{}),...s}); });
+    state.comboSessions=[...byId.values()].sort((a,b)=>(b.ts||0)-(a.ts||0));
+    localStorage.setItem("cw_combo_sessions",JSON.stringify(state.comboSessions.slice(0,300)));
+    state._sig=null; renderThreads();
+    return state.comboSessions;
+  }catch(e){ return state.comboSessions||[]; }
+}
 async function renameThread(id, cur){
   const t = prompt("重命名对话:", cur||"");
   if(t===null) return;                      // 取消
@@ -424,10 +564,15 @@ async function loadAutoState(id){ try{ const rec=await api(`/v1/threads/${id}`);
 async function applyShell(id,on){ try{ await api(`/v1/threads/${id}`,{method:"PATCH",body:JSON.stringify({allow_shell:on})}); }catch(e){ console.warn(e); } }
 function renderShell(){ const w=$("#shellwrap"); if(!w) return; w.classList.toggle("on",state.allowShell); w.classList.toggle("disabled",!state.activeId);
   w.title=state.activeId?"授权 agent 运行 shell/终端命令(关着 exec_shell 不可用)":"先打开一个会话"; }
-async function toggleShell(){ if(!state.activeId) return; state.allowShell=!state.allowShell; renderShell(); await applyShell(state.activeId,state.allowShell); }
+async function toggleShell(){
+  if(window.COMBO?.active) return comboToggleShell();
+  if(!state.activeId) return;
+  state.allowShell=!state.allowShell; renderShell(); await applyShell(state.activeId,state.allowShell);
+}
 function renderAuto(){ const w=$("#autowrap"); if(!w) return; w.classList.toggle("on",state.autoApprove); w.classList.toggle("disabled",!state.activeId);
   w.title=state.activeId?"仅对当前会话:开=工具调用弹确认时自动点允许;关=逐次询问":"先打开一个会话,才能为它开启自动批准"; }
 async function toggleAuto(){
+  if(window.COMBO?.active) return comboToggleAuto();
   if(!state.activeId) return;
   state.autoApprove=!state.autoApprove; renderAuto(); await applyAuto(state.activeId,state.autoApprove);
   if(state.autoApprove) document.querySelectorAll(".tool.needapproval").forEach(c=>{ if(c.dataset.aid) decide(c.dataset.aid,"allow",c,true); });  // 打开时立即放行当前所有待审批项
@@ -446,6 +591,7 @@ function _addOptimisticThread(tid, title){
   state._sig=null; renderThreads();
 }
 async function newThread(){
+  if(window.COMBO?.active) return comboNewSession();
   try{
     const t=await createThread();
     if(t && t.id){ _addOptimisticThread(t.id, "新对话"); openThread(t.id); $("#input").focus(); }
@@ -454,4 +600,4 @@ async function newThread(){
 }
 
 
-export { loadThreads, setConn, threadEl, cmpSessionEl, renameCmpSession, deleteCmpSession, renderThreads, toggleGroup, savePins, loadPins, togglePin, saveCronJobs, loadCronJobs, toggleCronJob, serverSingleIds, saveCmp, markCmp, loadCmp, saveCmpSessions, cmpSessionUpsert, cmpSessionRecordThread, loadCmpSessions, renameThread, deleteThread, applyAuto, createThread, loadAutoState, applyShell, renderShell, toggleShell, renderAuto, toggleAuto, _addOptimisticThread, newThread };
+export { loadThreads, setConn, threadEl, cmpSessionEl, comboSessionEl, renameCmpSession, deleteCmpSession, renameComboSession, deleteComboSession, renderThreads, toggleGroup, savePins, loadPins, togglePin, saveCronJobs, loadCronJobs, toggleCronJob, serverSingleIds, saveCmp, markCmp, loadCmp, saveCmpSessions, cmpSessionUpsert, cmpSessionRecordThread, loadCmpSessions, saveComboSessions, loadComboSessions, renameThread, deleteThread, applyAuto, createThread, loadAutoState, applyShell, renderShell, toggleShell, renderAuto, toggleAuto, _addOptimisticThread, newThread };

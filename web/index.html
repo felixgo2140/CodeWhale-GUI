@@ -16,6 +16,7 @@
 <link rel="stylesheet" href="css/base.css">
 <link rel="stylesheet" href="css/components.css">
 <link rel="stylesheet" href="css/compare.css">
+<link rel="stylesheet" href="css/combo.css">
 
 </head>
 <body>
@@ -24,7 +25,7 @@
     <div id="sidehead">
       <div id="brand"><span class="logo">🐳</span><span class="bname">CodeWhale</span><span id="version"></span><button id="updbtn" title="CodeWhale 后端有新版,点击更新">↑ 更新</button><button id="guiupdbtn" title="界面有新版,点击下载验签更新">↑ 界面</button></div>
       <button id="newbtn">新建对话</button>
-      <div id="sidetools"><button class="topbtn" id="skillsbtn">Skills</button><button class="topbtn" id="mcpbtn">连接器</button><button class="topbtn" id="cmpbtn" title="多模型并排对比">对比</button><button class="topbtn" id="settingsbtn" title="设置与会话管理">设置</button></div>
+      <div id="sidetools"><button class="topbtn" id="skillsbtn">Skills</button><button class="topbtn" id="mcpbtn">连接器</button><button class="topbtn" id="combobtn" title="规划、执行、审计协作">组合</button><button class="topbtn" id="cmpbtn" title="多模型并排对比">对比</button><button class="topbtn" id="settingsbtn" title="设置与会话管理">设置</button></div>
     </div>
     <div id="threads"></div>
     <div id="sidefoot">
@@ -51,6 +52,16 @@
       <button id="timelinebtn" title="打开本对话的用户输入时间线" onclick="event.preventDefault();event.stopPropagation();window.timelineToggle&&window.timelineToggle('single')">时间线</button>
       <button id="previewbtn" title="打开/关闭应用内预览">预览</button>
       <button id="interruptbtn" title="停止当前任务（Esc）">停止</button>
+    </div>
+  <div id="comboBar" hidden>
+      <div class="combo-ident"><b>组合任务</b><span id="comboPhase">等待任务</span></div>
+    <div id="comboRoles" aria-label="组合模型角色">
+      <button type="button" class="combo-role" data-role="controller"><span>总调度</span><b>选择模型</b><small>理解、规划、监督与验收</small></button>
+      <button type="button" class="combo-role" data-role="executor"><span>执行模型</span><b>选择模型</b><small>研究、起草；按需使用工具</small></button>
+    </div>
+    <button type="button" id="comboConfigure" class="combo-intervene" title="配置总调度与执行模型">角色配置</button>
+      <button type="button" id="comboIntervene" class="combo-intervene" title="停止、续跑或要求总调度重新检查">流程控制</button>
+      <span id="comboGate" class="combo-gate">检查点 0/4 · 等待任务</span>
     </div>
     <div id="messages">
       <div id="mwrap">
