@@ -44,11 +44,17 @@ function boot(){
   $("#modalClose").onclick=closeModal;
   $("#modal").onclick=e=>{ if(e.target.id==="modal") closeModal(); };
   $("#attachbtn").onclick=()=>$("#fileinput").click();
-  $("#fileinput").onchange=e=>{ if(e.target.files.length) uploadFiles([...e.target.files]); e.target.value=""; };
+  $("#fileinput").onchange=async e=>{
+    // Copy FileList before clearing the native picker. WebKit may otherwise
+    // invalidate a later item when the picker is reopened during an upload.
+    const files=[...(e.currentTarget.files||[])];
+    e.currentTarget.value="";
+    if(files.length) await uploadFiles(files);
+  };
   { const cw=$("#cwrap");
     ["dragover","dragenter"].forEach(ev=>cw.addEventListener(ev,e=>{e.preventDefault();cw.classList.add("drag");}));
     ["dragleave","drop"].forEach(ev=>cw.addEventListener(ev,e=>{e.preventDefault();cw.classList.remove("drag");}));
-    cw.addEventListener("drop",e=>{ if(e.dataTransfer&&e.dataTransfer.files.length) uploadFiles([...e.dataTransfer.files]); });
+    cw.addEventListener("drop",async e=>{ if(e.dataTransfer&&e.dataTransfer.files.length) await uploadFiles([...e.dataTransfer.files]); });
   }
   $("#sendbtn").onclick=enterSend;   // 运行时=排队,空闲时=发送(停止用顶栏「停止」)
   $("#interruptbtn").onclick=interrupt;
@@ -116,7 +122,7 @@ function boot(){
 
   const inp=$("#input");
   inp.addEventListener("input",()=>{ inp.style.height="auto"; inp.style.height=Math.min(inp.scrollHeight,200)+"px"; $("#sendbtn").disabled=!state.running && !inp.value.trim() && !state.attachments.length; });
-  inp.addEventListener("paste",e=>{ const fs=[...((e.clipboardData&&e.clipboardData.files)||[])]; if(fs.length){ e.preventDefault(); uploadFiles(fs); } });   // 贴文件/图片 → 上传
+  inp.addEventListener("paste",async e=>{ const fs=[...((e.clipboardData&&e.clipboardData.files)||[])]; if(fs.length){ e.preventDefault(); await uploadFiles(fs); } });   // 贴文件/图片 → 上传
   let composing=false;
   inp.addEventListener("compositionstart",()=>composing=true);
   inp.addEventListener("compositionend",()=>composing=false);

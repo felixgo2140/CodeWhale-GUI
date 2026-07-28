@@ -600,6 +600,17 @@ function editMsg(msg){ const inp=$("#input"); inp.value=msgText(msg); inp.dispat
 function isImageAttachment(a){ return !!((a?.type||"").startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(a?.name||"")); }
 function revokeAttachmentPreview(a){ if(a&&a.previewUrl){ try{ URL.revokeObjectURL(a.previewUrl); }catch(e){} a.previewUrl=""; } }
 function clearAttachmentList(list){ (list||[]).forEach(revokeAttachmentPreview); if(list) list.length=0; }
+// Keep a practical cap instead of silently losing files. Twelve covers a small
+// document set while keeping the per-message prompt and upload work manageable.
+const MAX_ATTACHMENTS_PER_MESSAGE=12;
+const MAX_ATTACHMENT_BYTES=50*1024*1024;
+function attachmentSourceKey(file){
+  return [file&&file.name||"",file&&file.size||0,file&&file.lastModified||0].join("::");
+}
+function attachmentControlLabel(list){
+  const count=(list||[]).filter(a=>a&&!a.consumed).length;
+  return count ? `继续添加附件（已选 ${count}/${MAX_ATTACHMENTS_PER_MESSAGE}）` : `上传附件（最多 ${MAX_ATTACHMENTS_PER_MESSAGE} 个）`;
+}
 function uploadAttachmentRecord(file,d){
   const a={name:d.name||file.name,path:d.path,textPath:d.text_path||d.textPath||"",textName:d.text_name||d.textName||"",textKind:d.text_kind||d.textKind||"",ocrText:d.ocr_text||d.ocrText||"",type:file.type||d.type||"",size:d.size||file.size||0,previewUrl:""};
   if(isImageAttachment(a)) a.previewUrl=URL.createObjectURL(file);
@@ -607,16 +618,33 @@ function uploadAttachmentRecord(file,d){
 }
 async function optimisticUpload(files, opts={}){
   const list=opts.list, render=typeof opts.render==="function"?opts.render:()=>{}, scope=opts.scope||"inbox", skipNotify=opts.skipNotify||cwToast;
-  if(!list) return;
+  const maxAttachments=Math.max(1,Number(opts.maxAttachments)||MAX_ATTACHMENTS_PER_MESSAGE);
+  if(!list) return {added:0,skipped:0};
   const queue=[];
+  const existing=list.filter(a=>a&&!a.consumed);
+  const seen=new Set(existing.map(a=>a.sourceKey).filter(Boolean));
+  let skippedDuplicate=0, skippedLimit=0, skippedSize=0;
   [...(files||[])].forEach(f=>{
     if(!f) return;
-    if(f.size>50*1024*1024){ skipNotify("⚠ "+f.name+" 超过 50MB,跳过"); return; }
-    const rec={name:f.name,size:f.size||0,type:f.type||"",path:"",textPath:"",textName:"",textKind:"",previewUrl:"",pending:true};
+    const sourceKey=attachmentSourceKey(f);
+    if(seen.has(sourceKey)){ skippedDuplicate++; return; }
+    if(existing.length+queue.length>=maxAttachments){ skippedLimit++; return; }
+    if(f.size>MAX_ATTACHMENT_BYTES){ skippedSize++; return; }
+    seen.add(sourceKey);
+    const rec={name:f.name,size:f.size||0,type:f.type||"",path:"",textPath:"",textName:"",textKind:"",previewUrl:"",pending:true,sourceKey};
     if(isImageAttachment(rec)) rec.previewUrl=URL.createObjectURL(f);
-    list.push(rec); queue.push({file:f, rec}); render();
+    list.push(rec); queue.push({file:f, rec});
   });
-  queue.forEach(it=>{
+  if(skippedSize) skipNotify(`⚠ ${skippedSize} 个附件超过 50MB，未加入`);
+  if(skippedDuplicate) skipNotify(`已跳过 ${skippedDuplicate} 个重复附件`);
+  if(skippedLimit) skipNotify(`本条消息最多可附加 ${maxAttachments} 个文件，已加入本次可容纳的附件`);
+  if(!queue.length){ render(); return {added:0,skipped:skippedDuplicate+skippedLimit+skippedSize}; }
+
+  // Render the complete batch before network work starts. This makes a third
+  // (or later) attachment visibly join the queue immediately, even while the
+  // first two are still uploading.
+  render();
+  const uploadOneRecord=async it=>{
     const f=it.file, rec=it.rec;
     rec.ready=(async()=>{
       try{
@@ -641,8 +669,19 @@ async function optimisticUpload(files, opts={}){
       }
       return rec;
     })();
+    return rec.ready;
+  };
+  // Avoid flooding the local backend when a user adds a document bundle, while
+  // still allowing every selected file to remain in the same message queue.
+  let next=0;
+  const workers=Array.from({length:Math.min(3,queue.length)},async()=>{
+    while(next<queue.length){
+      const item=queue[next++];
+      await uploadOneRecord(item);
+    }
   });
-  await Promise.all(queue.map(it=>it.rec.ready));
+  await Promise.all(workers);
+  return {added:queue.length,skipped:skippedDuplicate+skippedLimit+skippedSize};
 }
 function takeAttachmentBundle(list, render){
   const bundle=(list||[]).splice(0);
@@ -898,4 +937,4 @@ function setRunning(r){
 function refreshActiveMeta(){ loadThreads(); }
 
 
-export { cwToast, cwConfirm, esc, escAttr, ICONS, icon, iconLabel, setButtonIcon, hydrateIcons, keyboardButton, relTime, timelineTimeValue, timelineTimeLabel, timelinePreview, timelineReset, timelineHash, timelineRegisterUser, timelineRender, timelineOpen, timelineClose, timelineToggle, timelineJump, initTimelineControls, roughThreadTitle, normTurnStatus, isTurnRunning, isTurnDone, isStoppingTurn, statusText, isImportantStatus, activeSummary, turnInfoFromSnapshot, runFmt, runStatusReset, runStatusEnsure, runStatusTick, runStatusUpdate, runStatusStep, runLabelForItem, runStatusFromItem, runStatusFinish, pendingApprovalCards, approvalGoneError, markApproval, approvalRequired, decide, approvalResolved, row, sysnote, execCopy, clipCopy, msgText, copyMsg, editMsg, isImageAttachment, revokeAttachmentPreview, clearAttachmentList, uploadAttachmentRecord, optimisticUpload, takeAttachmentBundle, restoreAttachmentBundle, attachmentPrompt, attachmentReadRef, attachmentChip, filePathsFromText, fileDownloadHref, verifiedFileCardPath, appendFileDownloadCards, pdfPathsFromText, pdfDownloadHref, appendPdfDownloadCards, setRunning, refreshActiveMeta };
+export { cwToast, cwConfirm, esc, escAttr, ICONS, icon, iconLabel, setButtonIcon, hydrateIcons, keyboardButton, relTime, timelineTimeValue, timelineTimeLabel, timelinePreview, timelineReset, timelineHash, timelineRegisterUser, timelineRender, timelineOpen, timelineClose, timelineToggle, timelineJump, initTimelineControls, roughThreadTitle, normTurnStatus, isTurnRunning, isTurnDone, isStoppingTurn, statusText, isImportantStatus, activeSummary, turnInfoFromSnapshot, runFmt, runStatusReset, runStatusEnsure, runStatusTick, runStatusUpdate, runStatusStep, runLabelForItem, runStatusFromItem, runStatusFinish, pendingApprovalCards, approvalGoneError, markApproval, approvalRequired, decide, approvalResolved, row, sysnote, execCopy, clipCopy, msgText, copyMsg, editMsg, isImageAttachment, revokeAttachmentPreview, clearAttachmentList, MAX_ATTACHMENTS_PER_MESSAGE, attachmentControlLabel, uploadAttachmentRecord, optimisticUpload, takeAttachmentBundle, restoreAttachmentBundle, attachmentPrompt, attachmentReadRef, attachmentChip, filePathsFromText, fileDownloadHref, verifiedFileCardPath, appendFileDownloadCards, pdfPathsFromText, pdfDownloadHref, appendPdfDownloadCards, setRunning, refreshActiveMeta };

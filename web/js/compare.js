@@ -1165,7 +1165,7 @@ async function cmpDispatch(item,provs){   // 把同一条用户问题发给指�
 }
 // ── 对比附件(主输入框:文件发给所有栏)── 上传到 /api/upload 拿文件系统路径,各 provider 后端都能 read_file 读
 async function cmpUploadFiles(files){
-  await optimisticUpload(files,{scope:CMP.sessionId?("cmp_"+CMP.sessionId):"cmp",list:CMP.attachments,render:cmpRenderAttach,skipNotify:cwToast});
+  return optimisticUpload(files,{scope:CMP.sessionId?("cmp_"+CMP.sessionId):"cmp",list:CMP.attachments,render:cmpRenderAttach,skipNotify:cwToast});
 }
 function cmpRenderAttach(){   // 附件栏(输入框上方):chip + ✕ 移除
   const bar=$("#cmpAttachBar"); if(!bar) return;
@@ -1173,6 +1173,12 @@ function cmpRenderAttach(){   // 附件栏(输入框上方):chip + ✕ 移除
   CMP.attachments.forEach((a,i)=>{
     bar.appendChild(attachmentChip(a,()=>{ revokeAttachmentPreview(a); CMP.attachments.splice(i,1); cmpRenderAttach(); }));
   });
+  const attachBtn=$("#cmpAttachBtn");
+  if(attachBtn){
+    const label=attachmentControlLabel(CMP.attachments);
+    attachBtn.title=label;
+    attachBtn.setAttribute("aria-label",label);
+  }
 }
 function cmpRunNextFor(prov){
   if(!CMP.sel.has(prov)){ if(CMP.provQ&&CMP.provQ[prov]) CMP.provQ[prov]=[]; cmpSyncSendUI(); return; }

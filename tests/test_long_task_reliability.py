@@ -103,6 +103,15 @@ class LongTaskReliabilityTests(unittest.TestCase):
             self.assertIn("状态: ocr_ready", sidecar.read_text(encoding="utf-8"))
             release.set()
 
+    def test_uploads_keep_more_than_two_attachments_and_avoid_name_collisions(self):
+        """A document bundle must not silently stop after the first two files."""
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(SERVER, "UPLOAD_DIR", tmp):
+            saved = [
+                SERVER.save_upload(f"file-{index}".encode(), "research.txt", "thr_batch")
+                for index in range(3)
+            ]
+        self.assertEqual([item["name"] for item in saved], ["research.txt", "research-1.txt", "research-2.txt"])
+
     def test_remote_vision_failure_preserves_ready_local_ocr(self):
         with tempfile.TemporaryDirectory() as tmp:
             image = pathlib.Path(tmp) / "screen.png"
@@ -142,6 +151,16 @@ class LongTaskReliabilityTests(unittest.TestCase):
         self.assertIn("restoreAttachmentBundle(list,bundle,()=>cmpColRenderAttach(prov))", compare)
         self.assertIn("CMP.prepareChain", compare)
         self.assertNotIn("图片需识图约 20 秒", stream + compare)
+
+    def test_frontend_attachment_queue_accepts_a_document_bundle(self):
+        tools = (ROOT / "web/js/tools.js").read_text(encoding="utf-8")
+        main = (ROOT / "web/js/main.js").read_text(encoding="utf-8")
+
+        self.assertIn("const MAX_ATTACHMENTS_PER_MESSAGE=12", tools)
+        self.assertIn("length:Math.min(3,queue.length)", tools)
+        self.assertIn("attachmentSourceKey", tools)
+        self.assertNotIn("slice(0,2)", tools)
+        self.assertIn("const files=[...(e.currentTarget.files||[])]", main)
 
     def test_emergency_compaction_that_leaves_91_percent_triggers_preflight(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(SERVER, "RUNTIME_DIR", tmp):

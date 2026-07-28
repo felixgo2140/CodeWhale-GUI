@@ -792,7 +792,7 @@ async function uploadOne(f, scope){   // 上传单个文件到 workspace,返回�
   return null;
 }
 async function uploadFiles(files){
-  await optimisticUpload(files,{scope:state.activeId||"inbox",list:state.attachments,render:renderAttach,skipNotify:sysnote});
+  return optimisticUpload(files,{scope:state.activeId||"inbox",list:state.attachments,render:renderAttach,skipNotify:sysnote});
 }
 
 function renderAttach(){
@@ -800,6 +800,12 @@ function renderAttach(){
   state.attachments.forEach((a,i)=>{
     bar.appendChild(attachmentChip(a,()=>{ revokeAttachmentPreview(a); state.attachments.splice(i,1); renderAttach(); }));
   });
+  const attachBtn=$("#attachbtn");
+  if(attachBtn){
+    const label=attachmentControlLabel(state.attachments);
+    attachBtn.title=label;
+    attachBtn.setAttribute("aria-label",label);
+  }
   $("#sendbtn").disabled=!state.running && !$("#input").value.trim() && !state.attachments.length;
 }
 async function withAttachments(text){   // 取走附件后等落盘 + 本机亚秒级 OCR；耗时视觉补充留在后台
