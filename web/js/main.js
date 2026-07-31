@@ -33,6 +33,8 @@ function boot(){
   initPanelDocumentHandlers();
   initCompareNetenv();
   initStopShortcut();
+  const cmpCopyAllBtn=$("#cmpCopyAllBtn"); if(cmpCopyAllBtn) cmpCopyAllBtn.onclick=cmpCopyAllReplies;
+  const cmpSummarizeBtn=$("#cmpSummarizeBtn"); if(cmpSummarizeBtn) cmpSummarizeBtn.onclick=cmpOneClickSummary;
 
   $("#newbtn").onclick=newThread;
   $("#guirestart").onclick=restartGui;
@@ -158,6 +160,8 @@ function boot(){
     setInterval(loadBalance, 60000);  // 每分钟刷新当前 provider 余额/额度/用量
     loadVersion(); checkUpdate(); setInterval(checkUpdate, 3600000);   // CodeWhale 后端版本号 + 启动/每小时查新版
     checkGuiUpdate(); setInterval(checkGuiUpdate, 3600000);            // GUI 界面:启动 + 每小时查新版(签名验证)
+    setTimeout(()=>checkModelUpdates({startup:true,force:true}).catch(()=>{}),1200); // 大模型:每次新开主窗口强制同步一次目录,不阻塞首屏
+    setInterval(()=>checkModelUpdates({startup:true}).catch(()=>{}),3600000);
   }
 
   initCompareDom();

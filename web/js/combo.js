@@ -724,7 +724,7 @@ async function comboRunRole(roleKey,prompt,options={}){
   COMBO.currentThread=tid; COMBO.bag.activeId=tid;
   comboSetPhase(key,comboStatusLabel(key));
   comboAddPhase(key,key==="controller"?"理解、规划、检查点或最终验收：不调用工具":allowTools?`按已确认方案使用 ${comboProviderName(role.provider)} 的工具能力执行`:"研究、起草与分析，不改文件、不跑命令");
-  await api(`/cmp/${role.provider}/v1/threads/${tid}`,{method:"PATCH",body:JSON.stringify({auto_approve:true,allow_shell:allowTools&&state.allowShell})}).catch(()=>{});
+  await api(`/cmp/${role.provider}/v1/threads/${tid}`,{method:"PATCH",body:JSON.stringify({auto_approve:true,allow_shell:allowTools&&state.allowShell,trust_mode:allowTools&&state.allowShell})}).catch(()=>{});
   let since=0;
   try{ const before=await api(`/cmp/${role.provider}/v1/threads/${tid}`); since=before.latest_seq||0; }catch(e){}
   const posted=await api(`/cmp/${role.provider}/v1/threads/${tid}/turns`,{method:"POST",body:JSON.stringify({prompt})});
@@ -996,11 +996,11 @@ async function comboToggleShell(){
   state.allowShell=!state.allowShell; renderShell();
   for(const [key,tid] of Object.entries((COMBO.session&&COMBO.session.threads)||{})){
     const normalized=comboRoleKey(key), role=COMBO.roles[normalized]||COMBO.roles.controller;
-    await api(`/cmp/${role.provider}/v1/threads/${tid}`,{method:"PATCH",body:JSON.stringify({allow_shell:false})}).catch(()=>{});
+    await api(`/cmp/${role.provider}/v1/threads/${tid}`,{method:"PATCH",body:JSON.stringify({allow_shell:false,trust_mode:false})}).catch(()=>{});
   }
   for(const [key,tid] of Object.entries((COMBO.session&&COMBO.session.tool_threads)||{})){
     const role=comboExecutionProfile(true);
-    await api(`/cmp/${role.provider}/v1/threads/${tid}`,{method:"PATCH",body:JSON.stringify({allow_shell:key==="executor"&&state.allowShell})}).catch(()=>{});
+    await api(`/cmp/${role.provider}/v1/threads/${tid}`,{method:"PATCH",body:JSON.stringify({allow_shell:key==="executor"&&state.allowShell,trust_mode:key==="executor"&&state.allowShell})}).catch(()=>{});
   }
 }
 async function comboToggleAuto(){

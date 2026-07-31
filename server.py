@@ -87,6 +87,7 @@ CMP_THREADS_FILE = os.path.expanduser("~/.codewhale-gui/cmp_threads.json")   # �
 CMP_SESSIONS_FILE = os.path.expanduser("~/.codewhale-gui/cmp_sessions.json")  # 对比会话 [{id,topic,ts,threads:{prov:tid}}] → 侧栏每会话一行、点回当时对比,跨窗口共享
 CMP_THREAD_SESSIONS_FILE = os.path.expanduser("~/.codewhale-gui/cmp_thread_sessions.json")  # thread_id -> {session_id,provider}:对比归组的权威唯一编码索引
 COMBO_SESSIONS_FILE = os.path.expanduser("~/.codewhale-gui/combo_sessions.json")  # 组合任务: session_id 是唯一归组依据
+MOONSHOT_TEXT_SESSIONS_FILE = os.path.expanduser("~/.codewhale-gui/moonshot_text_sessions.json")
 COMBO_ROLE_NAMES = ("controller", "executor")
 COMBO_LEGACY_ROLE_ALIASES = {
     "dispatcher": "controller", "auditor": "controller",
@@ -111,6 +112,7 @@ MCP_ALLOWED_BINS = {"npx", "node", "uvx", "python", "python3", "bun", "deno"}
 MCP_SAFE_DIRS = tuple(os.path.realpath(os.path.expanduser(p)) for p in (
     "~/codewhale-gui", "~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"))
 _TITLE_STATE_LOCK = threading.Lock()
+_MOONSHOT_TEXT_LOCK = threading.RLock()
 
 def combo_role_key(role):
     """Normalize historical combo role labels without changing stored thread ids."""
@@ -802,8 +804,9 @@ def _prepare_claude_cli():
         print(f"[claude-code] 无法创建稳定 CLI 映射: {exc}", flush=True)
         return target
 
-_CLAUDE_CLI = _prepare_claude_cli()
-_TWITTER_CLI = _prepare_safe_twitter_cli()
+_SKIP_RUNTIME_WRAPPERS = os.environ.get("CODEWHALE_SKIP_RUNTIME_WRAPPERS", "").strip() == "1"
+_CLAUDE_CLI = "" if _SKIP_RUNTIME_WRAPPERS else _prepare_claude_cli()
+_TWITTER_CLI = "" if _SKIP_RUNTIME_WRAPPERS else _prepare_safe_twitter_cli()
 _path_parts = [_RUNTIME_BIN_DIR, "/opt/homebrew/bin", "/usr/local/bin",
                os.path.expanduser("~/.local/bin"), "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
 if _CLAUDE_CLI and os.path.dirname(_CLAUDE_CLI) not in _path_parts:
@@ -4066,32 +4069,29 @@ def set_model(provider, model, api_key, base_url=""):
         return {"ok": True, "provider": "longcat", "model": model,
                 "newchatCapable": True, "restarted": False, "note": "LongCat key 已保存"}
     if provider == "qwen":
-        model = model if model and model != "auto" else _QWEN_DEFAULT_MODEL
+        model = _qwen_normalize_model(model if model and model != "auto" else _QWEN_DEFAULT_MODEL)
         current = _provider_cfg("qwen") or {}
-        target_profile = _qwen_credential_profile(model, base_url)
-        current_profile = _qwen_credential_profile(current.get("model"), current.get("base_url"))
-        saved_profile = (_read_qwen_credential_profiles().get(target_profile) or {})
-        target_base = (base_url
-                       or (current.get("base_url") if current_profile == target_profile else "")
-                       or saved_profile.get("base_url")
-                       or (_QWEN_TOKEN_PLAN_BASE_URL if target_profile == "token_plan" else _QWEN_BASE_URL))
-        target_base = str(target_base or "").strip().rstrip("/")
-        if target_profile == "token_plan" and not _qwen_is_token_plan_base(target_base):
-            return {"error": "Qwen3.8 Max Preview 必须使用 Token Plan 页面提供的专用 base URL"}
-
-        # 普通百炼/工作区 key 与 Token Plan key 是两套凭据。切换端点类型时绝不拿
-        # 当前 key 试请求，否则界面会误显“已配置”，还会制造一次无意义的 401。
-        reusable_current_key = current.get("api_key") if current_profile == target_profile else ""
-        probe_key = (api_key or reusable_current_key or saved_profile.get("api_key") or "").strip()
+        profiles = _read_qwen_credential_profiles()
+        saved_profile = profiles.get("token_plan") if isinstance(profiles.get("token_plan"), dict) else {}
+        legacy_profile = profiles.get("workspace") if isinstance(profiles.get("workspace"), dict) else {}
+        # The endpoint is part of the product contract, not user-editable state.
+        # Legacy workspace credentials are considered only as a one-time migration
+        # candidate and are persisted only after a real 3.8 request succeeds.
+        target_base = _QWEN_TOKEN_PLAN_BASE_URL
+        probe_key = (
+            api_key
+            or saved_profile.get("api_key")
+            or current.get("api_key")
+            or legacy_profile.get("api_key")
+            or ""
+        ).strip()
         if not probe_key:
-            label = "Token Plan 专用 API key" if target_profile == "token_plan" else "百炼/工作区 API key"
-            return {"error": f"{label} 未配置；不同千问端点的 key 不会互相复用"}
+            return {"error": "Qwen Token Plan API key 未配置"}
         probe = _qwen_probe(probe_key, target_base, model)
         if probe.get("fatal"):
             return {"error": probe.get("error") or "千问模型校验失败"}
         try:
-            _remember_qwen_credential_profile(current_profile, current)
-            _remember_qwen_credential_profile(target_profile, {
+            _remember_qwen_credential_profile("token_plan", {
                 "kind": "openai-compatible",
                 "base_url": target_base,
                 "model": model,
@@ -4107,12 +4107,13 @@ def set_model(provider, model, api_key, base_url=""):
             _set_model_pref("qwen", model)
             _cmp_reset("qwen")
             _restart_litellm()
+            _PROVIDER_MODELS_CACHE.pop("qwen", None)
         except Exception as e:
             return {"error": "写入千问配置失败: " + str(e)[:150]}
         out = {"ok": True, "provider": "qwen", "model": model,
                "base_url": target_base, "newchatCapable": True, "restarted": False,
-               "credential_profile": target_profile,
-               "note": "千问配置已校验并保存"}
+               "credential_profile": "token_plan",
+               "note": "Qwen Token Plan 配置已实测并保存"}
         if probe.get("warning"):
             out["warning"] = probe["warning"]
         return out
@@ -4166,10 +4167,20 @@ _VOLCENGINE_DEFAULT_MODEL = "doubao-seed-2-1-pro-260628"
 _LONGCAT_BASE_URL = "https://api.longcat.chat/openai"
 _LONGCAT_DEFAULT_MODEL = "LongCat-2.0"
 _LONGCAT_CONTEXT_WINDOW = 1048576
-_QWEN_BASE_URL = "https://ws-zazex2z3400vhsxs.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-_QWEN_TOKEN_PLAN_BASE_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+_QWEN_TOKEN_PLAN_BASE_URL = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+# Compatibility alias for older call sites and migrated config. Qwen now has one
+# canonical route: the Beijing Token Plan OpenAI-compatible endpoint.
+_QWEN_BASE_URL = _QWEN_TOKEN_PLAN_BASE_URL
 _QWEN_LATEST_MODEL = "qwen3.8-max-preview"
-_QWEN_DEFAULT_MODEL = "qwen3.7-max-2026-06-08"
+_QWEN_DEFAULT_MODEL = _QWEN_LATEST_MODEL
+_QWEN_FALLBACK_MODELS = (
+    {"id": _QWEN_LATEST_MODEL, "name": "Qwen 3.8 Max Preview"},
+)
+_QWEN_NON_CHAT_MODEL_MARKERS = (
+    "embedding", "rerank", "tts", "asr", "speech", "audio",
+    "image", "wan", "video", "ocr", "parser", "moderation",
+)
+_QWEN_LOCAL_PROXY_BASE_URL = f"http://127.0.0.1:{PORT}/internal/qwen/v1"
 _QWEN_CREDENTIAL_PROFILES_FILE = os.path.expanduser("~/.codewhale-gui/qwen_credentials.json")
 _OPENAI_CODEX_DEFAULT_MODEL = "gpt-5.6-sol"
 _OPENAI_CODEX_FALLBACK_MODELS = (
@@ -4196,11 +4207,41 @@ _CLAUDE_CODE_MODEL = "fable"   # claude 订阅列实际调用的模型(显式钉
 # ── 每 provider 可选模型变体:用户在 UI 选(存 model_prefs.json),thread 创建 + claude env 读它,无则回退默认钉死值。
 #    单窗口 + 对比窗口共用这份 pref(同一 provider 一处选、两窗口都生效)。
 _MODEL_PREFS_FILE = os.path.expanduser("~/.codewhale-gui/model_prefs.json")
+_MODEL_CATALOG_STATE_FILE = os.path.expanduser("~/.codewhale-gui/model_catalog_state.json")
+_MODEL_CATALOG_LOCK = threading.Lock()
+_MODEL_UPDATE_PROVIDER_IDS = (
+    "deepseek", "zai", "moonshot", "custom", "volcengine",
+    "longcat", "qwen", "openai-codex", "claude-code",
+)
+_MODEL_UPDATE_STARTUP_TTL = 15 * 60
 _CLAUDE_MODELS = {
     "fable": ("Claude Fable 5", "claude-fable-5"), "claude-fable-5": ("Claude Fable 5", "claude-fable-5"),
     "opus": ("Claude Opus 4.8", "claude-opus-4-8"), "claude-opus-4-8": ("Claude Opus 4.8", "claude-opus-4-8"),
     "sonnet": ("Claude Sonnet 4.6", "claude-sonnet-4-6"), "claude-sonnet-4-6": ("Claude Sonnet 4.6", "claude-sonnet-4-6"),
     "haiku": ("Claude Haiku 4.5", "claude-haiku-4-5"), "claude-haiku-4-5": ("Claude Haiku 4.5", "claude-haiku-4-5"),
+}
+# 单模型“简单问题快答”必须留在用户当前选择的 provider 内，不能为了快答
+# 把 DeepSeek/GLM/Kimi/GPT 等线程偷偷改成 Qwen。这里仅列入已经通过各
+# provider /models 实测存在的模型；复杂任务始终恢复用户原先选择的模型。
+_SMART_FAST_MODEL_ROUTES = {
+    "deepseek": {"model": "deepseek-v4-flash", "display": "DeepSeek V4 Flash"},
+    "zai": {"model": "glm-5-turbo", "display": "GLM-5 Turbo"},
+    # Moonshot 的 coding/highspeed 变体会在收到 CodeWhale 完整工具
+    # schema 时因 MFJS 关键字校验失败；K3 已实测可正常携带同一套工具。
+    "moonshot": {"model": "k3", "display": "K3"},
+    "custom": {"model": "hy3", "display": "混元 HY3"},
+    "volcengine": {"model": "doubao-seed-2-1-turbo-260628", "display": "豆包 Seed 2.1 Turbo"},
+    "openai-codex": {"model": "gpt-5.6-luna", "display": "GPT-5.6 Luna"},
+}
+_SMART_FIXED_MODEL_PROVIDERS = {
+    # LongCat 的当前账户目录只有一个模型；没有可切换的快速变体。
+    "longcat": "LongCat 2.0",
+    # Claude CLI 的实际模型由 provider 进程环境变量决定，线程级 model 只是
+    # `sonnet` 路由键。自动改它会显示成 Haiku、实际仍跑 Fable，故保持所选。
+    "claude-code": "Claude（保持所选模型）",
+    # Token Plan 目录由 /models 动态发现。简单问题继续使用用户选中的
+    # 对话型号，避免模型目录变化时静默改写已有会话。
+    "qwen": "Qwen / QwQ（保持所选模型）",
 }
 def _claude_identity(model):                                          # 身份串跟着所选模型走(否则切 sonnet 还自报 Opus)
     name, model_id = _CLAUDE_MODELS.get(model, ("Claude (Anthropic)", model))
@@ -4221,6 +4262,8 @@ def _thread_model(prov):                                              # 建 thre
     return "sonnet" if prov == "claude-code" else _model_pref(prov)
 _PROVIDER_MODELS_CACHE = {}
 def _provider_model_bases(prov):
+    if prov == "qwen":
+        return [_QWEN_TOKEN_PLAN_BASE_URL]
     cfg = _provider_cfg(prov)
     base = (cfg.get("base_url") or "").strip().rstrip("/")
     defaults = {
@@ -4230,7 +4273,6 @@ def _provider_model_bases(prov):
         "custom": "https://tokenhub.tencentmaas.com/v1",
         "volcengine": _VOLCENGINE_BASE_URL,
         "longcat": _LONGCAT_BASE_URL,
-        "qwen": _QWEN_BASE_URL,
     }
     bases = [base or defaults.get(prov, "")]
     if prov == "moonshot":
@@ -4249,6 +4291,40 @@ def _normalize_provider_model_item(item):
         return None
     name = str(item.get("display_name") or item.get("label") or item.get("name") or mid).strip() or mid
     return {"id": mid, "name": name, "owned_by": item.get("owned_by") or "", "created": item.get("created") or ""}
+
+def _qwen_supported_model(model):
+    model_id = str(model or "").strip().lower()
+    if not model_id.startswith(("qwen", "qwq")):
+        return False
+    return not any(marker in model_id for marker in _QWEN_NON_CHAT_MODEL_MARKERS)
+
+def _qwen_normalize_model(model):
+    model = str(model or "").strip()
+    return model if _qwen_supported_model(model) else _QWEN_DEFAULT_MODEL
+
+def _qwen_fallback_model_catalog():
+    return [dict(item) for item in _QWEN_FALLBACK_MODELS]
+
+def _qwen_catalog_result(models=None, source="bundled-qwen-token-plan-catalog", **extra):
+    discovered = []
+    seen = set()
+    for raw in models if isinstance(models, list) else []:
+        model = _normalize_provider_model_item(raw)
+        if not model or not _qwen_supported_model(model["id"]) or model["id"] in seen:
+            continue
+        seen.add(model["id"])
+        discovered.append(model)
+    for fallback in _qwen_fallback_model_catalog():
+        if fallback["id"] not in seen:
+            discovered.append(fallback)
+    return {
+        "provider": "qwen",
+        "ok": True,
+        "source": source,
+        "models": discovered,
+        "count": len(discovered),
+        **extra,
+    }
 def _codex_models_cache_file():
     return os.path.join(os.path.expanduser(os.environ.get("CODEX_HOME") or "~/.codex"), "models_cache.json")
 def _codex_oauth_models(cache_file=None):
@@ -4294,20 +4370,47 @@ def _provider_models(prov, force=False):
     if prov == "openai-codex":
         return _codex_oauth_models()
     if prov == "claude-code":
-        return {"provider": prov, "ok": False, "reason": "oauth_or_cli", "models": []}
+        models = []
+        seen = set()
+        for _, (name, model_id) in _CLAUDE_MODELS.items():
+            if model_id in seen:
+                continue
+            seen.add(model_id)
+            models.append({"id": model_id, "name": name})
+        return {
+            "provider": prov,
+            "ok": True,
+            "source": "claude-cli-catalog",
+            "models": models,
+            "count": len(models),
+        }
     key = ((_provider_cfg(prov).get("api_key") if isinstance(_provider_cfg(prov), dict) else "") or _provider_key(prov) or "").strip()
     if prov == "deepseek":
         key = deepseek_key() or key
     if not key:
+        if prov == "qwen":
+            return _qwen_catalog_result(reason="no_key", catalog_degraded=True)
         return {"provider": prov, "ok": False, "reason": "no_key", "models": []}
     last = ""
     headers = {"Authorization": "Bearer " + key}
     for base in _provider_model_bases(prov):
         try:
-            data = _json_get(base + "/models", headers, 8)
+            if prov == "qwen":
+                status, data, raw_body = _curl_json_get_ipv4(base + "/models", key, timeout=8)
+                if status >= 400:
+                    err = data.get("error") if isinstance(data, dict) else {}
+                    err = err if isinstance(err, dict) else {}
+                    detail = str(err.get("message") or err.get("code") or raw_body)[:240]
+                    raise RuntimeError(f"HTTP {status}: {detail}")
+            else:
+                data = _json_get(base + "/models", headers, 8)
             raw = data.get("data") or data.get("models") or []
             if isinstance(raw, dict):
                 raw = raw.get("data") or raw.get("models") or []
+            if prov == "qwen":
+                out = _qwen_catalog_result(raw, source=base + "/models")
+                _PROVIDER_MODELS_CACHE[ck] = {"t": now, "data": out}
+                return out
             models = []
             if isinstance(raw, list):
                 seen = set()
@@ -4322,11 +4425,17 @@ def _provider_models(prov, force=False):
             return out
         except Exception as e:
             last = str(e)[:160]
-    out = {"provider": prov, "ok": False, "error": last or "models endpoint unavailable", "models": []}
+    if prov == "qwen":
+        out = _qwen_catalog_result(
+            error=last or "models endpoint unavailable",
+            catalog_degraded=True,
+        )
+    else:
+        out = {"provider": prov, "ok": False, "error": last or "models endpoint unavailable", "models": []}
     _PROVIDER_MODELS_CACHE[ck] = {"t": now, "data": out}
     return out
 def provider_models(providers=None, force=False):
-    ids = providers or ["deepseek", "zai", "moonshot", "custom", "volcengine", "longcat", "qwen", "openai-codex"]
+    ids = providers or list(_MODEL_UPDATE_PROVIDER_IDS)
     items = {}
     threads = []
     lock = threading.Lock()
@@ -4344,6 +4453,132 @@ def provider_models(providers=None, force=False):
     for p in ids:
         items.setdefault(p, {"provider": p, "ok": False, "error": "timeout", "models": []})
     return {"items": items, "ts": int(time.time() * 1000)}
+
+def _read_model_catalog_state():
+    try:
+        with open(_MODEL_CATALOG_STATE_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+def _compact_model_catalog(models):
+    out = []
+    seen = set()
+    for raw in models if isinstance(models, list) else []:
+        model = _normalize_provider_model_item(raw)
+        if not model or model["id"] in seen:
+            continue
+        seen.add(model["id"])
+        out.append({
+            "id": model["id"],
+            "name": model.get("name") or model["id"],
+        })
+    return out
+
+def _model_catalog_status(state=None):
+    state = state if isinstance(state, dict) else _read_model_catalog_state()
+    stored = state.get("providers") if isinstance(state.get("providers"), dict) else {}
+    providers = []
+    for provider_id in _MODEL_UPDATE_PROVIDER_IDS:
+        item = stored.get(provider_id) if isinstance(stored.get(provider_id), dict) else {}
+        models = _compact_model_catalog(item.get("models"))
+        pending = _compact_model_catalog(item.get("pending_new"))
+        providers.append({
+            "id": provider_id,
+            "ok": bool(item.get("ok")),
+            "source": str(item.get("source") or ""),
+            "count": len(models),
+            "models": models,
+            "new_models": pending,
+            "new_count": len(pending),
+            "error": str(item.get("error") or ""),
+            "reason": str(item.get("reason") or ""),
+            "update_kind": "catalog",
+            "update_label": "同步目录即可用",
+        })
+    success = sum(1 for item in providers if item["ok"])
+    failed = sum(1 for item in providers if not item["ok"])
+    return {
+        "ok": success > 0,
+        "initialized": bool(state.get("initialized")),
+        "checked_at": int(state.get("checked_at") or 0),
+        "total_models": sum(item["count"] for item in providers),
+        "total_new": sum(item["new_count"] for item in providers),
+        "provider_success_count": success,
+        "failed_count": failed,
+        "providers": providers,
+    }
+
+def check_model_updates(force=False, startup=False):
+    """Refresh cloud/OAuth/CLI model catalogs and retain unread newly published ids."""
+    with _MODEL_CATALOG_LOCK:
+        previous = _read_model_catalog_state()
+        checked_at = int(previous.get("checked_at") or 0)
+        if startup and not force and checked_at and time.time() - checked_at < _MODEL_UPDATE_STARTUP_TTL:
+            return _model_catalog_status(previous)
+
+        result = provider_models(list(_MODEL_UPDATE_PROVIDER_IDS), force=force)
+        discovered = result.get("items") if isinstance(result, dict) else {}
+        previous_providers = previous.get("providers") if isinstance(previous.get("providers"), dict) else {}
+        next_providers = {}
+        had_baseline = bool(previous.get("initialized"))
+
+        for provider_id in _MODEL_UPDATE_PROVIDER_IDS:
+            old = previous_providers.get(provider_id) if isinstance(previous_providers.get(provider_id), dict) else {}
+            fresh = discovered.get(provider_id) if isinstance(discovered.get(provider_id), dict) else {}
+            old_models = _compact_model_catalog(old.get("models"))
+            old_ids = {item["id"] for item in old_models}
+            old_pending = _compact_model_catalog(old.get("pending_new"))
+
+            if fresh.get("ok"):
+                models = _compact_model_catalog(fresh.get("models"))
+                newly_published = [
+                    item for item in models
+                    if had_baseline and old_models and item["id"] not in old_ids
+                ]
+                pending_by_id = {item["id"]: item for item in old_pending}
+                for item in newly_published:
+                    pending_by_id[item["id"]] = item
+                next_providers[provider_id] = {
+                    "ok": True,
+                    "source": str(fresh.get("source") or ""),
+                    "models": models,
+                    "pending_new": list(pending_by_id.values()),
+                    "error": "",
+                    "reason": "",
+                }
+            else:
+                next_providers[provider_id] = {
+                    "ok": False,
+                    "source": str(old.get("source") or ""),
+                    "models": old_models,
+                    "pending_new": old_pending,
+                    "error": str(fresh.get("error") or ""),
+                    "reason": str(fresh.get("reason") or ""),
+                }
+
+        state = {
+            "initialized": True,
+            "checked_at": int(time.time()),
+            "providers": next_providers,
+        }
+        _atomic_write_json(_MODEL_CATALOG_STATE_FILE, state)
+        return _model_catalog_status(state)
+
+def acknowledge_model_updates(provider=""):
+    with _MODEL_CATALOG_LOCK:
+        state = _read_model_catalog_state()
+        providers = state.get("providers") if isinstance(state.get("providers"), dict) else {}
+        target = re.sub(r"[^A-Za-z0-9._-]", "", str(provider or ""))
+        for provider_id, item in providers.items():
+            if target and provider_id != target:
+                continue
+            if isinstance(item, dict):
+                item["pending_new"] = []
+        state["providers"] = providers
+        _atomic_write_json(_MODEL_CATALOG_STATE_FILE, state)
+        return _model_catalog_status(state)
 def _litellm_routing():
     d = {"compare": False, "harness": False, "single": False}
     try:
@@ -4397,25 +4632,22 @@ def litellm_routing_status():
     }
 def _qwen_model_for_chat():
     cfg_model = ((_provider_cfg("qwen") or {}).get("model") or "").strip()
-    model = (_model_pref("qwen") or cfg_model or _QWEN_DEFAULT_MODEL).strip()
-    if model in ("qwen-max", "qwen3.7-max"):
-        return _QWEN_DEFAULT_MODEL
-    return model
+    return _qwen_normalize_model(_model_pref("qwen") or cfg_model or _QWEN_DEFAULT_MODEL)
 
 def _qwen_requires_token_plan(model):
-    return str(model or "").strip().lower().startswith("qwen3.8-")
+    return _qwen_supported_model(model)
 
 def _qwen_is_token_plan_base(base_url):
-    try:
-        host = (urllib.parse.urlparse(str(base_url or "").strip()).hostname or "").lower()
-    except Exception:
-        host = ""
-    return host == "token-plan.ap-southeast-1.maas.aliyuncs.com"
+    return str(base_url or "").strip().rstrip("/") == _QWEN_TOKEN_PLAN_BASE_URL
+
+def _qwen_proxy_payload(payload):
+    """Keep the selected chat-capable Qwen/QwQ model and reject non-chat ids."""
+    data = dict(payload) if isinstance(payload, dict) else {}
+    data["model"] = _qwen_normalize_model(data.get("model"))
+    return data
 
 def _qwen_credential_profile(model="", base_url=""):
-    if _qwen_requires_token_plan(model) or _qwen_is_token_plan_base(base_url):
-        return "token_plan"
-    return "workspace"
+    return "token_plan"
 
 def _read_qwen_credential_profiles():
     try:
@@ -4427,46 +4659,125 @@ def _read_qwen_credential_profiles():
         return {}
 
 def _remember_qwen_credential_profile(profile, values):
-    profile = profile if profile in ("workspace", "token_plan") else ""
     values = values if isinstance(values, dict) else {}
     key = str(values.get("api_key") or "").strip()
-    if not profile or not key:
+    if not key:
         return
-    base = str(values.get("base_url") or "").strip().rstrip("/")
-    model = str(values.get("model") or "").strip()
-    data = {"profiles": _read_qwen_credential_profiles()}
-    data["profiles"][profile] = {
+    data = {"profiles": {}}
+    data["profiles"]["token_plan"] = {
         "kind": "openai-compatible",
-        "base_url": base or (_QWEN_TOKEN_PLAN_BASE_URL if profile == "token_plan" else _QWEN_BASE_URL),
-        "model": model or (_QWEN_LATEST_MODEL if profile == "token_plan" else _QWEN_DEFAULT_MODEL),
+        "base_url": _QWEN_TOKEN_PLAN_BASE_URL,
+        "model": _qwen_normalize_model(values.get("model")),
         "api_key": key,
     }
     _atomic_write_json(_QWEN_CREDENTIAL_PROFILES_FILE, data, secret=True)
 
 def _qwen_credential_status():
     current = _provider_cfg("qwen") or {}
-    profiles = dict(_read_qwen_credential_profiles())
-    current_profile = _qwen_credential_profile(current.get("model"), current.get("base_url"))
+    profiles = _read_qwen_credential_profiles()
+    token_plan = profiles.get("token_plan") if isinstance(profiles.get("token_plan"), dict) else {}
     if current.get("api_key"):
-        profiles[current_profile] = {**(profiles.get(current_profile) or {}), **current}
-    def summary(name, default_base):
-        cfg = profiles.get(name) if isinstance(profiles.get(name), dict) else {}
-        return {
-            "configured": bool(cfg.get("api_key")),
-            "base_url": str(cfg.get("base_url") or default_base).rstrip("/"),
-            "model": str(cfg.get("model") or ""),
-        }
+        token_plan = {**token_plan, **current}
     return {
-        "active_profile": current_profile,
-        "workspace": summary("workspace", _QWEN_BASE_URL),
-        "token_plan": summary("token_plan", _QWEN_TOKEN_PLAN_BASE_URL),
+        "active_profile": "token_plan",
+        "token_plan": {
+            "configured": bool(token_plan.get("api_key")),
+            "base_url": _QWEN_TOKEN_PLAN_BASE_URL,
+            "model": _qwen_normalize_model(token_plan.get("model")),
+        },
     }
+
+def _curl_json_post_ipv4(url, payload, api_key, timeout=240):
+    """POST JSON through curl over IPv4 without putting credentials in argv."""
+    api_key = str(api_key or "").strip()
+    if not api_key or any(ch in api_key for ch in ("\r", "\n", '"')):
+        raise ValueError("API key 格式无效")
+    fd, config_path = tempfile.mkstemp(prefix="codewhale-auth-", suffix=".curl")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as config:
+            config.write('header = "Authorization: Bearer ' + api_key + '"\n')
+        proc = subprocess.run(
+            [
+                "curl", "-4", "--silent", "--show-error",
+                "--connect-timeout", "15", "--max-time", str(max(1, int(timeout))),
+                "--config", config_path,
+                "--header", "Content-Type: application/json",
+                "--data-binary", "@-",
+                "--write-out", "\n%{http_code}",
+                str(url),
+            ],
+            input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=max(5, int(timeout) + 5),
+        )
+        if proc.returncode:
+            detail = proc.stderr.decode("utf-8", "replace").strip()
+            raise RuntimeError("网络请求失败：" + (detail[:360] or f"curl exit {proc.returncode}"))
+        output = proc.stdout.decode("utf-8", "replace")
+        body, sep, status_raw = output.rpartition("\n")
+        if not sep or not status_raw.strip().isdigit():
+            raise RuntimeError("服务端返回缺少 HTTP 状态")
+        status = int(status_raw.strip())
+        try:
+            data = json.loads(body) if body.strip() else {}
+        except Exception:
+            data = {}
+        return status, data, body
+    finally:
+        try:
+            os.unlink(config_path)
+        except FileNotFoundError:
+            pass
+
+def _curl_json_get_ipv4(url, api_key, timeout=15):
+    """GET JSON through curl over IPv4 without putting credentials in argv."""
+    api_key = str(api_key or "").strip()
+    if not api_key or any(ch in api_key for ch in ("\r", "\n", '"')):
+        raise ValueError("API key 格式无效")
+    fd, config_path = tempfile.mkstemp(prefix="codewhale-auth-", suffix=".curl")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as config:
+            config.write('header = "Authorization: Bearer ' + api_key + '"\n')
+        proc = subprocess.run(
+            [
+                "curl", "-4", "--silent", "--show-error",
+                "--connect-timeout", "10", "--max-time", str(max(1, int(timeout))),
+                "--config", config_path,
+                "--header", "Accept: application/json",
+                "--write-out", "\n%{http_code}",
+                str(url),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=max(5, int(timeout) + 5),
+        )
+        if proc.returncode:
+            detail = proc.stderr.decode("utf-8", "replace").strip()
+            raise RuntimeError("网络请求失败：" + (detail[:360] or f"curl exit {proc.returncode}"))
+        output = proc.stdout.decode("utf-8", "replace")
+        body, sep, status_raw = output.rpartition("\n")
+        if not sep or not status_raw.strip().isdigit():
+            raise RuntimeError("服务端返回缺少 HTTP 状态")
+        status = int(status_raw.strip())
+        try:
+            data = json.loads(body) if body.strip() else {}
+        except Exception:
+            data = {}
+        return status, data, body
+    finally:
+        try:
+            os.unlink(config_path)
+        except FileNotFoundError:
+            pass
 
 def _qwen_probe(key, base, model, timeout=45):
     """Validate a Qwen key/base/model tuple before replacing the working config."""
     key = str(key or "").strip()
-    base = str(base or "").strip().rstrip("/")
-    model = str(model or "").strip()
+    base = _QWEN_TOKEN_PLAN_BASE_URL
+    model = _qwen_normalize_model(model)
     if not key:
         return {"fatal": True, "error": "千问 API key 未配置"}
     if not base.startswith("https://"):
@@ -4477,33 +4788,23 @@ def _qwen_probe(key, base, model, timeout=45):
         "max_tokens": 16,
         "stream": False,
     }
-    req = urllib.request.Request(
-        base + "/chat/completions",
-        data=json.dumps(payload, ensure_ascii=False).encode(),
-        method="POST",
-        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
-    )
     try:
-        with _LOCAL.open(req, timeout=timeout) as resp:
-            json.load(resp)
-        return {"ok": True}
-    except urllib.error.HTTPError as e:
-        raw = e.read(1200).decode("utf-8", errors="replace")
-        try:
-            err = json.loads(raw).get("error") or {}
+        status, data, raw = _curl_json_post_ipv4(
+            base + "/chat/completions", payload, key, timeout=timeout
+        )
+        if status >= 400:
+            err = data.get("error") if isinstance(data, dict) else {}
+            err = err if isinstance(err, dict) else {}
             message = str(err.get("message") or err.get("code") or raw)[:300]
-        except Exception:
-            message = raw[:300]
-        if _qwen_requires_token_plan(model):
-            if e.code in (401, 403):
-                message = ("Qwen3.8 Max Preview 仅 Token Plan 可用。请填写 Token Plan 页面生成的专用 "
-                           "base URL 和 API key；现有百炼/工作区 key 不能直接复用。服务端返回：" + message)
-            elif e.code == 404:
-                message = "当前端点没有开放 qwen3.8-max-preview；请使用 Token Plan 专用 base URL。"
-        return {"fatal": True, "status": e.code, "error": message}
+            if status in (401, 403):
+                message = "Qwen Token Plan API key 校验失败。服务端返回：" + message
+            elif status == 404:
+                message = f"当前 Token Plan 账户没有开放 {model}。"
+            return {"fatal": True, "status": status, "error": message}
+        return {"ok": True}
     except Exception as e:
         message = "千问连通性检查失败：" + str(e)[:220]
-        return {"fatal": _qwen_requires_token_plan(model), "warning": message, "error": message}
+        return {"fatal": True, "warning": message, "error": message}
 
 def _qwen_chat_once(provider, prompt):
     provider = re.sub(r'[^A-Za-z0-9_-]', '', str(provider or ""))
@@ -4511,7 +4812,7 @@ def _qwen_chat_once(provider, prompt):
         raise ValueError("当前轻量直连只开放 qwen")
     qc = _provider_cfg("qwen")
     key = (qc.get("api_key") or _provider_key("qwen") or "").strip()
-    base = (qc.get("base_url") or _QWEN_BASE_URL).rstrip("/")
+    base = _QWEN_TOKEN_PLAN_BASE_URL
     if not key:
         raise RuntimeError("千问 API key 未配置")
     model = _qwen_model_for_chat()
@@ -4521,15 +4822,15 @@ def _qwen_chat_once(provider, prompt):
         "max_tokens": 3000,
         "stream": False,
     }
-    if not _qwen_requires_token_plan(model):
-        payload["temperature"] = 0.2
     def call(m):
-        body = json.dumps({**payload, "model": m}, ensure_ascii=False).encode()
-        req = urllib.request.Request(base + "/chat/completions",
-                                     data=body, method="POST",
-                                     headers={"Authorization": "Bearer " + key,
-                                              "Content-Type": "application/json"})
-        data = json.load(_LOCAL.open(req, timeout=120))
+        status, data, raw = _curl_json_post_ipv4(
+            base + "/chat/completions", {**payload, "model": m}, key, timeout=120
+        )
+        if status >= 400:
+            err = data.get("error") if isinstance(data, dict) else {}
+            err = err if isinstance(err, dict) else {}
+            detail = str(err.get("message") or err.get("code") or raw)[:360]
+            raise RuntimeError(f"千问无工具文本调用失败（HTTP {status}）：{detail}")
         msg = ((data.get("choices") or [{}])[0].get("message") or {})
         text = msg.get("content") or msg.get("reasoning_content") or msg.get("reasoning") or data.get("text") or ""
         return str(text or "").strip(), m
@@ -5598,7 +5899,9 @@ def _cmp_write_config(prov):
                 print("[cmp] warning: qwen key 主配置缺失,沿用 cmp 旧值", flush=True)
         s = _toml_set_table_values(s, "providers.openai", {
             "api_key": qwen_key,
-            "base_url": qc.get("base_url") or _QWEN_BASE_URL,
+            # The loopback proxy forwards to the canonical Qwen Token Plan
+            # endpoint while preserving the model selected from /models.
+            "base_url": _QWEN_LOCAL_PROXY_BASE_URL,
             "model": _model_pref("qwen") or qc.get("model") or _QWEN_DEFAULT_MODEL,
             "context_window": 1048576,
         })
@@ -5787,7 +6090,9 @@ def ensure_provider_server(prov):
                     if _re: env["CODEWHALE_REASONING_EFFORT"] = _re
                 _rotate_cmp_log(log_path)
                 logf = open(log_path, "a")
-                CMP_PROCS[prov] = subprocess.Popen([_cw_binary(prov), "app-server", "--config", cfg, "--http", "--host", "127.0.0.1",
+                CMP_PROCS[prov] = subprocess.Popen([_cw_binary(prov), "--sandbox-mode", "danger-full-access",
+                                                    "--approval-policy", "on-request", "-C", os.path.expanduser("~"),
+                                                    "app-server", "--config", cfg, "--http", "--host", "127.0.0.1",
                                                     "--port", str(port), "--insecure-no-auth"],
                                                    env=env, cwd=os.path.expanduser("~"), stdout=logf, stderr=subprocess.STDOUT,
                                                    start_new_session=True)
@@ -5806,11 +6111,18 @@ def ensure_provider_server(prov):
 # ── 每对话锁模型(CodeWhale 会话是跨 app-server 共享存储,所以不能靠"谁有这会话"判 provider;
 #    用一张自维护、持久化的 tid->provider 锁定表,建会话时写定,路由按它走,聚合按它打标)──
 _TPROV_FILE = os.path.expanduser("~/.codewhale-gui/thread_provider.json")
+_AUTO_TURN_ROUTES_FILE = os.path.expanduser("~/.codewhale-gui/thread_auto_routes.json")
 try:
     _tprov = json.load(open(_TPROV_FILE)); _tprov = _tprov if isinstance(_tprov, dict) else {}
 except Exception:
     _tprov = {}
+try:
+    _auto_turn_routes = json.load(open(_AUTO_TURN_ROUTES_FILE))
+    _auto_turn_routes = _auto_turn_routes if isinstance(_auto_turn_routes, dict) else {}
+except Exception:
+    _auto_turn_routes = {}
 _tprov_lock = threading.Lock()
+_auto_turn_routes_lock = threading.Lock()
 def _pin_thread(tid, prov):
     with _tprov_lock:
         _tprov[tid] = prov
@@ -5933,13 +6245,13 @@ def _route_base(path):       # /v1/threads/<tid>/* 路由到该对话锁定的 p
             except Exception as e:
                 raise _ProviderBackendDown(f"{prov} 后端未就绪: {str(e)[:160]}")
     return UPSTREAM
-def _switch_single_thread_provider(tid, prov, model=None):
+def _switch_single_thread_provider(tid, prov, model=None, persist_pref=True):
     if prov in _NEWCHAT_REQUIRES_KEY and not _provider_key(prov):
         raise RuntimeError(_missing_key_message(prov))
-    if model:
+    if model and persist_pref:
         _set_model_pref(prov, model)
     default_prov = _cfg_get("provider") or "deepseek"
-    fm = _thread_model(prov) if _CMP_FORCE_MODEL.get(prov) else (model or None)
+    fm = model or (_thread_model(prov) if _CMP_FORCE_MODEL.get(prov) else None)
     base = _provider_runtime_base(prov, default_prov)
     changed = _retarget_thread_provider(tid, prov, fm) if fm else None
     try:
@@ -5967,6 +6279,269 @@ def _switch_single_thread_provider(tid, prov, model=None):
     except Exception:
         pass
     return {"ok": True, "thread_id": tid, "provider": prov, "model": fm or model or ""}
+
+_SIMPLE_TURN_COMPLEX_RE = re.compile(
+    r"(https?://|www\.|读取|打开|搜索|搜一下|查询|查一下|调研|研究|分析|规划|审计|"
+    r"修改|改文件|写代码|代码|运行|执行|测试|部署|发布|安装|配置|命令|终端|shell|"
+    r"文件|附件|图片|截图|视频|报告|表格|数据|财报|股票|投资|交易|法律|合同|"
+    r"医疗|诊断|药物|最新|今天|现在|当前|实时|新闻|价格|汇率|天气|行程|推荐|"
+    r"证明|推导|论证|排查|调试|故障|优化|架构|重构|性能|安全|漏洞|"
+    r"\b(search|research|browse|open|read|inspect|analy[sz]e|plan|audit|review|"
+    r"edit|modify|code|run|test|deploy|install|configure|file|attachment|image|"
+    r"prove|derive|debug|troubleshoot|optimi[sz]e|architect|refactor|performance|"
+    r"security|vulnerability|latest|current|today|price|weather|recommend)\b)",
+    re.I,
+)
+_SIMPLE_TURN_HINT_RE = re.compile(
+    r"(多少|等于|换算|是什么|什么意思|怎么读|怎么写|翻译|哪一天|星期几|周几|"
+    r"你好|您好|谢谢|hi|hello|thanks|"
+    r"\b(convert|calculate|what is|what's|define|translate)\b|"
+    r"\d+(?:\.\d+)?\s*(?:oz|ml|l|kg|g|lb|lbs|cm|mm|m|km|ft|in|inch|"
+    r"°c|°f|celsius|fahrenheit|美元|人民币|毫升|升|克|千克|斤|磅|英寸|厘米))",
+    re.I,
+)
+
+def classify_single_turn(prompt, has_attachments=False):
+    """Conservative preflight: only obvious, self-contained questions use a fast model."""
+    text = str(prompt or "").strip()
+    if not text:
+        return {"complexity": "standard", "reason": "empty"}
+    if has_attachments:
+        return {"complexity": "standard", "reason": "attachment"}
+    if len(text) > 180 or text.count("\n") > 1:
+        return {"complexity": "standard", "reason": "long_or_structured"}
+    if _SIMPLE_TURN_COMPLEX_RE.search(text):
+        return {"complexity": "standard", "reason": "tools_or_reasoning"}
+    if _SIMPLE_TURN_HINT_RE.search(text):
+        return {"complexity": "simple", "reason": "short_self_contained"}
+    # Very short conversational turns are safe for the fast model. Unknown
+    # task-like prompts remain on the user-selected model.
+    if len(text) <= 24 and not re.search(r"(帮我|请你|需要|如何|怎么|为什么|是否|能否|对比|设计|方案)", text):
+        return {"complexity": "simple", "reason": "brief_conversation"}
+    return {"complexity": "standard", "reason": "default"}
+
+def _smart_fast_route(prov):
+    """Return a verified same-provider fast route, never a cross-provider fallback."""
+    route = _SMART_FAST_MODEL_ROUTES.get(str(prov or "").strip())
+    if not route:
+        return None
+    if prov == "qwen":
+        cfg = _provider_cfg("qwen") or {}
+        if not (
+            str(cfg.get("api_key") or "").strip()
+            and _qwen_credential_profile(cfg.get("model"), cfg.get("base_url")) == "token_plan"
+        ):
+            return None
+    return dict(route)
+
+def _thread_current_route(tid):
+    th = _runtime_json("threads", tid) or {}
+    prov = _thread_route_provider(tid) or _runtime_provider_from_thread(th) or (_cfg_get("provider") or "deepseek")
+    model = str(th.get("model") or _thread_model(prov) or "").strip()
+    return {"provider": prov, "model": model}
+
+def _compatible_single_route(route):
+    """Mark providers that need the persistent tool-free text channel."""
+    current = dict(route or {})
+    provider = str(current.get("provider") or "").strip()
+    model = str(current.get("model") or "").strip()
+    if provider == "moonshot":
+        current["compatibility_mode"] = "moonshot_text"
+        current["display"] = model or "Kimi"
+    elif provider == "qwen":
+        current["compatibility_mode"] = "qwen_text"
+        current["display"] = model or "千问"
+    return current
+
+def _enforce_single_route_compatibility(tid, route):
+    """Describe text compatibility mode without mutating the runtime thread."""
+    current = dict(route or {})
+    if current.get("compatibility_mode") not in ("moonshot_text", "qwen_text"):
+        return current
+    current.update({
+        "auto_approve_disabled": False,
+        "shell_disabled": False,
+        "plugin_tools_enabled": False,
+        "text_only": True,
+    })
+    return current
+
+_COMPAT_TOOL_TASK_RE = re.compile(
+    r"(https?://|www\.|读取|打开|搜索|搜一下|查询|查一下|调研|下载|上传|"
+    r"文件|目录|附件|图片|截图|视频|网页|链接|插件|skill|mcp|"
+    r"运行|执行|命令|终端|shell|改文件|写代码|修改代码|跑测试|部署|安装|"
+    r"\b(?:browse|search|open|read|download|upload|file|directory|attachment|"
+    r"image|video|url|plugin|skill|mcp|shell|command|execute|run|test|deploy|install)\b)",
+    re.I,
+)
+
+def _turn_requires_external_tools(prompt, has_attachments=False):
+    if has_attachments:
+        return True
+    return bool(_COMPAT_TOOL_TASK_RE.search(str(prompt or "")))
+
+def _compatible_tool_executor():
+    """Pick a configured runtime whose native tool protocol is known to work."""
+    for provider in ("volcengine", "deepseek"):
+        cfg = _provider_chat_config(provider)
+        if str(cfg.get("key") or "").strip():
+            return {
+                "provider": provider,
+                "model": str(cfg.get("model") or "").strip(),
+                "display": "豆包" if provider == "volcengine" else "DeepSeek",
+            }
+    return None
+
+def _save_auto_turn_routes():
+    _atomic_write_json(_AUTO_TURN_ROUTES_FILE, _auto_turn_routes)
+
+def _clear_auto_turn_route(tid):
+    with _auto_turn_routes_lock:
+        if _auto_turn_routes.pop(tid, None) is not None:
+            _save_auto_turn_routes()
+
+def restore_single_turn_route(tid):
+    """Restore a provider that was temporarily replaced for one turn."""
+    with _auto_turn_routes_lock:
+        saved = dict(_auto_turn_routes.get(tid) or {})
+    if not saved.get("active"):
+        return {"ok": True, "restored": False, **_thread_current_route(tid)}
+    preferred = saved.get("preferred") if isinstance(saved.get("preferred"), dict) else {}
+    provider = str(preferred.get("provider") or "").strip()
+    model = str(preferred.get("model") or "").strip()
+    if not provider:
+        _clear_auto_turn_route(tid)
+        return {"ok": True, "restored": False, **_thread_current_route(tid)}
+    restored = _switch_single_thread_provider(
+        tid, provider, model or None, persist_pref=False
+    )
+    _clear_auto_turn_route(tid)
+    return {
+        "ok": True,
+        "restored": True,
+        "provider": restored.get("provider") or provider,
+        "model": restored.get("model") or model,
+        "compatibility_mode": _compatible_single_route(preferred).get("compatibility_mode") or "",
+    }
+
+def prepare_single_turn_route(tid, prompt, has_attachments=False):
+    decision = classify_single_turn(prompt, has_attachments)
+    with _auto_turn_routes_lock:
+        saved = dict(_auto_turn_routes.get(tid) or {})
+
+    if decision["complexity"] == "simple":
+        raw_current = _thread_current_route(tid)
+        current = _compatible_single_route(raw_current)
+        if current.get("compatibility_mode"):
+            if raw_current.get("model") != current.get("model"):
+                _switch_single_thread_provider(
+                    tid, current["provider"], current["model"], persist_pref=False
+                )
+            current = _enforce_single_route_compatibility(tid, current)
+        prov = str(current.get("provider") or "").strip()
+        route = _smart_fast_route(prov)
+        if not route:
+            return {
+                "ok": True,
+                "mode": "standard",
+                "provider": prov,
+                "model": current.get("model") or "",
+                "display": current.get("model") or _SMART_FIXED_MODEL_PROVIDERS.get(prov) or prov,
+                "fast_unavailable": True,
+                "reason": decision["reason"],
+            }
+        fast_model = route["model"]
+        preferred = saved.get("preferred") if isinstance(saved.get("preferred"), dict) else current
+        preferred = _compatible_single_route(preferred)
+        if raw_current.get("model") != fast_model:
+            switched = _switch_single_thread_provider(
+                tid, prov, fast_model, persist_pref=False
+            )
+        else:
+            switched = {"provider": prov, "model": fast_model}
+        with _auto_turn_routes_lock:
+            _auto_turn_routes[tid] = {
+                "preferred": preferred,
+                "active": True,
+                "updated_at": int(time.time()),
+            }
+            _save_auto_turn_routes()
+        result = {
+            "ok": True,
+            "mode": "fast",
+            "provider": switched.get("provider") or prov,
+            "model": switched.get("model") or fast_model,
+            "display": route["display"],
+            "reason": decision["reason"],
+        }
+        if current.get("compatibility_mode"):
+            result.update({
+                "compatibility_mode": current["compatibility_mode"],
+                "fallback_from_model": current.get("fallback_from_model") or "",
+                "auto_approve_disabled": current.get("auto_approve_disabled", False),
+                "shell_disabled": current.get("shell_disabled", False),
+                "plugin_tools_enabled": current.get("plugin_tools_enabled", False),
+            })
+        return result
+
+    if saved.get("active"):
+        restore_single_turn_route(tid)
+    raw_current = _thread_current_route(tid)
+    current = _compatible_single_route(raw_current)
+    if current.get("compatibility_mode"):
+        if _turn_requires_external_tools(prompt, has_attachments):
+            executor = _compatible_tool_executor()
+            if executor and executor["provider"] != current["provider"]:
+                switched = _switch_single_thread_provider(
+                    tid, executor["provider"], executor["model"] or None, persist_pref=False
+                )
+                with _auto_turn_routes_lock:
+                    _auto_turn_routes[tid] = {
+                        "preferred": current,
+                        "active": True,
+                        "kind": "compat_tool_delegate",
+                        "updated_at": int(time.time()),
+                    }
+                    _save_auto_turn_routes()
+                return {
+                    "ok": True,
+                    "mode": "standard",
+                    "provider": switched.get("provider") or executor["provider"],
+                    "model": switched.get("model") or executor["model"],
+                    "display": executor["display"],
+                    "delegated": True,
+                    "delegated_from": current["provider"],
+                    "restore_after_turn": True,
+                    "reason": "external_tools_required",
+                }
+        if raw_current.get("model") != current.get("model"):
+            switched = _switch_single_thread_provider(
+                tid, current["provider"], current["model"], persist_pref=False
+            )
+        else:
+            switched = current
+        current = _enforce_single_route_compatibility(tid, current)
+        return {
+            "ok": True,
+            "mode": "standard",
+            "provider": switched.get("provider") or current["provider"],
+            "model": switched.get("model") or current["model"],
+            "display": current["display"],
+            "compatibility_mode": current["compatibility_mode"],
+            "fallback_from_model": current.get("fallback_from_model") or "",
+            "auto_approve_disabled": current.get("auto_approve_disabled", False),
+            "shell_disabled": current.get("shell_disabled", False),
+            "plugin_tools_enabled": current.get("plugin_tools_enabled", False),
+            "reason": decision["reason"],
+        }
+    return {
+        "ok": True,
+        "mode": "standard",
+        "provider": current.get("provider") or "",
+        "model": current.get("model") or "",
+        "display": current.get("model") or current.get("provider") or "",
+        "reason": decision["reason"],
+    }
 def _model_to_provider(model):   # 从会话真实 model 反推 provider(thread.model 已被钉准,比 _tprov 锁定表可靠)→ 侧栏标签必和模型一致
     m = (model or "").lower()
     if not m or m == "auto":
@@ -6337,7 +6912,7 @@ def _research_provider_for_model_key(model):
         return "custom"
     if m in ("longcat", "longcat-2.0") or "longcat" in m:
         return "longcat"
-    if m in ("qwen", "qwen-plus", "qwen-max", "qwen3.7-max", "dashscope", "tongyi", "qianwen") or "qwen" in m:
+    if m in ("qwen", "qwen-plus", "qwen-max", "dashscope", "tongyi", "qianwen") or "qwen" in m:
         return "qwen"
     if m in ("volcengine", "doubao", "doubao-seed-2-1-pro-260628") or "doubao" in m:
         return "volcengine"
@@ -6435,21 +7010,23 @@ def _provider_chat_config(prov):
         }
     return _provider_chat_config("deepseek")
 
-def _combo_text_once(provider, model, prompt, max_tokens=6000):
-    """Text-only call for combo planning/review.
-
-    This intentionally does not touch /api/qwen-chat.  Qwen's dedicated
-    Token Plan route keeps its current connection implementation and tests;
-    combo text is a separate tool-free endpoint with no function schema.
-    """
+def _text_chat_once(provider, model, messages, max_tokens=6000):
+    """Call an OpenAI-compatible provider without registering any tools."""
     provider = re.sub(r"[^A-Za-z0-9._-]", "", str(provider or ""))[:80]
     allowed = {"deepseek", "zai", "moonshot", "custom", "volcengine", "longcat", "qwen"}
     if provider not in allowed:
         raise ValueError("当前角色模型不支持无工具文本调用")
     model = re.sub(r"[^A-Za-z0-9._:-]", "", str(model or ""))[:160]
-    prompt = str(prompt or "").strip()[:60000]
-    if not prompt:
-        raise ValueError("角色提示为空")
+    clean_messages = []
+    for message in (messages or [])[-60:]:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "").strip()
+        content = str(message.get("content") or "").strip()
+        if role in ("system", "user", "assistant") and content:
+            clean_messages.append({"role": role, "content": content[:60000]})
+    if not clean_messages:
+        raise ValueError("消息为空")
     cfg = _provider_chat_config(provider)
     if not cfg.get("key"):
         raise RuntimeError(f"{provider} API key 未配置")
@@ -6462,29 +7039,56 @@ def _combo_text_once(provider, model, prompt, max_tokens=6000):
         budget = 6000
     payload = {
         "model": cfg["model"],
-        "messages": [
-            {"role": "system", "content": "你处于无工具模式。严格遵守用户提示中的角色边界，不调用工具，不展示内部思维过程。"},
-            {"role": "user", "content": prompt},
-        ],
+        "messages": clean_messages,
         "max_tokens": budget,
         "stream": False,
     }
-    request = urllib.request.Request(
-        cfg["base"].rstrip("/") + "/chat/completions",
-        data=json.dumps(payload, ensure_ascii=False).encode(),
-        method="POST",
-        headers={"Authorization": "Bearer " + cfg["key"], "Content-Type": "application/json"},
-    )
-    try:
-        with _open_url(request, 240) as response:
-            data = json.loads(response.read().decode("utf-8", "replace"))
-    except urllib.error.HTTPError as exc:
-        raw = exc.read(1600).decode("utf-8", "replace")
+    attempts = 3 if provider == "moonshot" else 1
+    data = None
+    for attempt in range(attempts):
+        if provider == "qwen":
+            status, data, raw = _curl_json_post_ipv4(
+                cfg["base"].rstrip("/") + "/chat/completions",
+                payload,
+                cfg["key"],
+                timeout=240,
+            )
+            if status >= 400:
+                err = data.get("error") if isinstance(data, dict) else {}
+                err = err if isinstance(err, dict) else {}
+                detail = str(err.get("message") or err.get("code") or raw)
+                raise RuntimeError(f"qwen 无工具文本调用失败（HTTP {status}）：{detail[:360]}")
+            break
+        request_body = json.dumps(payload, ensure_ascii=False).encode()
+        request = urllib.request.Request(
+            cfg["base"].rstrip("/") + "/chat/completions",
+            data=request_body,
+            method="POST",
+            headers={"Authorization": "Bearer " + cfg["key"], "Content-Type": "application/json"},
+        )
         try:
-            detail = str((json.loads(raw).get("error") or {}).get("message") or raw)
-        except Exception:
-            detail = raw
-        raise RuntimeError(f"{provider} 无工具文本调用失败（HTTP {exc.code}）：{detail[:360]}") from None
+            with _open_url(request, 240) as response:
+                data = json.loads(response.read().decode("utf-8", "replace"))
+            break
+        except urllib.error.HTTPError as exc:
+            raw = exc.read(1600).decode("utf-8", "replace")
+            try:
+                detail = str((json.loads(raw).get("error") or {}).get("message") or raw)
+            except Exception:
+                detail = raw
+            retryable = provider == "moonshot" and exc.code in (429, 502, 503, 504)
+            if retryable and attempt + 1 < attempts:
+                try:
+                    retry_after = float((exc.headers or {}).get("Retry-After") or 0)
+                except Exception:
+                    retry_after = 0
+                time.sleep(min(5.0, max(retry_after, 1.5 * (attempt + 1))))
+                continue
+            if retryable:
+                raise RuntimeError(
+                    f"Kimi 服务当前繁忙（HTTP {exc.code}），已自动重试 {attempts} 次，请稍后再试"
+                ) from None
+            raise RuntimeError(f"{provider} 无工具文本调用失败（HTTP {exc.code}）：{detail[:360]}") from None
     message = ((data.get("choices") or [{}])[0].get("message") or {})
     content = message.get("content") or data.get("text") or ""
     if isinstance(content, list):
@@ -6493,6 +7097,140 @@ def _combo_text_once(provider, model, prompt, max_tokens=6000):
     if not text:
         raise RuntimeError(f"{provider} 没有返回文本结果")
     return {"ok": True, "provider": provider, "model": cfg["model"], "text": text}
+
+def _combo_text_once(provider, model, prompt, max_tokens=6000):
+    """One-shot tool-free call used by combo planning and review."""
+    prompt = str(prompt or "").strip()[:60000]
+    if not prompt:
+        raise ValueError("角色提示为空")
+    return _text_chat_once(provider, model, [
+        {"role": "system", "content": "你处于无工具模式。严格遵守用户提示中的角色边界，不调用工具，不展示内部思维过程。"},
+        {"role": "user", "content": prompt},
+    ], max_tokens)
+
+def _moonshot_text_sessions_read():
+    try:
+        with open(MOONSHOT_TEXT_SESSIONS_FILE, encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+def _moonshot_text_sessions_write(data):
+    _atomic_write_json(MOONSHOT_TEXT_SESSIONS_FILE, data, ensure_ascii=False)
+
+def _compat_text_provider(provider):
+    provider = re.sub(r"[^A-Za-z0-9._-]", "", str(provider or "")).lower()[:80]
+    if provider not in ("moonshot", "qwen"):
+        raise ValueError("当前模型不支持兼容文本会话")
+    return provider
+
+def _compat_text_session_key(tid, provider):
+    # Preserve the original Moonshot keys so existing Kimi history remains
+    # readable. Other providers use a namespaced key in the same sidecar file.
+    return tid if provider == "moonshot" else f"{provider}:{tid}"
+
+def _compat_text_snapshot(tid, provider="moonshot", session=None):
+    if not re.match(r"^thr_[A-Za-z0-9_-]+$", str(tid or "")):
+        return {"error": "invalid thread_id"}
+    provider = _compat_text_provider(provider)
+    session_key = _compat_text_session_key(tid, provider)
+    item_prefix = f"item_{provider}_"
+    with _MOONSHOT_TEXT_LOCK:
+        if session is None:
+            session = dict(_moonshot_text_sessions_read().get(session_key) or {})
+        messages = list(session.get("messages") or [])
+    th = _runtime_json("threads", tid) or {}
+    title = str(th.get("title") or session.get("title") or "New Thread")
+    items, turns = [], []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "")
+        if role not in ("user", "assistant"):
+            continue
+        turn_id = str(message.get("turn_id") or "")
+        created_at = str(message.get("created_at") or "")
+        if turn_id and not any(turn.get("id") == turn_id for turn in turns):
+            turns.append({
+                "id": turn_id, "status": "completed", "created_at": created_at,
+                "updated_at": created_at, "completed_at": created_at, "item_ids": [],
+            })
+        item = {
+            "id": str(message.get("id") or item_prefix + secrets.token_hex(8)),
+            "turn_id": turn_id,
+            "kind": "user_message" if role == "user" else "agent_message",
+            "detail": str(message.get("content") or ""),
+            "summary": str(message.get("content") or "")[:500],
+            "status": "completed",
+            "created_at": created_at,
+        }
+        items.append(item)
+        if turns:
+            turns[-1]["item_ids"].append(item["id"])
+    thread = {
+        "id": tid, "title": title, "updated_at": session.get("updated_at") or th.get("updated_at"),
+        "model": session.get("model") or th.get("model") or ("Kimi" if provider == "moonshot" else "Qwen"),
+        "workspace": th.get("workspace"), "mode": th.get("mode"),
+        "allow_shell": th.get("allow_shell"), "auto_approve": th.get("auto_approve"),
+        "latest_turn_id": turns[-1]["id"] if turns else "",
+        "latest_turn_status": "completed" if turns else "",
+        "archived": th.get("archived"),
+    }
+    return {
+        "ok": True, "thread": thread, "turns": turns, "items": items,
+        "latest_seq": len(items), "total_items": len(items), "window_start": 0,
+        "window_end": len(items), "windowed": False,
+    }
+
+def _compat_text_turn(tid, provider, model, prompt, max_tokens=12000):
+    if not re.match(r"^thr_[A-Za-z0-9_-]+$", str(tid or "")):
+        raise ValueError("非法 thread_id")
+    provider = _compat_text_provider(provider)
+    prompt = str(prompt or "").strip()[:60000]
+    if not prompt:
+        raise ValueError("消息为空")
+    fallback_model = "k3" if provider == "moonshot" else _QWEN_DEFAULT_MODEL
+    model = re.sub(r"[^A-Za-z0-9._:-]", "", str(model or ""))[:160] or _thread_model(provider) or fallback_model
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    turn_id = f"turn_{provider}_" + secrets.token_hex(10)
+    session_key = _compat_text_session_key(tid, provider)
+    item_prefix = f"item_{provider}_"
+    with _MOONSHOT_TEXT_LOCK:
+        sessions = _moonshot_text_sessions_read()
+        session = dict(sessions.get(session_key) or {})
+        history = [
+            {"role": str(message.get("role") or ""), "content": str(message.get("content") or "")}
+            for message in (session.get("messages") or [])[-40:]
+            if isinstance(message, dict) and message.get("role") in ("user", "assistant")
+        ]
+    display_name = "Kimi" if provider == "moonshot" else "Qwen"
+    result = _text_chat_once(provider, model, [
+        {"role": "system", "content": f"你是 CodeWhale 中的 {display_name}。直接回答用户问题，默认使用简体中文；不要输出内部思维过程。当前通道不提供函数工具，若确实需要外部工具，请明确说明需要的能力，不要伪造结果。"},
+        *history,
+        {"role": "user", "content": prompt},
+    ], max_tokens)
+    with _MOONSHOT_TEXT_LOCK:
+        # Re-read after the network call so another completed turn is not
+        # overwritten while this request was waiting on Moonshot.
+        sessions = _moonshot_text_sessions_read()
+        session = dict(sessions.get(session_key) or session)
+        stored = list(session.get("messages") or [])
+        stored.extend([
+            {"id": item_prefix + secrets.token_hex(10), "turn_id": turn_id, "role": "user", "content": prompt, "created_at": now},
+            {"id": item_prefix + secrets.token_hex(10), "turn_id": turn_id, "role": "assistant", "content": result["text"], "created_at": now},
+        ])
+        session.update({"provider": provider, "model": result["model"], "updated_at": now, "messages": stored[-80:]})
+        sessions[session_key] = session
+        _moonshot_text_sessions_write(sessions)
+        snapshot = _compat_text_snapshot(tid, provider, session)
+    return {**result, "turn_id": turn_id, "snapshot": snapshot}
+
+def _moonshot_text_snapshot(tid, session=None):
+    return _compat_text_snapshot(tid, "moonshot", session)
+
+def _moonshot_text_turn(tid, model, prompt, max_tokens=12000):
+    return _compat_text_turn(tid, "moonshot", model, prompt, max_tokens)
 
 def _chat_title_once(messages, prov):
     cfg = _provider_chat_config(prov)
@@ -7028,6 +7766,55 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError, http.client.IncompleteRead, ValueError):
             pass
+    def _qwen_model_proxy(self, method):
+        """Loopback-only OpenAI-compatible proxy for Qwen model parameters."""
+        client_host = str((self.client_address or ("",))[0] or "")
+        try:
+            is_loopback = ipaddress.ip_address(client_host).is_loopback
+        except ValueError:
+            is_loopback = False
+        cfg = _provider_cfg("qwen") or {}
+        key = str(cfg.get("api_key") or _provider_key("qwen") or "").strip()
+        supplied = str(self.headers.get("Authorization") or "")
+        expected = "Bearer " + key if key else ""
+        if not is_loopback or not key or not secrets.compare_digest(supplied, expected):
+            return self._deny()
+
+        upstream_base = str(cfg.get("base_url") or _QWEN_BASE_URL).strip().rstrip("/")
+        if not upstream_base.startswith("https://"):
+            return self._json({"error": "invalid qwen upstream"}, 502)
+        suffix = self.path[len("/internal/qwen/v1"):]
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        body = self.rfile.read(length) if length else None
+        if method == "POST" and urllib.parse.urlparse(suffix).path == "/chat/completions":
+            try:
+                payload = json.loads(body or b"{}")
+                body = json.dumps(_qwen_proxy_payload(payload), ensure_ascii=False).encode()
+            except Exception:
+                return self._json({"error": "invalid json payload"}, 400)
+
+        req = urllib.request.Request(upstream_base + suffix, data=body, method=method)
+        req.add_header("Authorization", expected)
+        req.add_header("Content-Type", self.headers.get("Content-Type") or "application/json")
+        try:
+            resp = _LOCAL.open(req, timeout=600)
+        except urllib.error.HTTPError as e:
+            resp = e
+        except Exception as e:
+            return self._json({"error": str(e)[:200]}, 502)
+        self.send_response(getattr(resp, "status", 200))
+        self.send_header("Content-Type", resp.headers.get("Content-Type", "application/json"))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            while True:
+                chunk = resp.read1(8192)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError, http.client.IncompleteRead, ValueError):
+            pass
     def _cmp_route(self, method):   # /cmp/<provider>/v1/... → 确保该 provider 后端在跑 → 代理过去
         p = urllib.parse.urlparse(self.path).path
         m = re.match(r'^/cmp/([a-zA-Z0-9_-]+)(/.*)$', p)
@@ -7103,6 +7890,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         p = urllib.parse.urlparse(self.path).path
+        if p.startswith("/internal/qwen/v1/"):
+            return self._qwen_model_proxy("GET")
         if p.startswith("/preview/static/"):
             return self._serve_preview_static(p)
         if p == "/api/file/download":
@@ -7256,6 +8045,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
             return
+        if p == "/api/update/models/check":
+            if not self._authed():
+                return self._deny()
+            try:
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                force = (q.get("force", ["0"])[0] or "0").lower() in ("1", "true", "yes", "on")
+                startup = (q.get("startup", ["0"])[0] or "0").lower() in ("1", "true", "yes", "on")
+                out = check_model_updates(force=force, startup=startup)
+            except Exception as e:
+                out = {"ok": False, "error": str(e)[:300]}
+            return self._json(out)
         if p == "/api/update/gui/progress":   # 前端轮询:下载/校验/应用 进度
             if not self._authed():
                 return self._deny()
@@ -7379,6 +8179,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception as e:
                 out = {"error": str(e)[:200]}
             return self._json(out)
+        if p == "/api/moonshot-history":   # Kimi 持久化纯文本会话:不注册 Moonshot 不支持的 MFJS 工具
+            if not self._authed():
+                return self._deny()
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            tid = (q.get("thread_id", [""])[0] or "").strip()
+            return self._json(_moonshot_text_snapshot(tid))
+        if p == "/api/compat-text-history":   # Qwen/Kimi 持久化纯文本会话:不向模型发送不兼容的函数协议
+            if not self._authed():
+                return self._deny()
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            tid = (q.get("thread_id", [""])[0] or "").strip()
+            provider = (q.get("provider", [""])[0] or "").strip()
+            try:
+                return self._json(_compat_text_snapshot(tid, provider))
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:240]}, 400)
         if p == "/api/thread-context-risk":   # 发送前主动整理上下文,避免到 93% 才触发无效 emergency compaction
             if not self._authed():
                 return self._deny()
@@ -7570,6 +8386,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
     def do_POST(self):
         p = urllib.parse.urlparse(self.path).path
+        if p.startswith("/internal/qwen/v1/"):
+            return self._qwen_model_proxy("POST")
         if p == "/api/clipboard":
             if not self._authed():
                 return self._deny()
@@ -7667,9 +8485,50 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if model and not re.match(r'^[A-Za-z0-9._-]+$', model):
                 return self._json({"error": "非法 model"}, 400)
             try:
-                return self._json(_switch_single_thread_provider(tid, prov, model or None))
+                out = _switch_single_thread_provider(tid, prov, model or None)
+                _clear_auto_turn_route(tid)
+                return self._json(out)
             except Exception as e:
                 return self._json({"error": str(e)[:200]}, 502)
+        if p == "/api/turn-route":   # 单模型发送前轻量分流:简单问答走 3.7 Plus 快答,复杂任务恢复用户所选模型
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(min(length, 50000)) or b"{}") if length else {}
+                tid = str(data.get("tid") or data.get("thread_id") or "").strip()
+                prompt = str(data.get("prompt") or "")[:16000]
+                if not re.match(r'^thr_[a-zA-Z0-9_-]+$', tid):
+                    return self._json({"error": "非法 tid"}, 400)
+                return self._json(prepare_single_turn_route(
+                    tid, prompt, bool(data.get("has_attachments"))
+                ))
+            except Exception as e:
+                return self._json({"error": str(e)[:240]}, 502)
+        if p == "/api/turn-route/restore":   # 临时委派工具任务后恢复用户选择的 Qwen/Kimi 路由
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(min(length, 10000)) or b"{}") if length else {}
+                tid = str(data.get("tid") or data.get("thread_id") or "").strip()
+                if not re.match(r'^thr_[a-zA-Z0-9_-]+$', tid):
+                    return self._json({"error": "非法 tid"}, 400)
+                return self._json(restore_single_turn_route(tid))
+            except Exception as e:
+                return self._json({"error": str(e)[:240]}, 502)
+        if p == "/api/turn-complexity":   # 对比窗口只读预检:不切模型、不改会话
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(min(length, 50000)) or b"{}") if length else {}
+                return self._json(classify_single_turn(
+                    str(data.get("prompt") or "")[:16000],
+                    bool(data.get("has_attachments")),
+                ))
+            except Exception as e:
+                return self._json({"error": str(e)[:240]}, 400)
         if p == "/api/voice/refine":   # ⌘D/麦克风语音转写 → 精练、连贯、可执行 prompt;只填输入框,不自动发送
             if not self._authed():
                 return self._deny()
@@ -7865,6 +8724,30 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 ))
             except Exception as e:
                 return self._json({"ok": False, "error": str(e)[:420]}, 400)
+        if p == "/api/moonshot-turn":
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(min(length, 120000)) or b"{}") if length else {}
+                return self._json(_moonshot_text_turn(
+                    str(data.get("thread_id") or data.get("tid") or ""),
+                    data.get("model"), data.get("prompt"), data.get("max_tokens"),
+                ))
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:520]}, 400)
+        if p == "/api/compat-text-turn":
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(min(length, 120000)) or b"{}") if length else {}
+                return self._json(_compat_text_turn(
+                    str(data.get("thread_id") or data.get("tid") or ""),
+                    data.get("provider"), data.get("model"), data.get("prompt"), data.get("max_tokens"),
+                ))
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)[:520]}, 400)
         if p == "/api/compare/reset":   # 杀掉所有 per-provider 后端 + 清端口表 → 下次按需用当前配置/key 重启,杜绝残留旧后端答错模型(三栏都答 DeepSeek 的根治)
             if not self._authed():
                 return self._deny()
@@ -7917,6 +8800,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not self._authed():
                 return self._deny()
             return self._json(harness_update_apply())
+        if p == "/api/update/models/ack":
+            if not self._authed():
+                return self._deny()
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+                out = acknowledge_model_updates(data.get("provider", "") if isinstance(data, dict) else "")
+            except Exception as e:
+                out = {"ok": False, "error": str(e)[:300]}
+            return self._json(out)
         if p == "/api/update/plugins/apply":
             if not self._authed():
                 return self._deny()

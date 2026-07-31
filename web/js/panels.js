@@ -1164,7 +1164,7 @@ const PROVIDERS=[   // 非 DeepSeek 的 provider 模型填 auto:app-server 把 d
   {id:"deepseek",name:"DeepSeek V4",model:"deepseek-v4-pro"},
   {id:"volcengine",name:"火山 Ark",model:"doubao-seed-2-1-pro-260628"},
   {id:"longcat",name:"美团 LongCat",model:"LongCat-2.0",sidecar:true},
-  {id:"qwen",name:"千问 / Qwen",model:"qwen3.7-max-2026-06-08",sidecar:true},
+  {id:"qwen",name:"千问 / Qwen Token Plan",model:"qwen3.8-max-preview",sidecar:true},
   {id:"zai",name:"GLM (智谱 / Z.ai)",model:"auto"},
   {id:"moonshot",name:"Kimi (月之暗面)",model:"auto"},
   {id:"openai-codex",name:"ChatGPT(OAuth 登录)",model:"auto",oauth:true},
@@ -1172,45 +1172,64 @@ const PROVIDERS=[   // 非 DeepSeek 的 provider 模型填 auto:app-server 把 d
   {id:"claude-code",name:"Claude (订阅)",model:"auto",oauth:true,newchatOnly:true},   // 委派官方 claude -p 走订阅(免 API key,真正能用的那条);单窗口可选但只能当"新对话 provider"(走独立后端 :7900),不能当 launchd 主后端(官方二进制不识别)。已合并掉原 anthropic(API Key)条:它对订阅令牌走 x-api-key 必 401,且会误显"已配置"
 ];   // 已删 OpenRouter / DeepInfra(felix 不用、未配置只显 ⚠)
 const PROV_SHORT={deepseek:"DeepSeek",volcengine:"火山",longcat:"LongCat",qwen:"千问",zai:"GLM",moonshot:"Kimi","openai-codex":"ChatGPT",custom:"混元","claude-code":"Claude"};
+let modelLabelSeq=0;
+function activeProviderOverride(threadId=state.activeId){
+  const current=window._activeThreadProviderOverride;
+  return current&&current.threadId===threadId ? current : null;
+}
+function setActiveProviderOverride(threadId,provider,model=""){
+  window._activeThreadProviderOverride={threadId,provider,model};
+}
+function clearActiveProviderOverride(threadId){
+  const current=window._activeThreadProviderOverride;
+  if(current&&(!threadId||current.threadId===threadId)) window._activeThreadProviderOverride=null;
+}
 function refreshActiveProviderChrome(provider){
   const active=state.threads.find(x=>x.id===state.activeId);
-  const prov=provider||((active&&active.provider&&!active.compare)?active.provider:(window._newchatProv||window._mainModelProv||""));
+  const override=activeProviderOverride();
+  const prov=override?.provider||provider||((active&&active.provider&&!active.compare)?active.provider:(window._newchatProv||window._mainModelProv||""));
   if(!prov) return;
   window._activeChatProv=prov;
-  const disp=(prov===window._mainModelProv && window._mainModelName && window._mainModelName!=="auto")
-    ? window._mainModelName
-    : (PROV_SHORT[prov]||prov);
+  const disp=PROV_SHORT[prov]||prov;
   const nm=$("#modelname"); if(nm) nm.textContent=disp;
   const chip=$("#modelchip");
-  if(chip) chip.title=`当前显示:${prov}; 新对话默认:${window._newchatProv||window._mainModelProv||""}${window._newchatProv&&window._mainModelProv&&window._newchatProv!==window._mainModelProv?`(主后端 ${window._mainModelProv})`:""} — 点击切换`;
+  if(chip) chip.title=`当前对话:${disp}${override?.model&&override.model!=="auto"?` · ${override.model}`:""}; 新对话默认:${PROV_SHORT[window._newchatProv||window._mainModelProv]||window._newchatProv||window._mainModelProv||""} — 点击切换`;
   loadBalance(prov);
 }
 async function switchActiveThreadProvider(provider, model){
   if(!state.activeId) return null;
-  const body={tid:state.activeId,provider}; if(model) body.model=model;
+  const threadId=state.activeId;
+  const body={tid:threadId,provider}; if(model) body.model=model;
   const d=await api("/api/thread-provider",{method:"POST",body:JSON.stringify(body)});
   if(d.error) throw new Error(d.error);
-  const snap=await api(`/v1/threads/${state.activeId}`);   // 以持久化结果为准,避免只换顶部标签、实际 provider 仍是旧模型
+  setActiveProviderOverride(threadId,d.provider||provider,d.model||model||"");
+  const t=state.threads.find(x=>x.id===threadId);
+  if(t){ t.provider=d.provider||provider; t.model=d.model||model||t.model; t.compare=false; }
+  if(state.activeId===threadId){
+    state._sig=null; renderThreads();
+    refreshActiveProviderChrome(provider);
+    const badge=$("#tmeta .badge"); if(badge) badge.textContent=PROV_SHORT[provider]||provider;
+  }
+  const snap=await api(`/v1/threads/${threadId}`);   // 后台确认持久化,但不允许晚返回结果覆盖已经切换的当前线程
   const persisted=snap?.thread||snap||{};
-  const t=state.threads.find(x=>x.id===state.activeId);
-  if(t){ t.provider=d.provider||provider; t.model=persisted.model||d.model||model||t.model; t.compare=false; }
-  state._sig=null; renderThreads();
-  refreshActiveProviderChrome(provider);
-  const badge=$("#tmeta .badge"); if(badge) badge.textContent=PROV_SHORT[provider]||provider;   // 顶栏模型徽章立即跟上,不等重新打开对话
+  if(t){ t.provider=d.provider||provider; t.model=persisted.model||d.model||model||t.model; }
+  if(state.activeId===threadId){ state._sig=null; renderThreads(); refreshActiveProviderChrome(provider); }
   return d;
 }
-async function loadModelLabel(){ try{ const d=await api("/api/model"); const c=d.current||{};
+async function loadModelLabel(){ const seq=++modelLabelSeq, activeId=state.activeId; try{ const d=await api("/api/model"); const c=d.current||{};
   let nc=""; try{ nc=(await api("/api/newchat-provider")).provider||""; }catch(e){}   // "新对话 provider":单窗口新建对话实际走它(可能 != 主配置,如主后端 deepseek 但新对话 claude-code)
   let prefs={}; try{ prefs=(await api("/api/model-pref")).prefs||{}; }catch(e){}
+  if(seq!==modelLabelSeq||activeId!==state.activeId) return;
   const newProv=nc||c.provider||"?";
   window._newchatProv=newProv;   // 缓存新对话 provider → 乐观新建时直接用,不在发送关键路径再请求
   window._modelPrefs=prefs; window._mainModelProv=c.provider||""; window._mainModelName=c.model||"";
   const active=state.threads.find(x=>x.id===state.activeId);
-  const prov=(active&&active.provider&&!active.compare)?active.provider:newProv;
+  const override=activeProviderOverride(activeId);
+  const prov=override?.provider||((active&&active.provider&&!active.compare)?active.provider:newProv);
   window._activeChatProv=prov;
-  const disp=(prov===c.provider && c.model && c.model!=="auto") ? c.model : (PROV_SHORT[prov]||prov);   // chip 代表"下一个新对话用什么";newchat 覆盖主配置时显 newchat 友好名
+  const disp=PROV_SHORT[prov]||prov;
   const nm=$("#modelname"); if(nm) nm.textContent=disp;
-  const chip=$("#modelchip"); if(chip) chip.title=`当前显示:${prov}; 新对话默认:${newProv}${nc&&nc!==c.provider?`(主后端 ${c.provider})`:""} — 点击切换`;
+  const chip=$("#modelchip"); if(chip) chip.title=`当前对话:${disp}${override?.model&&override.model!=="auto"?` · ${override.model}`:""}; 新对话默认:${PROV_SHORT[newProv]||newProv}${nc&&nc!==c.provider?`(主后端 ${PROV_SHORT[c.provider]||c.provider})`:""} — 点击切换`;
   loadBalance(prov);
 }catch(e){} }
 async function openModelSwitch(preselect){
@@ -1238,11 +1257,7 @@ async function openModelSwitch(preselect){
   const sel=$("#mprov");
   const providerReadyLabel=p=>{
     if(p.id!=="qwen") return keyed[p.id]?"  ✓已配置":"";
-    const qc=providerCredentials.qwen||{}, workspace=(qc.workspace||{}).configured, token=(qc.token_plan||{}).configured;
-    if(workspace&&token) return "  ✓普通 API + Token Plan";
-    if(token) return "  ✓Token Plan";
-    if(workspace) return "  ✓普通 API";
-    return "";
+    return ((providerCredentials.qwen||{}).token_plan||{}).configured?"  ✓Token Plan":"";
   };
   sel.innerHTML=PROVIDERS.map(p=>`<option value="${p.id}">${p.name}${providerReadyLabel(p)}</option>`).join("");   // 含 claude-code(newchatOnly):单窗口可选,选它只设"新对话 provider"(见 mswitch),不动 launchd 主后端
   if(preselect && PROVIDERS.some(p=>p.id===preselect)) sel.value=preselect;
@@ -1268,47 +1283,41 @@ async function openModelSwitch(preselect){
       sw.disabled=false;
       sw.textContent=p.cmpKeyOnly?"保存并应用到当前对话":(p.newchatOnly||p.sidecar?"应用到当前对话":"切换并应用到当前对话");
     }
-    const qwenTokenPlanBase="https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
-    const qwenCred=providerCredentials.qwen||{}, qwenWorkspace=qwenCred.workspace||{}, qwenTokenPlan=qwenCred.token_plan||{};
+    const qwenTokenPlanBase="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1";
+    const qwenCred=providerCredentials.qwen||{}, qwenTokenPlan=qwenCred.token_plan||{};
     const updateQwenHint=()=>{
-      const chosen=vars.length?$("#mvariant").value:$("#mmodel").value.trim();
-      const tokenPlan=chosen.startsWith("qwen3.8-");
-      const profile=tokenPlan?"token_plan":"workspace";
-      if(keyInput.dataset.qwenProfile && keyInput.dataset.qwenProfile!==profile) keyInput.value="";
-      keyInput.dataset.qwenProfile=profile;
-      if(tokenPlan){
-        if(!baseInput.value||baseInput.value===providerBases.qwen||baseInput.dataset.autoBase==="legacy"){
-          baseInput.value=qwenTokenPlan.base_url||qwenTokenPlanBase;
-          baseInput.dataset.autoBase="token-plan";
-        }
-      } else if(baseInput.dataset.autoBase==="token-plan"){
-        baseInput.value=qwenWorkspace.base_url||providerBases.qwen||"";
-        baseInput.dataset.autoBase="legacy";
+      let chosen=vars.length?$("#mvariant").value:$("#mmodel").value.trim();
+      if(!/^(qwen|qwq)/i.test(String(chosen||""))){
+        chosen="qwen3.8-max-preview";
+        if(vars.length && Array.from($("#mvariant").options).some(o=>o.value===chosen)) $("#mvariant").value=chosen;
+        else $("#mmodel").value=chosen;
       }
-      const ready=tokenPlan?!!qwenTokenPlan.configured:!!qwenWorkspace.configured;
-      keyInput.placeholder=tokenPlan
-        ? (ready?"Token Plan 已配置,留空=不改":"必填:Token Plan 专用 API key(普通千问 key 不会复用)")
-        : (ready?"普通千问 API 已配置,留空=不改":"必填:百炼/工作区 API key");
+      keyInput.dataset.qwenProfile="token_plan";
+      baseInput.value=qwenTokenPlan.base_url||qwenTokenPlanBase;
+      baseInput.dataset.autoBase="token-plan";
+      baseInput.readOnly=true;
+      const ready=!!qwenTokenPlan.configured;
+      keyInput.placeholder=ready?"Token Plan API key 已配置,留空=不改":"填写 Token Plan API key（不限制 key 前缀）";
       if(sw){
         sw.disabled=!ready&&!keyInput.value.trim();
-        sw.textContent=sw.disabled?"先填写专用 API key":"应用到当前对话";
+        sw.textContent=sw.disabled?"填写 API key 后验证":"应用到当前对话";
       }
-      keyInput.oninput=()=>updateQwenHint();
-      $("#mhint").innerHTML=tokenPlan
-        ? `<b>Qwen3.8 Max Preview 仅 Token Plan 可用。</b>${ready?"已检测到保存过的 Token Plan 凭据,可直接应用。":"当前只有普通千问凭据；请填写 Token Plan API Keys 页面提供的专用 base URL 与专用 key。"}普通百炼/工作区 key 不会被拿来试请求；校验成功后才切换。`
-        : "切换后<b>当前打开的对话下一条</b>会直接使用此模型；千问配置会先做最小请求校验，失败不会覆盖当前可用配置。";
+      keyInput.oninput=()=>{
+        if(sw){
+          sw.disabled=!ready&&!keyInput.value.trim();
+          sw.textContent=sw.disabled?"填写 API key 后验证":"应用到当前对话";
+        }
+      };
+      $("#mhint").innerHTML=`<b>Qwen Token Plan。</b>${ready?"已配置凭据,可直接应用。":"填写 API key 后会发起真实最小请求验证；不按 key 前缀判断。"}模型列表会从同一 API 的 <code>/models</code> 自动读取全部可对话 Qwen / QwQ 模型；接口暂不可用时保留 Max Preview 兜底。`;
     };
     if(sel.value==="qwen"){
       baseRow.style.display="flex";
-      if(baseInput.dataset.provider!=="qwen"){
-        baseInput.value=providerBases.qwen||"";
-        baseInput.dataset.provider="qwen";
-        baseInput.dataset.autoBase="legacy";
-      }
+      baseInput.dataset.provider="qwen";
       updateQwenHint();
     } else {
       baseRow.style.display="none";
       baseInput.dataset.provider="";
+      baseInput.readOnly=false;
       $("#mhint").innerHTML="切换后<b>当前打开的对话下一条</b>会直接使用此模型；没有打开对话时，只会设置新对话默认模型。其它未打开的旧对话保持原模型。";
     }
     $("#mvariant").onchange=()=>{
@@ -1325,11 +1334,11 @@ async function openModelSwitch(preselect){
     const variant = vars.length ? (p.freeModel ? ($("#mmodel").value.trim() || $("#mvariant").value) : $("#mvariant").value) : $("#mmodel").value.trim();   // 所选模型变体/手填模型 ID
     const qwenState=providerCredentials.qwen||{};
     const modelCredentialReady=provider==="qwen"
-      ? !!((variant.startsWith("qwen3.8-")?(qwenState.token_plan||{}):(qwenState.workspace||{})).configured)
+      ? !!((qwenState.token_plan||{}).configured)
       : !!keyed[provider];
     if(!p.oauth && !modelCredentialReady && !api_key){
-      alert(provider==="qwen"&&variant.startsWith("qwen3.8-")
-        ? "Qwen3.8 需要 Token Plan 专用 API key,普通千问 key 不会复用"
+      alert(provider==="qwen"
+        ? "请填写 Qwen Token Plan API key；系统会用真实请求校验，并自动发现可用的 Qwen / QwQ 对话模型"
         : "该 provider 还没配置可用于此模型的 key —— 请先填 API key");
       return;
     }
@@ -1373,8 +1382,8 @@ async function openModelSwitch(preselect){
 
 /* ---------- 更新中心:一级概览 + 二级详情 ---------- */
 const UPDATE_VIEWS={
-  overview:{title:"更新",desc:"一级看 GUI、后端、大模型、Harness、Skill；大模型/Harness/Skill 点进去看完整二级明细。"},
-  models:{title:"大模型",desc:"逐个检查 provider、key/OAuth 状态、当前模型和可选模型变体。"},
+  overview:{title:"更新",desc:"统一管理 GUI、CodeWhale 后端和大模型目录三类更新。"},
+  models:{title:"大模型",desc:"同步已配置 provider、OAuth 与 CLI 的可用模型目录，发现新模型后提醒切换。"},
   harness:{title:"研究 Harness",desc:"逐个检查研究引擎桥接脚本、输出目录和 Harness 包更新。"},
   skills:{title:"Skill / 插件",desc:"查看插件安装、修复、更新和 skill 数量。"}
 };
@@ -1385,6 +1394,23 @@ function updateAction(id,btnText,fn){
   const el=$("#"+id); if(!el) return;
   const b=document.createElement("button"); b.className="btn primary"; b.textContent=btnText; b.onclick=()=>fn(b);
   el.innerHTML=""; el.appendChild(b);
+}
+async function checkModelUpdates({force=false,startup=false}={}){
+  const qs=new URLSearchParams();
+  if(force) qs.set("force","1");
+  if(startup) qs.set("startup","1");
+  const suffix=qs.toString()?`?${qs.toString()}`:"";
+  const d=await api("/api/update/models/check"+suffix);
+  if(startup && Number(d&&d.total_new)>0){
+    const notice=`${d.checked_at||""}:${d.total_new}`;
+    let shouldNotify=true;
+    try{
+      shouldNotify=sessionStorage.getItem("cw_model_update_notice")!==notice;
+      if(shouldNotify) sessionStorage.setItem("cw_model_update_notice",notice);
+    }catch(e){}
+    if(shouldNotify) cwToast(`发现 ${d.total_new} 个新模型，可在“设置 → 更新 → 大模型”查看`);
+  }
+  return d;
 }
 function renderUpdateCard(id,iconName,title,desc,clickable){
   const tag=clickable?"button":"div";
@@ -1399,9 +1425,9 @@ async function renderUpdateCenter(target,view="overview"){
   const info=UPDATE_VIEWS[view];
   target.innerHTML=`<div class="settings-head"><div><h4>${esc(info.title)}</h4><p>${esc(info.desc)}</p></div><div class="settings-actions">${view!=="overview"?`<button class="btn" id="u_back">返回</button>`:""}<button class="btn" id="u_refresh">重新检查</button></div></div>
     <div class="update-center" id="u_center"></div>`;
-  const refresh=$("#u_refresh"); if(refresh) refresh.onclick=()=>renderUpdateCenter(target,view);
+  const refresh=$("#u_refresh"); if(refresh) refresh.onclick=()=>view==="models"?renderModelUpdateDetail(target,true):renderUpdateCenter(target,view);
   const back=$("#u_back"); if(back) back.onclick=()=>renderUpdateCenter(target,"overview");
-  if(view==="models") return renderModelUpdateDetail(target);
+  if(view==="models") return renderModelUpdateDetail(target,false);
   if(view==="harness") return renderHarnessUpdateDetail(target);
   if(view==="skills") return renderSkillUpdateDetail(target);
   renderUpdateOverview(target);
@@ -1411,11 +1437,9 @@ function renderUpdateOverview(target){
   box.innerHTML=`<div class="update-grid">
     ${renderUpdateCard("gui","monitor","GUI","界面版本、签名更新包。",false)}
     ${renderUpdateCard("backend","server","CodeWhale 后端","本机 codewhale CLI / agent 后端。",false)}
-    ${renderUpdateCard("models","brain","大模型","Provider key、默认模型和 effort 配置。",true)}
-    ${renderUpdateCard("harness","flask","Harness","DeerFlow、GPT Researcher、ODR 等研究引擎。",true)}
-    ${renderUpdateCard("skills","puzzle","Skill","GitHub 插件、本地插件和子 skill。",true)}
+    ${renderUpdateCard("models","brain","大模型","启动时自动同步云端、OAuth 与 CLI 模型目录。",true)}
   </div>
-  <div class="panel-note mt12">GUI 与 Harness 更新走签名验证；CodeWhale 后端走 <code>codewhale update</code>；插件优先 fast-forward,非 git 插件按来源安装/修复。</div>`;
+  <div class="panel-note mt12">更新只有三条线：GUI 更新、CodeWhale 后端更新、大模型目录更新。大模型同步只下载目录元数据，不下载云端模型权重，也不会自动替换当前会话模型。</div>`;
   box.querySelectorAll("[data-view]").forEach(b=>b.onclick=()=>renderUpdateCenter(target,b.dataset.view));
   loadUpdateOverviewStatus();
 }
@@ -1441,36 +1465,14 @@ async function loadUpdateOverviewStatus(){
   })();
   (async()=>{
     try{
-      const [m,p]=await Promise.all([api("/api/model"),api("/api/model-pref")]);
-      const keyed=m.keyed||{}, prefs=(p&&p.prefs)||{};
-      const providerRows=modelProviderRows(keyed,prefs,(p&&p.effort)||{});
-      const configured=providerRows.filter(x=>x.ready).length;
-      const variants=providerRows.reduce((n,x)=>n+x.variants.length,0);
-      const cur=m.current||{};
-      updateMeta("u_models_meta",`${configured}/${providerRows.length} provider 可用 · ${variants} 个模型变体 · 当前 ${PROV_SHORT[cur.provider]||cur.provider||"?"}${cur.model?` / ${cur.model}`:""}`);
-      updateStatus("u_models_status",updateBadge(configured?"ok":"unknown",configured?`${configured} 可用`:"未配置"));
+      const d=await checkModelUpdates();
+      const total=(d.providers||[]).length;
+      updateMeta("u_models_meta",`${d.total_models||0} 个可用模型 · ${d.provider_success_count||0}/${total} 个来源已同步`);
+      if(d.total_new) updateStatus("u_models_status",updateBadge("unknown",`发现 ${d.total_new} 个新模型`));
+      else if(!d.provider_success_count) updateStatus("u_models_status",updateBadge("err","同步失败"));
+      else if(d.failed_count) updateStatus("u_models_status",updateBadge("unknown",`${d.failed_count} 个来源失败`));
+      else updateStatus("u_models_status",updateBadge("ok","目录已同步"));
     }catch(e){ updateStatus("u_models_status",updateBadge("err","检查失败",e.message)); updateMeta("u_models_meta",""); }
-  })();
-  (async()=>{
-    try{
-      const [u,hs]=await Promise.all([api("/api/update/harness/check"),api("/api/harnesses")]);
-      const total=Array.isArray(hs)?hs.length:0, ok=Array.isArray(hs)?hs.filter(x=>x.available).length:0;
-      const names=(Array.isArray(hs)?hs:[]).slice(0,4).map(x=>x.name||x.id).join("、");
-      updateMeta("u_harness_meta",`${ok}/${total} 引擎可用${names?` · ${names}${total>4?"…":""}`:""}${u.current?` · 包 ${u.current}`:""}`);
-      if(u.error) updateStatus("u_harness_status",updateBadge("err","检查失败",u.error));
-      else if(u.available){ updateStatus("u_harness_status",""); updateAction("u_harness_act","更新",applyHarnessUpd); }
-      else updateStatus("u_harness_status",updateBadge("ok","已是最新"));
-    }catch(e){ updateStatus("u_harness_status",updateBadge("err","检查失败",e.message)); updateMeta("u_harness_meta",""); }
-  })();
-  (async()=>{
-    try{
-      const rows=await api("/api/update/plugins/check");
-      const items=Array.isArray(rows)?rows:[], installed=items.filter(x=>x.installed!==false).length;
-      const available=items.filter(x=>x.available||x.installable||x.repairable||x.installed===false).length;
-      const skills=items.reduce((n,x)=>n+(Number(x.skill_count)||0),0);
-      updateMeta("u_skills_meta",`${installed}/${items.length} 插件已安装 · ${skills} skills`);
-      updateStatus("u_skills_status",updateBadge(available?"unknown":"ok",available?`${available} 可处理`:"已是最新"));
-    }catch(e){ updateStatus("u_skills_status",updateBadge("err","检查失败",e.message)); updateMeta("u_skills_meta",""); }
   })();
 }
 function modelProviderRows(keyed={},prefs={},effort={}){
@@ -1521,29 +1523,46 @@ function modelProviderRows(keyed={},prefs={},effort={}){
   });
   return rows;
 }
-async function renderModelUpdateDetail(){
+async function renderModelUpdateDetail(target,force=false){
   const box=$("#u_center");
   box.innerHTML='<div class="update-detail-grid"><div class="panel-empty">加载中…</div></div>';
   try{
-    if(window.loadProviderModels) await window.loadProviderModels();
+    const updates=await checkModelUpdates({force});
+    // checkModelUpdates has just refreshed the server-side provider cache.
+    // Reuse it here instead of issuing the same provider requests twice.
+    if(window.loadProviderModels) await window.loadProviderModels(false);
     const [m,p]=await Promise.all([api("/api/model"),api("/api/model-pref")]);
     const keyed=m.keyed||{}, prefs=(p&&p.prefs)||{}, effort=(p&&p.effort)||{}, cur=m.current||{};
     const rows=modelProviderRows(keyed,prefs,effort);
+    const updateRows=Array.isArray(updates.providers)?updates.providers:[];
+    const updateByProvider=Object.fromEntries(updateRows.map(x=>[x.id,x]));
+    const checkedAt=updates.checked_at?new Date(updates.checked_at*1000).toLocaleString():"尚未同步";
     box.innerHTML=`<div class="update-summary-strip">
       <span>当前主后端: <b>${esc(PROV_SHORT[cur.provider]||cur.provider||"未知")}</b>${cur.model?` · ${esc(cur.model)}`:""}</span>
       <span>${rows.filter(x=>x.ready).length}/${rows.length} provider 可用</span>
-      <span>${rows.reduce((n,x)=>n+x.variants.length,0)} 个模型变体</span>
+      <span>${updates.total_models||rows.reduce((n,x)=>n+x.variants.length,0)} 个模型</span>
+      <span>最近同步: ${esc(checkedAt)}</span>
     </div>
+    <div class="panel-note mb12">每次打开 CodeWhale 都会在后台同步一次模型目录。同步的是云端模型 ID 与能力元数据，不会下载模型权重，也不会自动切换现有对话。${updates.total_new?` <b>本次发现 ${updates.total_new} 个新模型。</b> <button class="btn" id="u_models_ack">标记已读</button>`:""}</div>
     <div class="update-detail-grid model-detail-grid">
-      ${rows.map(r=>`<div class="update-detail-card">
-        <div class="update-detail-title"><span>${esc(r.short)}</span>${updateBadge(r.ready?"ok":"unknown",r.ready?"可用":"未配置")}</div>
+      ${rows.map(r=>{ const u=updateByProvider[r.id]||{}, newIds=new Set((u.new_models||[]).map(x=>typeof x==="string"?x:x&&x.id).filter(Boolean)); return `<div class="update-detail-card">
+        <div class="update-detail-title"><span>${esc(r.short)}</span>${u.new_count?updateBadge("unknown",`${u.new_count} 个新模型`):updateBadge(r.ready?"ok":"unknown",r.ready?"可用":"未配置")}</div>
         <div class="update-detail-sub">${esc(r.name)} · ${esc(r.auth)} · ${esc(r.note)}</div>
         <div class="update-detail-line"><b>当前模型</b><span>${esc(r.selectedName||r.selected||"auto")}${r.selected&&r.selectedName!==r.selected?` <code>${esc(r.selected)}</code>`:""}</span></div>
-        ${r.modelSource?`<div class="update-detail-line"><b>模型目录</b><span>${esc(r.modelSource)}</span></div>`:""}
+        <div class="update-detail-line"><b>模型目录</b><span>${u.ok?`${esc(u.count||0)} 个 · ${esc(u.source||"provider")}`:esc(u.error||r.modelSource||"尚未同步")}</span></div>
         ${r.effort?`<div class="update-detail-line"><b>推理 effort</b><span>${esc(r.effort)}</span></div>`:""}
-        <div class="update-chip-row">${r.variants.length?r.variants.map(v=>`<span class="update-mini-chip${v.id===r.selected?" on":""}" title="${escAttr(v.id)}">${esc(v.name||v.id)}</span>`).join(""):`<span class="update-mini-chip muted">后端默认</span>`}</div>
-      </div>`).join("")}
+        <div class="update-chip-row">${r.variants.length?r.variants.map(v=>`<span class="update-mini-chip${v.id===r.selected?" on":""}${newIds.has(v.id)?" new":""}" title="${escAttr(v.id)}">${esc(v.name||v.id)}${newIds.has(v.id)?" · 新":""}</span>`).join(""):`<span class="update-mini-chip muted">后端默认</span>`}</div>
+      </div>`; }).join("")}
     </div>`;
+    const ack=$("#u_models_ack");
+    if(ack) ack.onclick=async()=>{
+      ack.disabled=true;
+      try{
+        await api("/api/update/models/ack",{method:"POST",body:"{}"});
+        cwToast("已标记所有新模型为已读");
+        renderModelUpdateDetail(target,false);
+      }catch(e){ ack.disabled=false; cwToast("标记失败: "+(e.message||e)); }
+    };
   }catch(e){ box.innerHTML='<div class="panel-empty">大模型状态读取失败: '+esc(e.message||"")+'</div>'; }
 }
 async function renderHarnessUpdateDetail(){
@@ -1777,4 +1796,4 @@ async function checkSetup(){   // 当前 provider 还没配 key(且非 OAuth)→
   }catch(e){}
 }
 
-export { loadBalance, loadVersion, checkUpdate, doUpdate, checkGuiUpdate, doGuiUpdate, openDeerFlow, closeDeerFlow, submitResearch, submitSkillResearch, submitDeerFlowFromInput, loadResearchSkills, renderDfSkills, renderDfEngines, applyDfEngine, renderDfTemplates, loadPlugins, renderPluginItemsInto, renderPlugins, renderCmpPlugins, fillCmpComposer, closeCmpPluginMenus, finishCmpPluginPick, researchModelKeyForEngine, researchFallbackForEngine, researchModelForCurrent, researchModelMetaText, researchStatsWithModel, dfModelForCurrent, researchApiForRecord, researchRecordTitle, appendResearchFileLinks, renderResearchRecord, restoreResearchRecords, saveResearchRecord, submitDeerFlow, initPanelDocumentHandlers, openModal, closeModal, openSettings, openSkills, openConnectors, PROVIDERS, PROV_SHORT, refreshActiveProviderChrome, switchActiveThreadProvider, loadModelLabel, openModelSwitch, openUpdate, applyUpd, guiUpdateWithProgress, restartGui, sidebarMobile, closeDrawer, syncSidebarToggle, setSidebarCollapsed, toggleSidebar, applySidebarWidth, initSidebarControls, applyZoom, applyFs, setFs, bumpFs, applyCmpFs, setCmpFs, bumpCmpFs, initZoomControls, checkSetup };
+export { loadBalance, loadVersion, checkUpdate, doUpdate, checkGuiUpdate, doGuiUpdate, checkModelUpdates, openDeerFlow, closeDeerFlow, submitResearch, submitSkillResearch, submitDeerFlowFromInput, loadResearchSkills, renderDfSkills, renderDfEngines, applyDfEngine, renderDfTemplates, loadPlugins, renderPluginItemsInto, renderPlugins, renderCmpPlugins, fillCmpComposer, closeCmpPluginMenus, finishCmpPluginPick, researchModelKeyForEngine, researchFallbackForEngine, researchModelForCurrent, researchModelMetaText, researchStatsWithModel, dfModelForCurrent, researchApiForRecord, researchRecordTitle, appendResearchFileLinks, renderResearchRecord, restoreResearchRecords, saveResearchRecord, submitDeerFlow, initPanelDocumentHandlers, openModal, closeModal, openSettings, openSkills, openConnectors, PROVIDERS, PROV_SHORT, activeProviderOverride, setActiveProviderOverride, clearActiveProviderOverride, refreshActiveProviderChrome, switchActiveThreadProvider, loadModelLabel, openModelSwitch, openUpdate, applyUpd, guiUpdateWithProgress, restartGui, sidebarMobile, closeDrawer, syncSidebarToggle, setSidebarCollapsed, toggleSidebar, applySidebarWidth, initSidebarControls, applyZoom, applyFs, setFs, bumpFs, applyCmpFs, setCmpFs, bumpCmpFs, initZoomControls, checkSetup };

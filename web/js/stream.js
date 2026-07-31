@@ -421,16 +421,46 @@ function onViewTurnFinished(turnId, status, meta={}){
   const st=normTurnStatus(status);
   const label=meta.label || (st==="completed"?"已完成":(st==="interrupted"?"已停止":(st==="failed"||st==="error"?"本轮失败":"已结束")));
   const kind=meta.kind || (st==="failed"||st==="error"?"err":"done");
-  if(meta.stale){ finishStaleRunUI(turnId,label,kind); return; }
+  if(meta.stale){ finishStaleRunUI(turnId,label,kind); restoreDelegatedRouteForTurn(turnId).catch(()=>{}); return; }
   state.stopTurnId=null; state.stopRequestedAt=0;
   runStatusFinish(label,kind); procGroupFinish(); state._procGroup=null; setRunning(false);
   if(meta.refresh) refreshActiveMeta();
   if(turnId===state._contextCompactTurnId) return;
   const finish=async()=>{
+    await restoreDelegatedRouteForTurn(turnId);
     if(meta.checkHints && !state.queue.length) await maybeUnexecutedWorkHintForActive(turnId);
     processQueue();
   };
   setTimeout(()=>finish().catch(e=>{ console.warn("turn delivery reconciliation failed",e); processQueue(); }),250);
+}
+async function restoreDelegatedRouteForTurn(turnId){
+  const pending=state.pendingRouteRestore;
+  if(!pending || (pending.turnId && turnId && pending.turnId!==turnId)) return false;
+  state.pendingRouteRestore=null;
+  try{
+    const restored=await api("/api/turn-route/restore",{
+      method:"POST",
+      body:JSON.stringify({thread_id:pending.threadId})
+    });
+    if(!restored || !restored.restored) return false;
+    const active=state.threads.find(x=>x.id===pending.threadId);
+    if(active){
+      active.provider=restored.provider||active.provider;
+      active.model=restored.model||active.model;
+    }
+    const label=restored.display||restored.model||"原模型";
+    if($("#modelname")) $("#modelname").textContent=label;
+    const badge=$("#tmeta .badge");
+    if(badge) badge.textContent=label;
+    state._sig=null;
+    renderThreads();
+    refreshActiveMeta();
+    runStatusStep(`已恢复 ${label}`);
+    return true;
+  }catch(error){
+    console.warn("delegated route restore failed",error);
+    return false;
+  }
 }
 function onViewAssistantFinal(item, el){}
 function onViewUserMessage(item, el, meta={}){
@@ -480,11 +510,62 @@ async function threadCachePut(id, rec){
     });
   }catch(e){}
 }
+const MOONSHOT_SCHEMA_ERROR_RE=/Moonshot function parameters failed safe compatibility validation|unsupported MFJS keyword|Moonshot function parameters contain an unsupported/i;
+const QWEN_TOOL_ERROR_RE=/function\.arguments[\s\S]*JSON format|invalid_parameter_error[\s\S]*function\.arguments/i;
+function compatTextProviderForSummary(summary){
+  const provider=String(summary&&summary.provider||"");
+  return provider==="moonshot"||provider==="qwen" ? provider : "";
+}
+function compatTextProviderForThread(id){ return compatTextProviderForSummary(activeSummary(id)); }
+function isMoonshotThread(id){
+  return compatTextProviderForThread(id)==="moonshot";
+}
+function mergeCompatTextSnapshot(base, sidecar, provider){
+  const left=base&&typeof base==="object"?base:{};
+  const right=sidecar&&typeof sidecar==="object"&&!sidecar.error?sidecar:{};
+  const errorRe=provider==="qwen"?QWEN_TOOL_ERROR_RE:MOONSHOT_SCHEMA_ERROR_RE;
+  const isSchemaError=item=>errorRe.test(String(item&&(item.detail||item.summary||item.text)||""));
+  const items=[], seenItems=new Set();
+  [...(left.items||[]),...(right.items||[])].forEach(item=>{
+    if(!item||isSchemaError(item)||seenItems.has(item.id)) return;
+    if(item.id) seenItems.add(item.id);
+    items.push(item);
+  });
+  const turns=[], seenTurns=new Set();
+  [...(left.turns||[]),...(right.turns||[])].forEach(turn=>{
+    if(!turn||seenTurns.has(turn.id)) return;
+    if(turn.id) seenTurns.add(turn.id);
+    turns.push(turn);
+  });
+  return Object.assign({},left,{
+    thread:Object.assign({},left.thread||{},right.thread||{}),
+    turns,
+    items,
+    // SSE 的 since_seq 必须沿用 runtime 序号;sidecar 使用独立 item id 去重。
+    latest_seq:Number(left.latest_seq||0),
+    total_items:items.length,
+    window_start:0,
+    window_end:items.length,
+    windowed:false,
+    compat_text:true,
+    compat_provider:provider,
+    moonshot_text:provider==="moonshot",
+    qwen_text:provider==="qwen",
+  });
+}
+function mergeMoonshotSnapshot(base, sidecar){ return mergeCompatTextSnapshot(base,sidecar,"moonshot"); }
 async function fetchThreadWindow(id, opts={}){
   const q=new URLSearchParams({thread_id:id,limit:String(opts.limit||SNAPSHOT_VISIBLE_ITEMS)});
   if(opts.start!=null) q.set("start", String(opts.start));
   const rec=await api("/api/thread-window?"+q.toString());
   if(rec&&rec.error) throw new Error(rec.error);
+  const compatProvider=compatTextProviderForThread(id);
+  if(compatProvider){
+    try{
+      const sidecar=await api("/api/compat-text-history?thread_id="+encodeURIComponent(id)+"&provider="+encodeURIComponent(compatProvider));
+      return mergeCompatTextSnapshot(rec,sidecar,compatProvider);
+    }catch(e){ console.warn(`${compatProvider} 文本历史载入失败`,e); }
+  }
   return rec;
 }
 async function renderThreadSnapshot(rec, preserveQueue=false, opts={}){
@@ -530,6 +611,8 @@ async function syncActiveTurn(){
 }
 async function openThread(id){
   if(state.activeId===id && state.es) return;
+  const previousThreadId=state.activeId;
+  if(previousThreadId!==id&&typeof clearActiveProviderOverride==="function") clearActiveProviderOverride(previousThreadId);
   closeStream();
   runStatusReset(false);
   timelineReset("single");
@@ -632,9 +715,12 @@ function restoreComposerDraft(inp, raw){
 async function send(queuedText){
   const inp=$("#input");
   let text=queuedText;
+  let hadAttachments=false;
+  let turnRoute=null;
   if(text===undefined){
     const raw=inp.value.trim(); if(!raw && !state.attachments.length) return;
     state._preparingSend=true;
+    hadAttachments=state.attachments.length>0;
     const waiting=state.attachments.some(a=>a&&a.pending);
     const prepared=withAttachments(raw);   // 同步取走当前附件包，异步只等待文件落盘；输入框立即可写下一条
     inp.value=""; inp.style.height="auto"; getMainView().setStick(true);
@@ -660,6 +746,39 @@ async function send(queuedText){
     let implicitNewTitle="";
     if(!state.activeId){ const t=await createThread(); implicitNewTitle=roughThreadTitle(text); _addOptimisticThread(t.id, implicitNewTitle); await openThread(t.id); loadThreads(); }   // 乐观立刻把新 thread 加进侧栏(否则慢 SWR 缓存下首条消息不生成可见 thread,要发第二条才出现);loadThreads 后台刷,不阻塞
     await ensureContextCapacityBeforeSend();
+    try{
+      runStatusUpdate("判断任务","简单问题优先使用快速模型");
+      const route=await api("/api/turn-route",{
+        method:"POST",
+        body:JSON.stringify({tid:state.activeId,prompt:text,has_attachments:hadAttachments})
+      });
+      if(route&&!route.error){
+        turnRoute=route;
+        const active=state.threads.find(x=>x.id===state.activeId);
+        if(active){
+          active.provider=route.provider||active.provider;
+          active.model=route.model||active.model;
+          active.compare=false;
+        }
+        const modelName=$("#modelname");
+        if(modelName&&route.display) modelName.textContent=route.display;
+        const badge=$("#tmeta .badge");
+        if(badge&&route.display) badge.textContent=route.display;
+        state._sig=null; renderThreads();
+        if(route.auto_approve_disabled){ state.autoApprove=false; renderAuto(); }
+        if(route.shell_disabled){ state.allowShell=false; renderShell(); }
+        if(route.restore_after_turn){
+          state.pendingRouteRestore={threadId:state.activeId,turnId:null};
+          runStatusStep(`工具任务临时交给 ${route.display||route.model||"兼容执行模型"}`);
+        }
+        if(route.compatibility_mode==="moonshot_text") runStatusStep("Kimi 文本兼容模式 · 不发送 Moonshot 不支持的函数 Schema");
+        else if(route.compatibility_mode==="qwen_text") runStatusStep("Qwen 文本兼容模式 · 不发送函数工具参数");
+        else if(route.mode==="fast") runStatusStep(`简单问题 · ${route.display||route.model||"快速模型"} 快答`);
+        else if(route.restored) runStatusStep("复杂任务 · 已恢复所选模型");
+      }
+    }catch(routeError){
+      console.warn("smart turn routing unavailable; keep selected model",routeError);
+    }
     // 乐观渲染:会话就绪后立刻显示用户消息 + 进入"运行中"(思考指示),不等 SSE。否则首条要等后端起 turn(~1s+,推理模型更久),
     // 这段时间窗口空白,体感像"卡住/过好久才显示"。真 user_message 事件到达时由 startItem 认领这个气泡,不重复。
     const oel=row("user","你"); const oc=oel.querySelector(".content"); if(!decorateUserUploads(oc,text)) oc.innerHTML=md(text); $("#mwrap").appendChild(oel); state._optimUser=oel;
@@ -667,9 +786,52 @@ async function send(queuedText){
     setRunning(true); runStatusUpdate("发送中","正在把消息交给模型"); scrollDown(true);
     const th=state.threads.find(x=>x.id===state.activeId);
     const freezeName = !!implicitNewTitle || !th || !th.title || th.title==="New Thread";   // 首条消息 → 先落粗标题,随后按对话目的智能改名
-    const r=await api(`/v1/threads/${state.activeId}/turns`,{method:"POST",body:JSON.stringify({prompt:text})});
+    const compatProvider=turnRoute&&(
+      turnRoute.compatibility_mode==="moonshot_text" ? "moonshot" :
+      turnRoute.compatibility_mode==="qwen_text" ? "qwen" : ""
+    );
+    if(compatProvider){
+      const compatLabel=compatProvider==="qwen"?"Qwen":"Kimi";
+      runStatusUpdate(`${compatLabel} 思考中`,"正在使用无函数工具的持久兼容通道");
+      const result=await api("/api/compat-text-turn",{
+        method:"POST",
+        body:JSON.stringify({
+          provider:compatProvider,
+          thread_id:state.activeId,
+          model:turnRoute.model,
+          prompt:text,
+          max_tokens:12000
+        })
+      });
+      if(!result||result.ok===false||result.error) throw new Error((result&&result.error)||`${compatLabel} 没有返回结果`);
+      if(state._optimUser){ state._optimUser.remove(); state._optimUser=null; }
+      const rec=await fetchThreadWindow(state.activeId);
+      await renderThreadSnapshot(rec,false);
+      threadCachePut(state.activeId,rec);
+      state._preparingSend=false;
+      state.turnId=result.turn_id||state.turnId;
+      runStatusFinish("已完成","done");
+      setRunning(false);
+      if(freezeName){
+        const title=implicitNewTitle || roughThreadTitle(text);
+        const tid=state.activeId;
+        api(`/v1/threads/${tid}`,{method:"PATCH",body:JSON.stringify({title})}).then(()=>{
+          const t2=state.threads.find(x=>x.id===tid); if(t2) t2.title=title;
+          if(state.activeId===tid) $("#ttitle").textContent=title; state._sig=null; renderThreads();
+        }).catch(()=>{}).finally(()=>scheduleSmartTitle(tid,title,text));
+      }
+      refreshActiveMeta();
+      processQueue();
+      return;
+    }
+    const turnPayload={prompt:text};
+    const r=await api(`/v1/threads/${state.activeId}/turns`,{method:"POST",body:JSON.stringify(turnPayload)});
     state._preparingSend=false;
-    state.turnId=r?.turn?.id||state.turnId; setRunning(true); runStatusUpdate("思考中","请求已送达,等待模型返回状态"); runStatusStep("请求已送达");
+    state.turnId=r?.turn?.id||state.turnId;
+    if(state.pendingRouteRestore && state.pendingRouteRestore.threadId===state.activeId){
+      state.pendingRouteRestore.turnId=state.turnId||null;
+    }
+    setRunning(true); runStatusUpdate("思考中","请求已送达,等待模型返回状态"); runStatusStep("请求已送达");
     if(freezeName){
       const title=implicitNewTitle || roughThreadTitle(text);
       const tid=state.activeId;
@@ -680,6 +842,7 @@ async function send(queuedText){
     }
   }catch(e){
     state._preparingSend=false;
+    if(state.pendingRouteRestore) restoreDelegatedRouteForTurn(state.pendingRouteRestore.turnId).catch(()=>{});
     if(state._optimUser){ state._optimUser.remove(); state._optimUser=null; }   // 发送失败/转排队 → 移除乐观气泡(由排队占位或错误提示接管)
     if(/\b409\b|active turn/i.test(e.message||"")){   // 该对话仍有一轮在跑(切回来误发/连点)→ 不报错,转为排队,turn 完成后自动发
       setRunning(true); state.queue.push({text, el:(()=>{ const el=document.createElement("div"); el.className="msg user queued"; el.innerHTML=`<div class="av">你</div><div class="body"><div class="who">${icon("clock")} 排队中(上一轮还在跑)</div><div class="content"></div><button class="qx" title="取消排队">✕</button></div>`; el.querySelector(".content").textContent=text; el.querySelector(".qx").onclick=()=>{ const i=state.queue.findIndex(q=>q.el===el); if(i>=0) state.queue.splice(i,1); el.remove(); }; $("#mwrap").appendChild(el); scrollDown(true); return el; })()});

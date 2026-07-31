@@ -34,7 +34,7 @@ func wakeManagedService(_ label: String) -> Bool {
 func ensureServices() {
     if !ping("http://127.0.0.1:7878/health") {
         if !wakeManagedService("com.codewhale.appserver") {
-            sh("cd \"$HOME\" && NO_COLOR=1 TERM=dumb nohup codewhale app-server --http --host 127.0.0.1 --port 7878 --insecure-no-auth >/dev/null 2>>\"$HOME/codewhale-gui/app-server.err.log\" &", wait: false)
+            sh("cd \"$HOME\" && NO_COLOR=1 TERM=dumb nohup codewhale --sandbox-mode danger-full-access --approval-policy on-request -C \"$HOME\" app-server --http --host 127.0.0.1 --port 7878 --insecure-no-auth >/dev/null 2>>\"$HOME/codewhale-gui/app-server.err.log\" &", wait: false)
         }
     }
     if !ping("http://127.0.0.1:3000/") {

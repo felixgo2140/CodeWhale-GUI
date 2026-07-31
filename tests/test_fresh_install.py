@@ -9,7 +9,7 @@ class FreshInstallTests(unittest.TestCase):
     def test_installer_uses_a_user_local_pinned_cli_without_sudo(self):
         source = (ROOT / "installer" / "install.sh").read_text(encoding="utf-8")
 
-        self.assertIn('REQUIRED_CLI_VERSION="${CODEWHALE_CLI_VERSION:-0.9.1}"', source)
+        self.assertIn('REQUIRED_CLI_VERSION="${CODEWHALE_CLI_VERSION:-0.9.2}"', source)
         self.assertIn('npm install --prefix "$CLI_PREFIX"', source)
         self.assertNotIn("sudo npm install", source)
         self.assertNotIn("npm install -g", source)
@@ -17,8 +17,13 @@ class FreshInstallTests(unittest.TestCase):
     def test_reinstall_preserves_existing_mcp_and_token(self):
         source = (ROOT / "installer" / "install.sh").read_text(encoding="utf-8")
 
-        self.assertIn('servers.setdefault("fetch"', source)
+        self.assertIn('legacy_default_fetch', source)
+        self.assertIn('servers["fetch"] = fetch_config', source)
         self.assertIn('servers.setdefault("playwright"', source)
+        self.assertIn('mcp-server-fetch==2026.7.10', source)
+        self.assertIn('mcp==1.25.0', source)
+        self.assertIn('"command": fetch_launcher, "args": []', source)
+        self.assertIn('mkdir -p "$HOME/.local/bin"', source)
         self.assertNotIn('cat > "$HOME/.codewhale/mcp.json"', source)
         self.assertIn('[ -s "$HOME/.codewhale-gui/token" ] ||', source)
 

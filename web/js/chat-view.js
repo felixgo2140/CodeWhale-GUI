@@ -18,33 +18,61 @@ function select(sel){
 function detectOptions(text){
   if(!text) return null;
   const lines=String(text).replace(/\r/g,"").split("\n");
-  const nonEmpty=lines.map(l=>l.trim()).filter(Boolean);
-  if(nonEmpty.length<2) return null;
-  const cueRe=/(哪一?步|哪个|哪些|选哪|要不要|你希望我|你想要?我|请?告诉我你的选择|你的选择|如何选择|怎么选|选一个|需要我[^。\n]{0,20}(执行|做|帮|试|跑|开始)|你想[^。\n]{0,20}(做|选|执行|先)|想先(做|选|跑)|要我[^。\n]{0,10}(做|执行|跑|试)哪|which\b|choose|pick one|which (one|step)|shall i|execute which|let me know)/i;
-  const tail=nonEmpty.slice(-5).join("\n");
-  const last=nonEmpty[nonEmpty.length-1];
-  if(!(cueRe.test(tail) || /[?？]\s*$/.test(last))) return null;
   const labeled=/^\s*(?:[•·▪◦*+\-]\s+)?(?:([0-9]{1,2}|[A-Za-z])\s*[.、)]\s+)(.+?)\s*$/;
   const bullet =/^\s*[•·▪◦*+\-]\s+(.+?)\s*$/;
-  let run=[], best=[];
-  for(const l of lines){
+  const runs=[];
+  let run=[], start=-1;
+  const flush=(end)=>{
+    if(run.length>=2) runs.push({items:run,start,end});
+    run=[]; start=-1;
+  };
+  lines.forEach((l,idx)=>{
     let m=l.match(labeled);
-    if(m){ run.push({n:m[1], label:m[2]}); continue; }
+    if(m){
+      if(start<0) start=idx;
+      run.push({n:m[1], label:m[2]});
+      return;
+    }
     m=l.match(bullet);
-    if(m){ run.push({n:"", label:m[1]}); continue; }
-    if(l.trim()==="") continue;
-    if(run.length) best=run; run=[];
+    if(m){
+      if(start<0) start=idx;
+      run.push({n:"", label:m[1]});
+      return;
+    }
+    if(l.trim()==="") return;
+    if(run.length) flush(idx-1);
+  });
+  if(run.length) flush(lines.length-1);
+  if(!runs.length) return null;
+
+  const explicitCueRe=/(?:请选择|请从[^。\n]{0,40}(?:选择|选)|告诉我[^。\n]{0,30}(?:选择|想选|要选)|你希望我[^。\n]{0,40}(?:做|执行|继续|先)|你想(?:让|要)?我[^。\n]{0,40}(?:做|执行|继续|先)|你想先[^。\n]{0,30}(?:做|选|跑)|要不要我[^。\n]{0,40}(?:做|执行|继续|跑|试)|需要我[^。\n]{0,40}(?:吗|哪一项|哪一个|哪一步|哪个|哪些)|选(?:择)?(?:哪一项|哪一个|哪一步|一个方案|一个选项)|which\s+(?:one|option|step)|choose\s+(?:one|an option)|pick\s+one|shall\s+i|let\s+me\s+know\s+(?:your|which))/i;
+  let chosen=null;
+  for(let i=runs.length-1;i>=0;i--){
+    const candidate=runs[i];
+    const nearby=[];
+    for(let n=Math.max(0,candidate.start-4);n<=Math.min(lines.length-1,candidate.end+4);n++){
+      if(n>=candidate.start&&n<=candidate.end) continue;
+      const value=lines[n].trim();
+      if(value) nearby.push(value);
+    }
+    if(explicitCueRe.test(nearby.join("\n"))){
+      chosen=candidate;
+      break;
+    }
   }
-  if(run.length) best=run;
-  if(best.length<2) return null;
-  best.forEach((it,i)=>{ if(!it.n) it.n=String(i+1); it.label=it.label.replace(/`([^`]+)`/g,"$1").replace(/\*\*([^*]+)\*\*/g,"$1").replace(/^[\*_ ]+|[\*_ ]+$/g,"").trim(); });
-  return best;
+  if(!chosen || chosen.items.length>10) return null;
+  const items=chosen.items.map((it,i)=>({
+    n:it.n||String(i+1),
+    label:it.label.replace(/`([^`]+)`/g,"$1").replace(/\*\*([^*]+)\*\*/g,"$1").replace(/^[\*_ ]+|[\*_ ]+$/g,"").trim()
+  }));
+  if(items.some(it=>!it.label || it.label.length>240)) return null;
+  return items;
 }
 
 function optionTextFromSelection(sel, otherInp){
   const parts=[...sel].map(it=>it.label); const ot=otherInp.value.trim(); if(ot) parts.push(ot);
   if(!parts.length) return "";
-  return parts.length>1 ? ("请帮我执行:\n"+parts.map(p=>"- "+p).join("\n")) : ("请帮我:"+parts[0]);
+  return parts.length>1 ? ("请按以下选择继续处理：\n"+parts.map(p=>"- "+p).join("\n")) : ("请按这个选项继续处理："+parts[0]);
 }
 
 function fillOptionInput(inputSel, txt){
@@ -68,7 +96,7 @@ function optionTargets(container, fallbackSel){
       secondaryLabel: "填入全体"
     };
   }
-  return {primarySel:fallbackSel||"", primaryLabel:"填入输入框", hint:"可多选,选好点填入(再编辑/发送)"};
+  return {primarySel:fallbackSel||"", primaryLabel:"填入输入框", hint:"选择可执行项，填入后可继续编辑"};
 }
 
 function buildOptPicker(items, inputSel, container){
@@ -102,7 +130,7 @@ function buildOptPicker(items, inputSel, container){
     fillAll.onclick=()=>{ fillOptionInput(targets.secondarySel, optionTextFromSelection(sel, otherInp)); };
     fillBtns.push(fillAll); foot.appendChild(fillAll);
   }
-  const hint=document.createElement("span"); hint.className="opthint"; hint.textContent=targets.hint||"可多选,选好点填入(再编辑/发送)";
+  const hint=document.createElement("span"); hint.className="opthint"; hint.textContent=targets.hint||"选择可执行项，填入后可继续编辑";
   foot.appendChild(hint); wrap.appendChild(foot);
   return wrap;
 }
@@ -121,6 +149,39 @@ function preferLongerText(streamed, finalText){
   if(!s) return f;
   if(!f) return s;
   return s.length>f.length ? s : f;
+}
+
+function splitAgentEnvelope(text){
+  const raw=String(text||"");
+  if(!raw.trim()) return {reason:"",answer:raw,matched:false};
+
+  const think=raw.match(/^\s*<think>\s*([\s\S]*?)\s*<\/think>\s*([\s\S]+)$/i);
+  if(think&&think[2].trim()){
+    return {reason:think[1].trim(),answer:think[2].trim(),matched:true};
+  }
+
+  const startsLikeReasoning=/^\s*(?:The user\b|We need\b|I need\b|Let me\b|Now I\b|I now\b|I should\b|We should\b|The verification\b|Two findings\b|Excellent! Great news\b)/i;
+  if(!startsLikeReasoning.test(raw)) return {reason:"",answer:raw,matched:false};
+
+  let splitAt=-1;
+  const finalLabel=/\n\s*(?:final answer|final response|answer)\s*:\s*/gi;
+  for(let m;(m=finalLabel.exec(raw));) splitAt=m.index+m[0].length;
+
+  const cue=/\b(?:Let me|I(?:'ll| will| should| need(?: to)?)|We(?:'ll| will| should| need(?: to)?)|Now I|I now)\b[^\n]{0,700}?(?:[.!?](?=\s|[\u3400-\u9fff])|\n)/gi;
+  for(let m;(m=cue.exec(raw));) splitAt=Math.max(splitAt,m.index+m[0].length);
+
+  if(splitAt<400) return {reason:"",answer:raw,matched:false};
+  let answer=raw.slice(splitAt).replace(/^\s*(?:---+\s*)?/,"").trim();
+  const firstCjk=answer.search(/[\u3400-\u9fff]/);
+  if(firstCjk>0&&firstCjk<500&&/^[\x00-\x7F\s]*$/.test(answer.slice(0,firstCjk))){
+    splitAt+=raw.slice(splitAt).indexOf(answer)+firstCjk;
+    answer=raw.slice(splitAt).trim();
+  }
+  const reason=raw.slice(0,splitAt).trim();
+  const chinese=(answer.match(/[\u3400-\u9fff]/g)||[]).length;
+  const reasonLetters=(reason.match(/[A-Za-z]/g)||[]).length;
+  if(answer.length<160||chinese<24||reasonLetters<180) return {reason:"",answer:raw,matched:false};
+  return {reason,answer,matched:true};
 }
 
 function userActIcon(name){
@@ -580,18 +641,62 @@ function createChatView(opts={}){
       const item=bag.items&&bag.items.get(id);
       return (item&&item.raw)||el.querySelector(".content")?.innerText||"";
     };
+    const acts=el.querySelector(".acts");
     const button=el.querySelector(".mact.copy");
-    if(button){ button.title="复制整条回复 (⌘⇧C)"; button.setAttribute("aria-label","复制整条回复"); }
+    if(button){
+      button.dataset.aact="copy";
+      button.title="复制 (⌘⇧C)";
+      button.setAttribute("aria-label","复制完整回复");
+    }
+    let continueButton=el.querySelector(".mact.continue-task");
+    if(acts&&!continueButton){
+      continueButton=document.createElement("button");
+      continueButton.type="button";
+      continueButton.className="mact continue-task";
+      continueButton.dataset.aact="continue-task";
+      continueButton.title="在新任务中继续";
+      continueButton.setAttribute("aria-label","在新任务中继续");
+      continueButton.innerHTML=userActIcon("fork");
+      acts.appendChild(continueButton);
+    }
     if(el.dataset.assistantActions) return;
     el.dataset.assistantActions="1";
     el.addEventListener("pointerenter",()=>{ activeAssistantMessage=el; });
     el.addEventListener("focusin",()=>{ activeAssistantMessage=el; });
-    el.querySelector(".acts")?.addEventListener("click",async event=>{
-      const copy=event.target.closest(".mact.copy"); if(!copy) return;
+    let forking=false;
+    acts?.addEventListener("click",async event=>{
+      const actionButton=event.target.closest("[data-aact]"); if(!actionButton) return;
       event.preventDefault(); event.stopPropagation();
-      try{ await copyText(assistantMessageText(el)); pulseCopyButton(copy); cwToast("已复制整条回复"); }
-      catch(err){ cwToast(err?.message||"复制失败"); }
+      if(actionButton.dataset.aact==="copy"){
+        try{ await copyText(assistantMessageText(el)); pulseCopyButton(actionButton); cwToast("已复制完整回复"); }
+        catch(err){ cwToast(err?.message||"复制失败"); }
+        return;
+      }
+      if(actionButton.dataset.aact!=="continue-task"||forking) return;
+      const threadId=String(el.dataset.threadId||(bag.activeSnapshot&&bag.activeSnapshot.thread&&bag.activeSnapshot.thread.id)||bag.activeId||"");
+      if(!threadId){ cwToast("找不到当前任务"); return; }
+      forking=true;
+      actionButton.disabled=true;
+      try{
+        const result=await api(`/v1/threads/${threadId}/fork`,{method:"POST",body:"{}"});
+        const newId=(result&&result.id)||(result&&result.thread&&result.thread.id);
+        if(!newId) throw new Error("创建新任务后没有返回任务 ID");
+        const title=(result&&result.title)||(result&&result.thread&&result.thread.title)||"续接任务";
+        if(typeof _addOptimisticThread==="function") _addOptimisticThread(newId,title);
+        if(typeof loadThreads==="function") await loadThreads();
+        if(typeof openThread==="function"&&document.querySelector("#mwrap")){
+          await openThread(newId);
+          if(typeof loadThreads==="function") loadThreads();
+        }else{
+          const url=new URL(location.pathname,location.origin);
+          url.searchParams.set("thread",newId);
+          location.assign(url.toString());
+        }
+        cwToast("已在新任务中继续");
+      }catch(err){ cwToast(err?.message||"创建新任务失败"); }
+      finally{ forking=false; actionButton.disabled=false; }
     });
+    el.dataset.threadId=String((bag.activeSnapshot&&bag.activeSnapshot.thread&&bag.activeSnapshot.thread.id)||bag.activeId||"");
   }
 
   async function renderThreadSnapshot(rec, preserveQueue=false, opts={}){
@@ -868,6 +973,24 @@ function createChatView(opts={}){
     if(!pg.el.dataset.userToggled) pg.el.classList.remove("open");
   }
 
+  function renderAgentEnvelopeReason(it, reason){
+    const raw=String(reason||"").trim();
+    if(!raw||!it?.el) return;
+    if(it.reasonEl?.isConnected){
+      const body=it.reasonEl.querySelector(".rbody");
+      if(body) body.textContent=raw;
+      return;
+    }
+    const box=document.createElement("div");
+    box.className="reason leaked";
+    box.innerHTML=`<div class="head"><span class="caret">▸</span>${icon("brain")} 思考过程 <span class="reason-note">已与最终答复分离</span></div><div class="rbody"></div>`;
+    box.querySelector(".rbody").textContent=raw;
+    box.querySelector(".head").onclick=()=>box.classList.toggle("open");
+    if(bag._procGroup?.body) bag._procGroup.body.appendChild(box);
+    else it.el.parentElement?.insertBefore(box,it.el);
+    it.reasonEl=box;
+  }
+
   function startItem(id, item){
     initBag();
     if(!id||bag.items.has(id)) return;
@@ -948,9 +1071,13 @@ function createChatView(opts={}){
     cancelPlainStreamUpdate(it);
     const snap = item?.detail!=null && item.detail!=="" ? item.detail : "";
     const shouldPreserveStream = it.kind==="agent_message" || it.kind==="agent_reasoning" || !["tool_call","command_execution","file_change","user_message","status","context_compaction","error"].includes(it.kind);
-    const final = shouldPreserveStream ? preferLongerText(it.raw, snap) : (snap || it.raw);
+    const fullFinal = shouldPreserveStream ? preferLongerText(it.raw, snap) : (snap || it.raw);
+    const envelope = it.kind==="agent_message" ? splitAgentEnvelope(fullFinal) : {reason:"",answer:fullFinal,matched:false};
+    const final = envelope.answer;
+    it.fullRaw = fullFinal || it.fullRaw || "";
     it.raw = final || it.raw || "";
     it.completed = true;
+    if(envelope.matched) renderAgentEnvelopeReason(it,envelope.reason);
     if(it.kind==="command_execution"){
       if(bag.renderingSnapshot && !bag.snapshotFull && String(final||"").length>SNAPSHOT_LAZY_DETAIL_CHARS) renderLazyPlain(it.content, final, "长终端输出");
       else { it.content.textContent = (final && final.trim()) ? final : (failed ? "" : "(无输出)"); appendPdfDownloadCards(it.content, final); }
@@ -986,6 +1113,7 @@ function createChatView(opts={}){
     deltaItem,
     completeItem,
     preferLongerText,
+    splitAgentEnvelope,
     decorateUserUploads,
     collapseInterimMsgs,
     procGroupFinish,
@@ -1023,6 +1151,6 @@ function createChatView(opts={}){
   };
 }
 
-const chatViewTools={preferLongerText,detectOptions,optionTextFromSelection,fillOptionInput,optionTargets,buildOptPicker,augmentOptions};
+const chatViewTools={preferLongerText,splitAgentEnvelope,detectOptions,optionTextFromSelection,fillOptionInput,optionTargets,buildOptPicker,augmentOptions};
 
-export { createChatView, chatViewTools, preferLongerText, detectOptions, optionTextFromSelection, fillOptionInput, optionTargets, buildOptPicker, augmentOptions };
+export { createChatView, chatViewTools, preferLongerText, splitAgentEnvelope, detectOptions, optionTextFromSelection, fillOptionInput, optionTargets, buildOptPicker, augmentOptions };

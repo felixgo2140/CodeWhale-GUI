@@ -11,6 +11,20 @@ async function loadThreads(){
       if(kept.length!==state.pendingNew.length){ state.pendingNew=kept; savePendingNew(); } else state.pendingNew=kept;
       state.threads=[...state.pendingNew, ...t];
     } else state.threads=t;
+    const providerOverride=typeof activeProviderOverride==="function" ? activeProviderOverride() : null;
+    if(providerOverride){
+      const current=state.threads.find(x=>x.id===providerOverride.threadId);
+      if(current){
+        const serverCaughtUp=current.provider===providerOverride.provider&&
+          (!providerOverride.model||providerOverride.model==="auto"||current.model===providerOverride.model);
+        if(serverCaughtUp){
+          if(typeof clearActiveProviderOverride==="function") clearActiveProviderOverride(providerOverride.threadId);
+        }else{
+          current.provider=providerOverride.provider;
+          if(providerOverride.model) current.model=providerOverride.model;
+        }
+      }
+    }
     const at=state.threads.find(x=>x.id===state.activeId);   // 兜底:SSE 漏收状态事件时,靠侧栏 summary 恢复/收尾活动会话
     if(at && !state.running && isTurnRunning(at.latest_turn_status) && !isStoppingTurn(state.turnId)){
       setRunning(true); runStatusUpdate("同步中","后端仍在运行,正在恢复工作状态"); syncActiveTurn();
@@ -549,21 +563,21 @@ async function deleteThread(id,title){
   }catch(e){ alert("删除失败: "+e.message); }
 }
 
-async function applyAuto(id,on){ try{ await api(`/v1/threads/${id}`,{method:"PATCH",body:JSON.stringify({auto_approve:on})}); }catch(e){ console.warn(e); } }  // 只自动批准确认,不额外授予 shell 等权限
+async function applyAuto(id,on){ try{ await api(`/v1/threads/${id}`,{method:"PATCH",body:JSON.stringify({auto_approve:on})}); }catch(e){ console.warn(e); } }  // 自动批准和完全访问分开控制
 async function createThread(){
   const t=await api("/v1/threads",{method:"POST",body:"{}"});   // 不传 workspace → app-server 用自己的工作目录($HOME)
   const id=t&&t.id;
   if(id){
-    // 新会话默认可直接工作；历史会话仍由 openThread/loadAutoState 读取各自保存的开关。
-    await api(`/v1/threads/${id}`,{method:"PATCH",body:JSON.stringify({auto_approve:true,allow_shell:true})});
-    t.auto_approve=true; t.allow_shell=true;
+    // 新会话默认拥有完整文件/命令能力；仍可用顶栏开关随时收回。
+    await api(`/v1/threads/${id}`,{method:"PATCH",body:JSON.stringify({auto_approve:true,allow_shell:true,trust_mode:true})});
+    t.auto_approve=true; t.allow_shell=true; t.trust_mode=true;
   }
   return t;
 }
-async function loadAutoState(id){ try{ const rec=await api(`/v1/threads/${id}`); const th=rec.thread||rec; if(state.activeId===id){ state.autoApprove=!!th.auto_approve; state.allowShell=!!th.allow_shell; renderAuto(); renderShell(); } }catch(e){ console.warn(e); } }
-async function applyShell(id,on){ try{ await api(`/v1/threads/${id}`,{method:"PATCH",body:JSON.stringify({allow_shell:on})}); }catch(e){ console.warn(e); } }
+async function loadAutoState(id){ try{ const rec=await api(`/v1/threads/${id}`); const th=rec.thread||rec; if(state.activeId===id){ state.autoApprove=!!th.auto_approve; state.allowShell=!!th.allow_shell; renderAuto(); renderShell(); if(state.allowShell&&!th.trust_mode) await applyShell(id,true); } }catch(e){ console.warn(e); } }
+async function applyShell(id,on){ try{ await api(`/v1/threads/${id}`,{method:"PATCH",body:JSON.stringify({allow_shell:on,trust_mode:on})}); }catch(e){ console.warn(e); } }
 function renderShell(){ const w=$("#shellwrap"); if(!w) return; w.classList.toggle("on",state.allowShell); w.classList.toggle("disabled",!state.activeId);
-  w.title=state.activeId?"授权 agent 运行 shell/终端命令(关着 exec_shell 不可用)":"先打开一个会话"; }
+  w.title=state.activeId?"完全访问:允许读取本机文件、运行终端命令和调用本地工具;关闭后收回信任与 Shell 权限":"先打开一个会话"; }
 async function toggleShell(){
   if(window.COMBO?.active) return comboToggleShell();
   if(!state.activeId) return;

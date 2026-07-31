@@ -38,6 +38,16 @@ class ProviderLifecycleTests(unittest.TestCase):
         self.assertIn('app-server.err.log', appserver)
         self.assertNotIn('app-server.log', appserver)
 
+    def test_all_runtime_entrypoints_enable_full_access_sandbox(self):
+        installer = (ROOT / "installer/install.sh").read_text(encoding="utf-8")
+        native = (ROOT / "native/main.swift").read_text(encoding="utf-8")
+        server = (ROOT / "server.py").read_text(encoding="utf-8")
+
+        self.assertIn('<string>--sandbox-mode</string><string>danger-full-access</string>', installer)
+        self.assertIn('codewhale --sandbox-mode danger-full-access', native)
+        self.assertIn('"--sandbox-mode", "danger-full-access"', server)
+        self.assertIn('"--approval-policy", "on-request"', server)
+
     def test_native_shell_recovers_web_content_without_quitting_on_close(self):
         source = (ROOT / "native/main.swift").read_text(encoding="utf-8")
 
@@ -84,6 +94,18 @@ class ProviderLifecycleTests(unittest.TestCase):
         self.assertIn('TWITTER_AUTH_TOKEN', source)
         self.assertIn('TWITTER_CT0', source)
         self.assertIn('env = _safe_child_env({"CODEWHALE_PROVIDER": runtime_prov})', source)
+
+    def test_active_thread_model_switch_is_authoritative_and_stale_safe(self):
+        panels = (ROOT / "web/js/panels.js").read_text(encoding="utf-8")
+        threads = (ROOT / "web/js/threads.js").read_text(encoding="utf-8")
+        stream = (ROOT / "web/js/stream.js").read_text(encoding="utf-8")
+
+        self.assertIn("setActiveProviderOverride(threadId,d.provider||provider,d.model||model||\"\");", panels)
+        self.assertIn("const seq=++modelLabelSeq, activeId=state.activeId", panels)
+        self.assertIn("if(seq!==modelLabelSeq||activeId!==state.activeId) return;", panels)
+        self.assertIn("const providerOverride=typeof activeProviderOverride", threads)
+        self.assertIn("clearActiveProviderOverride(providerOverride.threadId)", threads)
+        self.assertIn("clearActiveProviderOverride(previousThreadId)", stream)
 
 
 if __name__ == "__main__":

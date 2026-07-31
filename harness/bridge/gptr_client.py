@@ -236,9 +236,13 @@ def _load_env(model=""):
         key, base, mdl = _codewhale_provider_config("volcengine", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seed-2-1-pro-260628")
         _set_openai_compat(key, base, mdl or "doubao-seed-2-1-pro-260628")
     elif mk == "qwen":
-        key, base, mdl = _codewhale_provider_config("qwen", "https://ws-zazex2z3400vhsxs.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", "qwen3.7-max-2026-06-08")
+        key, base, mdl = _codewhale_provider_config(
+            "qwen",
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            "qwen3.8-max-preview",
+        )
         key = key or vals.get("DASHSCOPE_API_KEY", "")
-        _set_openai_compat(key, base, mdl or "qwen3.7-max-2026-06-08")
+        _set_openai_compat(key, base, mdl or "qwen3.8-max-preview")
     else:
         _set_deepseek(vals)
 

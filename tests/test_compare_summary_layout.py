@@ -10,6 +10,7 @@ class CompareSummaryLayoutTests(unittest.TestCase):
         self.html = (ROOT / "web/index.html").read_text(encoding="utf-8")
         self.css = (ROOT / "web/css/compare.css").read_text(encoding="utf-8")
         self.js = (ROOT / "web/js/compare.js").read_text(encoding="utf-8")
+        self.main = (ROOT / "web/js/main.js").read_text(encoding="utf-8")
 
     def test_toolbar_exposes_stacked_and_summary_layouts(self):
         self.assertIn('data-l="stack"', self.html)
@@ -44,7 +45,7 @@ class CompareSummaryLayoutTests(unittest.TestCase):
         self.assertIn('card._cwRawMessage=()=>pair.answer', self.js)
         self.assertIn('card._cwInputSel="#cmpInput"', self.js)
 
-    def test_summary_exposes_copy_all_replies(self):
+    def test_compare_exposes_global_copy_and_summary_actions(self):
         self.assertIn("function cmpSummaryCopyPayload(pairs)", self.js)
         self.assertIn("function cmpSummaryQuestionMarkdown(question)", self.js)
         self.assertIn('["# 多模型回复汇总"]', self.js)
@@ -53,10 +54,17 @@ class CompareSummaryLayoutTests(unittest.TestCase):
         self.assertIn('"**问题：** "', self.js)
         self.assertIn("async function cmpCopySummaryText(text)", self.js)
         self.assertIn('api("/api/clipboard"', self.js)
-        self.assertIn('copyAll.className="cmpsum-copy-all"', self.js)
-        self.assertIn('copyAll.addEventListener("click",async event=>', self.js)
+        self.assertIn('id="cmpCopyAllBtn"', self.html)
+        self.assertIn('id="cmpSummarizeBtn"', self.html)
+        self.assertIn("function cmpCopyAllReplies()", self.js)
+        self.assertIn("function cmpOneClickSummary()", self.js)
+        self.assertIn("cmpCopyAllBtn.onclick=cmpCopyAllReplies", self.main)
+        self.assertIn("cmpSummarizeBtn.onclick=cmpOneClickSummary", self.main)
         self.assertIn("await cmpCopySummaryText(current.text)", self.js)
         self.assertIn("已复制 ${current.count} 个模型的完整回复（Markdown）", self.js)
+        self.assertIn('title:"一键总结"', self.js)
+        self.assertIn('api(`/v1/threads/${id}/turns`', self.js)
+        self.assertIn("cmpSummaryTaskPrompt(payload)", self.js)
 
     def test_summary_answers_expand_without_nested_vertical_scrolling(self):
         self.assertIn(".cmpsum-answer{padding:12px", self.css)

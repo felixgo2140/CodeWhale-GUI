@@ -23,5 +23,8 @@ __pycache__/
 
 # 研究 harness:密钥与私有研究 skill 绝不入库
 harness.env
+*.log
+.claude/
+.deploy-backups/
 harness/harness.env
 harness/skills-custom/

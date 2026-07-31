@@ -134,9 +134,13 @@ def openai_spec(model=""):
         key, base, mdl = codewhale_provider_config("volcengine", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seed-2-1-pro-260628")
         return key, base, mdl or "doubao-seed-2-1-pro-260628", "火山"
     if mk == "qwen":
-        key, base, mdl = codewhale_provider_config("qwen", "https://ws-zazex2z3400vhsxs.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", "qwen3.7-max-2026-06-08")
+        key, base, mdl = codewhale_provider_config(
+            "qwen",
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            "qwen3.8-max-preview",
+        )
         key = key or vals.get("DASHSCOPE_API_KEY", "")
-        return key, base, mdl or "qwen3.7-max-2026-06-08", "千问"
+        return key, base, mdl or "qwen3.8-max-preview", "千问"
     key, base, mdl = codewhale_provider_config("deepseek", "https://api.deepseek.com/v1", "deepseek-v4-pro")
     key = key or vals.get("DEEPSEEK_API_KEY", "")
     return key, base or "https://api.deepseek.com/v1", mdl or "deepseek-v4-pro", "DeepSeek"

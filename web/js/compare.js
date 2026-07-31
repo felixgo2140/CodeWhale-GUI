@@ -32,14 +32,14 @@ const CMP_HANDOFF_AGENT_CHARS=9000;
 const CMP_HANDOFF_USER_CHARS=2200;
 const cmpTitleTimers=new Map();
 // 建对比线程时直接把 model 钉到 thread 级,绕过 default_text_model="auto" 的自动路由(它会按 prompt 内容乱选、常落 deepseek,导致 GLM/GPT 栏答错)。
-const CMP_FORCE_MODEL={ deepseek:"deepseek-v4-pro", volcengine:"doubao-seed-2-1-pro-260628", longcat:"LongCat-2.0", qwen:"qwen3.7-max-2026-06-08", zai:"GLM-5.2", "openai-codex":"gpt-5.6-sol", "claude-code":"fable", moonshot:"k3", custom:"hy3-preview" };   // 各 provider 默认模型(徽章/下拉的默认选中);实际由 server.py model_prefs 决定
+const CMP_FORCE_MODEL={ deepseek:"deepseek-v4-pro", volcengine:"doubao-seed-2-1-pro-260628", longcat:"LongCat-2.0", qwen:"qwen3.8-max-preview", zai:"GLM-5.2", "openai-codex":"gpt-5.6-sol", "claude-code":"fable", moonshot:"k3", custom:"hy3-preview" };   // 各 provider 默认模型(徽章/下拉的默认选中);实际由 server.py model_prefs 决定
 // 每 provider 可选模型变体(下拉)。claude-code 用别名(fable/opus/sonnet/haiku),server 端 env 传给 claude -p + 身份串跟着走。
 const MODEL_VARIANTS={
   "claude-code":[{id:"fable",name:"Fable 5"},{id:"opus",name:"Opus 4.8"},{id:"sonnet",name:"Sonnet 4.6"},{id:"haiku",name:"Haiku 4.5"}],
   deepseek:[{id:"deepseek-v4-pro",name:"V4 Pro"},{id:"deepseek-v4-flash",name:"V4 Flash"}],
   volcengine:[{id:"doubao-seed-2-1-pro-260628",name:"Seed 2.1 Pro"},{id:"doubao-seed-2-1-turbo-260628",name:"Seed 2.1 Turbo"},{id:"doubao-seed-evolving",name:"Seed Evolving(需手动开通)"},{id:"doubao-seed-1-6-251015",name:"Seed 1.6"}],
   longcat:[{id:"LongCat-2.0",name:"LongCat-2.0"}],
-  qwen:[{id:"qwen3.8-max-preview",name:"Qwen 3.8 Max Preview · Token Plan"},{id:"qwen3.7-max-2026-06-08",name:"Qwen 3.7 Max Stable"},{id:"qwen3.7-max",name:"Qwen 3.7 Max"},{id:"qwen3.7-plus",name:"Qwen 3.7 Plus"}],
+  qwen:[{id:"qwen3.8-max-preview",name:"Qwen 3.8 Max Preview · Token Plan"}],
   custom:[{id:"hy3-preview",name:"Hy3 Preview"},{id:"hy-mt2-pro",name:"Hy-MT2 Pro"},{id:"hy-mt2-plus",name:"Hy-MT2 Plus"},{id:"hy-mt2-lite",name:"Hy-MT2 Lite"},{id:"hunyuan-role-latest",name:"Hunyuan Role Latest"},{id:"hy-role",name:"Hunyuan Role"},{id:"hunyuan-2.0-thinking-20251109",name:"HY 2.0 Think (旧)"},{id:"hunyuan-2.0-instruct-20251111",name:"HY 2.0 Instruct (旧)"}],
   zai:[{id:"GLM-5.2",name:"GLM-5.2"},{id:"GLM-4.6",name:"GLM-4.6"}],
   "openai-codex":[{id:"gpt-5.6-sol",name:"GPT-5.6 Sol"},{id:"gpt-5.6-terra",name:"GPT-5.6 Terra"},{id:"gpt-5.6-luna",name:"GPT-5.6 Luna"},{id:"gpt-5.5",name:"GPT-5.5"}],
@@ -224,6 +224,104 @@ function cmpRunRecordAnswer(prov, text){
     if(view) rs.grace=setTimeout(()=>{ if(!rs.done) view.ingest("turn.completed",ev); },800);
   }
 }
+const CMP_MOONSHOT_SCHEMA_ERROR_RE=/Moonshot function parameters failed safe compatibility validation|unsupported MFJS keyword|Moonshot function parameters contain an unsupported/i;
+const CMP_QWEN_TOOL_ERROR_RE=/function\.arguments.*JSON|code model must be in JSON format|invalid_parameter_error.*function\.arguments/i;
+function cmpTextCompatProvider(prov){
+  return prov==="moonshot" || prov==="qwen";
+}
+function cmpCompatSchemaErrorRe(prov){
+  return prov==="moonshot" ? CMP_MOONSHOT_SCHEMA_ERROR_RE : prov==="qwen" ? CMP_QWEN_TOOL_ERROR_RE : null;
+}
+function cmpIsCompatSchemaError(prov,text){
+  const re=cmpCompatSchemaErrorRe(prov);
+  return !!re && re.test(String(text||""));
+}
+function cmpIsMoonshotSchemaError(prov,text){
+  return cmpIsCompatSchemaError(prov,text);
+}
+function cmpFilterMoonshotSnapshot(prov,rec){
+  const compatRe=cmpCompatSchemaErrorRe(prov);
+  if(!compatRe||!rec||typeof rec!=="object") return rec;
+  const out=Object.assign({},rec);
+  const items=(rec.items||[]).filter(item=>
+    !compatRe.test(String(item&&(item.detail||item.summary||item.text)||""))
+  );
+  const itemIds=new Set(items.map(item=>item&&item.id).filter(Boolean));
+  out.items=items;
+  out.turns=(rec.turns||[]).map(turn=>Object.assign({},turn,{
+    item_ids:(turn.item_ids||[]).filter(id=>itemIds.has(id)),
+  }));
+  out.total_items=items.length;
+  out.window_start=0;
+  out.window_end=items.length;
+  out.windowed=false;
+  return out;
+}
+function cmpMarkMoonshotSchemaError(prov,text){
+  const rs=CMP.runState&&CMP.runState[prov];
+  if(!rs||!cmpIsCompatSchemaError(prov,text)) return false;
+  rs.compatSchemaError=true;
+  rs.compatMessage=String(text||"").replace(/\s+/g," ").slice(0,240);
+  cmpRunSetPhase(prov,"兼容模式重试");
+  return true;
+}
+function cmpSelectedModelId(prov){
+  const vars=MODEL_VARIANTS[prov]||[];
+  return (CMP.modelPrefs&&CMP.modelPrefs[prov])||CMP_FORCE_MODEL[prov]||(vars[0]&&vars[0].id)||"";
+}
+async function cmpEnsureProviderThread(prov){
+  if(CMP.threads[prov]) return CMP.threads[prov];
+  const t=await (await fetch(url(`/cmp/${prov}/v1/threads`),{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:"{}"
+  })).json();
+  if(!t||!t.id) throw new Error((t&&t.error)||`${prov} 对话创建失败`);
+  CMP.threads[prov]=t.id;
+  CMP.seq[prov]=0;
+  api("/api/pin-thread",{
+    method:"POST",
+    body:JSON.stringify({tid:t.id,provider:prov,session_id:CMP.sessionId,topic:CMP.topic,title_seed:CMP.titleSeed})
+  }).catch(()=>{});
+  markCmp(t.id);
+  cmpSessionRecordThread(prov,t.id);
+  return t.id;
+}
+async function cmpTextCompatibility(prov,text,rs,st,label="文本兼容模式"){
+  if(!cmpTextCompatProvider(prov)||rs.textFallbackAttempted) return false;
+  rs.textFallbackAttempted=true;
+  cmpSetRunning(prov,true);
+  if(st) st.textContent=label+"…";
+  const providerLabel=prov==="qwen"?"Qwen":"Kimi";
+  cmpSetProgress(prov,`${label} · ${providerLabel} 不携带函数工具`);
+  try{
+    const tid=await cmpEnsureProviderThread(prov);
+    const result=await api("/api/compat-text-turn",{
+      method:"POST",
+      body:JSON.stringify({provider:prov,thread_id:tid,model:cmpSelectedModelId(prov),prompt:text,max_tokens:12000})
+    });
+    if(!result||result.ok===false||result.error) throw new Error((result&&result.error)||`${providerLabel} 文本模式没有返回结果`);
+    cmpAddViewAssistant(prov,result.text||"");
+    if(result.snapshot){
+      CMP.history[prov]=result.snapshot;
+      CMP.seq[prov]=Number(CMP.seq[prov]||0);
+    }
+    rs.hasAnswer=!!String(result.text||"").trim();
+    cmpClearProgress(prov);
+    if(st) st.textContent="✓ "+cmpRunSecs(rs)+"s";
+    return rs.hasAnswer;
+  }catch(error){
+    cmpClearProgress(prov);
+    cmpAddViewError(prov,`${label}失败：${String(error&&error.message||error)}`);
+    if(st) st.textContent="✗";
+    return false;
+  }finally{
+    cmpSetRunning(prov,false);
+  }
+}
+async function cmpMoonshotTextOnly(prov,text,rs,st,label="文本模式"){
+  return cmpTextCompatibility(prov,text,rs,st,label);
+}
 function cmpAllowRunStatusEvent(prov,m,p={}){
   const view=CMP.views&&CMP.views[prov]; if(!view) return true;
   const tid=view.eventTurnId(m,p);
@@ -266,7 +364,9 @@ function cmpOnViewStatusEvent(prov, evt, p={}){
       if(cmpIsToolKind(kind)){ rs.sawTool=true; cmpRunAddStep(prov,"工具: "+String(item.summary||kind).slice(0,140)); }
       break;
     case "item.failed":
-      { const msg=String(item.detail||item.summary||"失败").replace(/\s+/g," ").slice(0,160);
+      { const raw=String(item.detail||item.summary||"失败");
+        const msg=raw.replace(/\s+/g," ").slice(0,160);
+        if(cmpMarkMoonshotSchemaError(prov,raw)) break;
         if(cmpIsToolKind(kind)||!kind){ rs.sawTool=true; cmpRunAddStep(prov,"工具失败: "+msg); cmpRunSetPhase(prov,"重试中"); } }
       break;
     case "approval.required":
@@ -285,7 +385,7 @@ function cmpOnViewTurnFinished(prov, turnId, status, meta={}){
   const rs=CMP.runState&&CMP.runState[prov];
   if(!rs || (turnId && rs.turnId && turnId!==rs.turnId)) return;
   const st=normTurnStatus(status);
-  if((st==="failed"||st==="error") && !rs.hasAnswer) cmpAddViewError(prov,"本轮失败(展开「过程」看详情)");
+  if((st==="failed"||st==="error") && !rs.hasAnswer && !rs.compatSchemaError) cmpAddViewError(prov,"本轮失败(展开「过程」看详情)");
   if(st==="interrupted"){ const s=$("#cmpst-"+CSS.escape(prov)); if(s) s.textContent="⏸ 已暂停"; }
   if(typeof rs.finish==="function") rs.finish(st==="failed"||st==="error");
 }
@@ -390,7 +490,7 @@ function cmpBriefSnapshot(prov, rec){
     const id=latest.user.id||("cmpbrief_user_"+prov+"_"+turnId);
     items.push({id,turn_id:turnId,kind:"user_message",detail:txt,summary:txt,status:"completed",created_at:turn.created_at||th.updated_at,started_at:turn.created_at||th.updated_at});
   }
-  if(latest.agent&&latest.agent.text){
+  if(latest.agent&&latest.agent.text&&!cmpIsMoonshotSchemaError(prov,latest.agent.text)){
     const txt=String(latest.agent.text||"");
     const id=latest.agent.id||("cmpbrief_agent_"+prov+"_"+turnId);
     items.push({id,turn_id:turnId,kind:"agent_message",detail:txt,summary:txt,status:"completed",created_at:turn.ended_at||th.updated_at,started_at:turn.ended_at||th.updated_at});
@@ -435,6 +535,14 @@ async function cmpLoadBrief(prov,tid){
   CMP.briefLoading[prov]=tid;
   if(b){ b.dataset.mode="brief"; b.dataset.tid=tid; b.innerHTML=""; cmpAppendSysNote(prov,"· 载入最新摘要…"); }
   try{
+    if(cmpTextCompatProvider(prov)){
+      const sidecar=await api(`/api/compat-text-history?thread_id=${encodeURIComponent(tid)}&provider=${encodeURIComponent(prov)}`);
+      if(sidecar&&!sidecar.error&&(sidecar.items||[]).length){
+        CMP.history[prov]=sidecar;
+        await cmpRenderHistory(prov,sidecar,{full:true});
+        return;
+      }
+    }
     const rec=await api(`/api/cmp-thread-brief?provider=${encodeURIComponent(prov)}&thread_id=${encodeURIComponent(tid)}`);
     if(rec&&rec.error) throw new Error(rec.error);
     await cmpRenderBrief(prov,rec);
@@ -496,8 +604,35 @@ async function cmpLoadHistory(prov,tid,opts={}){   // 拉某栏 thread 对话消
   if(b){ b.dataset.mode="loading"; b.innerHTML=""; cmpAppendSysNote(prov,"· 载入历史…"); }
   if(!tid){ if(b) b.innerHTML=""; return; }
   try{
-    const rec=await (await fetch(url(`/cmp/${prov}/v1/threads/${tid}`))).json();
+    let rec=await (await fetch(url(`/cmp/${prov}/v1/threads/${tid}`))).json();
     if(rec && rec.error) throw new Error(rec.error);
+    if(cmpTextCompatProvider(prov)){
+      rec=cmpFilterMoonshotSnapshot(prov,rec);
+      const sidecar=await api(`/api/compat-text-history?thread_id=${encodeURIComponent(tid)}&provider=${encodeURIComponent(prov)}`).catch(()=>null);
+      if(sidecar&&!sidecar.error&&(sidecar.items||[]).length){
+        const items=[], seenItems=new Set();
+        [...(rec.items||[]),...(sidecar.items||[])].forEach(item=>{
+          if(!item||seenItems.has(item.id)) return;
+          if(item.id) seenItems.add(item.id);
+          items.push(item);
+        });
+        const turns=[], seenTurns=new Set();
+        [...(rec.turns||[]),...(sidecar.turns||[])].forEach(turn=>{
+          if(!turn||seenTurns.has(turn.id)) return;
+          if(turn.id) seenTurns.add(turn.id);
+          turns.push(turn);
+        });
+        rec=Object.assign({},rec,{
+          thread:Object.assign({},rec.thread||{},sidecar.thread||{}),
+          items,
+          turns,
+          total_items:items.length,
+          window_start:0,
+          window_end:items.length,
+          windowed:false,
+        });
+      }
+    }
     CMP.seq[prov]=rec.latest_seq||0;
     CMP.history[prov]=rec;
     await cmpRenderHistory(prov,rec,{full:!!opts.full});
@@ -573,6 +708,92 @@ async function cmpCopySummaryText(text){
   }catch(e){}
   await window.clipCopy(text);
 }
+function cmpSelectedSummaryPairs(){
+  return PROVIDERS.filter(p=>CMP.sel.has(p.id)).map(provider=>({provider,pair:cmpSummaryPair(provider.id)}));
+}
+function cmpCurrentSummaryPayload(){
+  return cmpSummaryCopyPayload(cmpSelectedSummaryPairs());
+}
+function cmpRefreshSummaryActions(){
+  const payload=cmpCurrentSummaryPayload();
+  const copy=$("#cmpCopyAllBtn"), summarize=$("#cmpSummarizeBtn");
+  if(copy){
+    copy.disabled=!payload.count;
+    copy.title=payload.count?`以 Markdown 复制 ${payload.count} 个模型的完整回复`:"暂无可复制的模型回复";
+  }
+  if(summarize){
+    summarize.disabled=!payload.count||!!CMP.summaryCreating;
+    summarize.textContent=CMP.summaryCreating?"正在创建…":"一键总结";
+    summarize.title=payload.count?`新建单模型任务，综合总结 ${payload.count} 个模型的完整回复`:"暂无可总结的模型回复";
+  }
+}
+async function cmpEnsureSummaryPayload(){
+  const providers=PROVIDERS.filter(p=>CMP.sel.has(p.id));
+  await Promise.all(providers.map(async provider=>{
+    const pair=cmpSummaryPair(provider.id);
+    if(!pair.answer&&pair.threadId&&!CMP.briefLoading[provider.id]&&!CMP.historyLoading[provider.id]){
+      await cmpLoadBrief(provider.id,pair.threadId);
+    }
+  }));
+  return cmpCurrentSummaryPayload();
+}
+async function cmpCopyAllReplies(){
+  const current=await cmpEnsureSummaryPayload();
+  if(!current.count){ window.cwToast("暂无可复制的模型回复"); return; }
+  try{
+    await cmpCopySummaryText(current.text);
+    window.cwToast(`已复制 ${current.count} 个模型的完整回复（Markdown）`);
+  }catch(err){ window.cwToast(err&&err.message||"复制失败"); }
+}
+function cmpSummaryTaskPrompt(payload){
+  return [
+    "请综合总结下面的多模型回复。不要逐段复述，直接产出一份可独立阅读的高质量结论。",
+    "",
+    "要求：",
+    "1. 结论先行，使用清晰的 Markdown；",
+    "2. 提炼各模型的共识、关键分歧和独有增量；",
+    "3. 数字、事实或判断冲突时明确列出，不要擅自补全或猜测；",
+    "4. 给出可执行建议和下一步；",
+    "5. 默认使用简体中文。",
+    "",
+    "以下是原始多模型回复：",
+    "",
+    payload.text
+  ].join("\n");
+}
+function cmpTaskDeepLink(id){
+  const u=new URL(location.pathname,location.origin);
+  u.searchParams.set("thread",id);
+  return u.toString();
+}
+async function cmpOneClickSummary(){
+  if(CMP.summaryCreating) return;
+  const payload=await cmpEnsureSummaryPayload();
+  if(!payload.count){ window.cwToast("暂无可总结的模型回复"); return; }
+  CMP.summaryCreating=true; cmpRefreshSummaryActions();
+  try{
+    const thread=await api("/v1/threads",{method:"POST",body:"{}"});
+    const id=thread&&thread.id;
+    if(!id) throw new Error("新任务创建失败");
+    await api(`/v1/threads/${id}`,{
+      method:"PATCH",
+      body:JSON.stringify({title:"一键总结",title_user:true,auto_approve:true,allow_shell:true,trust_mode:true})
+    });
+    if(typeof window._addOptimisticThread==="function") window._addOptimisticThread(id,"一键总结");
+    const taskWindow=window.open(cmpTaskDeepLink(id),"_blank");
+    await api(`/v1/threads/${id}/turns`,{
+      method:"POST",
+      body:JSON.stringify({prompt:cmpSummaryTaskPrompt(payload)})
+    });
+    if(!taskWindow) window.cwToast("总结任务已创建，可在侧栏“一键总结”中查看");
+    else window.cwToast(`已创建总结任务，正在综合 ${payload.count} 个模型的回复`);
+    if(typeof window.loadThreads==="function") window.loadThreads();
+  }catch(err){
+    window.cwToast(err&&err.message||"一键总结失败");
+  }finally{
+    CMP.summaryCreating=false; cmpRefreshSummaryActions();
+  }
+}
 function cmpHydrateSummary(){
   if(_cmpLay!=="summary") return;
   PROVIDERS.filter(p=>CMP.sel.has(p.id)).forEach(p=>{
@@ -595,19 +816,7 @@ function cmpRenderSummary(){
   const title=document.createElement("h2"); title.textContent="最新问答汇总";
   const meta=document.createElement("span"); meta.textContent=`${providers.length} 个模型`;
   headMain.append(title,meta);
-  const copyAll=document.createElement("button"); copyAll.type="button"; copyAll.className="cmpsum-copy-all";
-  copyAll.innerHTML=`${icon("copy")}<span>复制全部回复</span>`;
-  const copyPayload=cmpSummaryCopyPayload(pairs);
-  copyAll.disabled=!copyPayload.count;
-  copyAll.title=copyPayload.count?`以 Markdown 复制 ${copyPayload.count} 个模型的完整回复`:"暂无可复制的回复";
-  copyAll.addEventListener("click",async event=>{
-    event.preventDefault(); event.stopPropagation();
-    const current=cmpSummaryCopyPayload(PROVIDERS.filter(p=>CMP.sel.has(p.id)).map(p=>({provider:p,pair:cmpSummaryPair(p.id)})));
-    if(!current.count){ window.cwToast("暂无可复制的模型回复"); return; }
-    try{ await cmpCopySummaryText(current.text); window.cwToast(`已复制 ${current.count} 个模型的完整回复（Markdown）`); }
-    catch(err){ window.cwToast(err&&err.message||"复制失败"); }
-  });
-  head.append(headMain,copyAll); shell.appendChild(head);
+  head.append(headMain); shell.appendChild(head);
   if(sharedQuestion){
     const q=document.createElement("section"); q.className="cmpsum-question";
     const label=document.createElement("div"); label.className="cmpsum-label"; label.textContent="你的最新问题";
@@ -650,6 +859,7 @@ function cmpRenderSummary(){
 }
 let cmpSummaryFrame=0;
 function cmpScheduleSummaryRender(){
+  cmpRefreshSummaryActions();
   if(_cmpLay!=="summary"||cmpSummaryFrame) return;
   cmpSummaryFrame=requestAnimationFrame(()=>{ cmpSummaryFrame=0; cmpRenderSummary(); });
 }
@@ -791,7 +1001,7 @@ async function cmpSetEffort(prov, effort){   // 推理 effort:存 pref(走 env,�
 }
 function renderCmpToggles(){ const a=$("#cmpAutoTgl"), s=$("#cmpShellTgl"); if(a) a.classList.toggle("on",CMP.autoApprove); if(s) s.classList.toggle("on",CMP.allowShell); }
 async function cmpApplyFlags(){   // 把当前开关同步到所有已建对比会话
-  await Promise.all(Object.entries(CMP.threads).map(([prov,tid])=>fetch(url(`/cmp/${prov}/v1/threads/${tid}`),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto_approve:CMP.autoApprove, allow_shell:CMP.allowShell})}).catch(()=>{})));
+  await Promise.all(Object.entries(CMP.threads).map(([prov,tid])=>fetch(url(`/cmp/${prov}/v1/threads/${tid}`),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto_approve:CMP.autoApprove, allow_shell:CMP.allowShell, trust_mode:CMP.allowShell})}).catch(()=>{})));
 }
 function cmpToggleAuto(){ CMP.autoApprove=!CMP.autoApprove; renderCmpToggles(); cmpApplyFlags(); }
 function cmpToggleShell(){ CMP.allowShell=!CMP.allowShell; if(CMP.allowShell) CMP.autoApprove=true; renderCmpToggles(); cmpApplyFlags(); }   // 对比无逐栏审批 UI:开 Shell 自动连带开自动批准
@@ -816,6 +1026,7 @@ function renderCmpChips(){
     if(CMP.sel.has(id)){ if(CMP.sel.size>1) CMP.sel.delete(id); } else CMP.sel.add(id);
     renderCmpChips(); renderCmpCols();
   });
+  cmpRefreshSummaryActions();
 }
 function cmpSwitchTab(id){   // 标签页/放大态下把可见栏切到 id,其余隐藏
   CMP.maxed=id;
@@ -906,6 +1117,7 @@ function renderCmpCols(){   // diff:保留已有栏内容,只增删变化的
     renderCmpTabs();
   }
   if(_cmpLay==="summary"){ cmpRenderSummary(); cmpHydrateSummary(); }
+  cmpRefreshSummaryActions();
 }
 function cmpSetProgress(prov, text){   // 长任务可见进度:阶段 / 步数 / 秒表 / 最近工具或等待状态
   const bar=$("#cmprun-"+CSS.escape(prov));
@@ -1195,7 +1407,7 @@ async function cmpRun(prov,text,ens){
   if(CMP.cancelled[prov]){ if(st)st.textContent="⏸ 已取消"; cmpClearProgress(prov); CMP.cancelled[prov]=false; return; }
   const view=cmpEnsureView(prov);
   if(!view){ if(st)st.textContent="✗ 此栏未就绪"; cmpSetRunning(prov,false); return; }   // 该 provider 没渲染出列(#cmpb 缺)→ 优雅跳过,绝不抛错连累 Promise.all
-  const rs={phase:"思考中",steps:0,lastStep:"",t0:Date.now(),done:false,sawTool:false,hasAnswer:false,grace:null,idle:null,tick:null,poll:null,es:null,turnId:null,finish:null};
+  const rs={phase:"思考中",steps:0,lastStep:"",t0:Date.now(),done:false,sawTool:false,hasAnswer:false,compatSchemaError:false,compatMessage:"",textFallbackAttempted:false,grace:null,idle:null,tick:null,poll:null,es:null,turnId:null,finish:null};
   CMP.runState[prov]=rs;
   let finishResolve=null;
   const finish=(failed=false)=>{
@@ -1225,6 +1437,11 @@ async function cmpRun(prov,text,ens){
     try{
       const rec=await (await fetch(url(`/cmp/${prov}/v1/threads/${tid}`))).json();
       if(typeof rec.latest_seq==="number") CMP.seq[prov]=Math.max(CMP.seq[prov]||0, rec.latest_seq);
+      const schemaFailure=[...(rec.items||[])].reverse().find(it=>
+        (!rs.turnId||it.turn_id===rs.turnId) &&
+        cmpIsCompatSchemaError(prov,String(it.detail||it.summary||""))
+      );
+      if(schemaFailure) cmpMarkMoonshotSchemaError(prov,schemaFailure.detail||schemaFailure.summary||"");
       const turns=rec.turns||[];
       const turn=rs.turnId ? turns.find(t=>t.id===rs.turnId) : turns[turns.length-1];
       const status=(turn&&turn.status)||(rec.thread||{}).latest_turn_status||"";
@@ -1237,7 +1454,7 @@ async function cmpRun(prov,text,ens){
       if(isTurnDone(status)){
         const ns=normTurnStatus(status);
         if(ns==="interrupted"&&st) st.textContent="⏸ 已暂停";
-        if((ns==="failed"||ns==="error")&&!rs.hasAnswer) cmpAddViewError(prov,"本轮失败(展开「过程」看详情)");
+        if((ns==="failed"||ns==="error")&&!rs.hasAnswer&&!rs.compatSchemaError) cmpAddViewError(prov,"本轮失败(展开「过程」看详情)");
         finish(ns==="failed"||ns==="error");
         return true;
       }
@@ -1250,37 +1467,18 @@ async function cmpRun(prov,text,ens){
     cmpSetRunning(prov,true);
     cmpRunSetPhase(prov,"思考中");
     rs.tick=setInterval(()=>cmpRunPushProgress(prov),1000);   // 心跳:每秒刷新工作状态
-    if(prov==="qwen"){
-      let r;
-      try{
-        r=await api("/api/qwen-chat",{method:"POST",body:JSON.stringify({provider:prov,prompt:text})});
-      }catch(e){
-        if(/Load failed|网络连接失败|Failed to fetch/i.test(String(e&&e.message||e))){
-          cmpRunAddStep(prov,"连接重试");
-          await new Promise(res=>setTimeout(res,900));
-          r=await api("/api/qwen-chat",{method:"POST",body:JSON.stringify({provider:prov,prompt:text})});
-        } else {
-          throw e;
-        }
-      }
-      if(r.error||r.ok===false) throw new Error(r.error||"千问返回失败");
-      cmpAddViewAssistant(prov,r.text||"");
-      cmpRunRecordAnswer(prov,r.text||"");
-      if(st) st.textContent="✓ "+cmpRunSecs(rs)+"s";
-      finish(false);
+    if(cmpTextCompatProvider(prov)){
+      clearInterval(rs.tick);
+      await cmpTextCompatibility(prov,text,rs,st,prov==="qwen"?"Qwen 文本兼容模式":"Kimi 文本兼容模式");
+      rs.done=true;
+      delete CMP.runState[prov];
       return;
     }
-    if(!CMP.threads[prov]){
-      const t=await (await fetch(url(`/cmp/${prov}/v1/threads`),{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})).json();   // 不前端钉 model,由服务端按 model_prefs 注入(claude-code→sonnet 路由键,其它→所选变体)
-      CMP.threads[prov]=t.id; CMP.seq[prov]=0;
-      api("/api/pin-thread",{method:"POST",body:JSON.stringify({tid:t.id,provider:prov,session_id:CMP.sessionId,topic:CMP.topic,title_seed:CMP.titleSeed})}).catch(()=>{});   // 锁定到本 provider + 服务端收编进同一对比会话
-      markCmp(t.id);   // 登记为对比 thread → 主窗口侧栏归入「多模型对比」组,不灌进普通对话列表
-      cmpSessionRecordThread(prov,t.id);   // 记进当前对比会话 → 侧栏会话行能点回来恢复这一栏
-    }
+    await cmpEnsureProviderThread(prov);
     let tid=CMP.threads[prov];
     cmpSetViewThread(prov,tid);
     // 每轮按当前开关设会话标志(自动批准 / 允许 shell)→ 让模型能联网取数、跳出沙箱
-    await fetch(url(`/cmp/${prov}/v1/threads/${tid}`),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto_approve:CMP.autoApprove, allow_shell:CMP.allowShell})}).catch(()=>{});
+    await fetch(url(`/cmp/${prov}/v1/threads/${tid}`),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto_approve:CMP.autoApprove, allow_shell:CMP.allowShell, trust_mode:CMP.allowShell})}).catch(()=>{});
     if(CMP.cancelled[prov]){ if(st)st.textContent="⏸ 已取消"; finish(false); return; }
     // ★ since_seq 取「发 turn 前的当前 latest_seq」,只听本轮新事件、绝不重放历史——
     //   否则追问时会把上一轮的 turn.completed/旧增量重放进来,导致 ✓0s 误收尾、流式不同步、答案吞掉。
@@ -1298,7 +1496,7 @@ async function cmpRun(prov,text,ens){
     if(rolled.rolled){
       tid=rolled.tid; sendText=rolled.text; since=0;
       cmpSetViewThread(prov,tid);
-      await fetch(url(`/cmp/${prov}/v1/threads/${tid}`),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto_approve:CMP.autoApprove, allow_shell:CMP.allowShell})}).catch(()=>{});
+      await fetch(url(`/cmp/${prov}/v1/threads/${tid}`),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({auto_approve:CMP.autoApprove, allow_shell:CMP.allowShell, trust_mode:CMP.allowShell})}).catch(()=>{});
       try{
         const fresh=await (await fetch(url(`/cmp/${prov}/v1/threads/${tid}`))).json();
         if(typeof fresh.latest_seq==="number") since=fresh.latest_seq;
@@ -1325,6 +1523,7 @@ async function cmpRun(prov,text,ens){
         if(k==="turn.started"){ CMP.turn[prov]=ev.turn_id||(pl.turn||{}).id||CMP.turn[prov]; if(CMP.turn[prov]) rs.turnId=CMP.turn[prov]; cmpSyncSendUI(); }   // 记下 turn_id 供「停止」中断 + 引导;turn 活了刷「引导」按钮
         if(k==="item.delta" && pl.kind==="agent_message") cmpRunRecordAnswer(prov,pl.delta||" ");
         if(k==="item.completed" && pl.item&&pl.item.kind==="agent_message"&&pl.item.detail) cmpRunRecordAnswer(prov,pl.item.detail);
+        if(k==="turn.failed") cmpMarkMoonshotSchemaError(prov,pl.detail||pl.error||pl.message||"");
         if(k==="turn.completed" && rs.sawTool && !rs.hasAnswer){
           rs.sawTool=false; cmpRunSetPhase(prov,"整理中"); clearTimeout(rs.grace);
           rs.pendingCompleteEvent=ev;
@@ -1338,6 +1537,9 @@ async function cmpRun(prov,text,ens){
       es.onerror=()=>{ if(es.readyState===2){ cmpRunSetPhase(prov,"同步中"); syncFromThread(); } };
       bump();   // 起步先武装空闲计时(180s 无任何事件才判卡住);不再用死板的 240s 绝对超时切断长任务
     });
+    if(rs.compatSchemaError&&!rs.hasAnswer&&!CMP.cancelled[prov]){
+      await cmpTextCompatibility(prov,text,rs,st,"兼容模式重试");
+    }
   }catch(e){
     CMP.cancelled[prov]=false;
     cmpAddViewError(prov,String(e&&e.message||e));
@@ -1347,4 +1549,4 @@ async function cmpRun(prov,text,ens){
 }
 
 
-export { cmpColUpload, cmpColRenderAttach, cmpColWithAttach, CMP, CMP_FORCE_MODEL, MODEL_VARIANTS, applyProviderModelCatalog, loadProviderModels, EFFORT_PROVIDERS, EFFORT_OPTS, EFFORT_OPTS_BY_PROV, effortOptsFor, initCompareNetenv, openCompare, closeCompare, cmpFindSession, cmpShowSessionError, openCompareWindow, restoreCompareSession, cmpLoadHistory, setCmpLayout, cmpSetModel, cmpSetEffort, renderCmpToggles, cmpApplyFlags, cmpToggleAuto, cmpToggleShell, renderCmpChips, cmpSwitchTab, renderCmpTabs, renderCmpCols, cmpSetProgress, cmpClearProgress, cmpSetRunning, cmpStop, cmpStopAll, cmpRunOne, cmpClearAllCols, cmpResetBackends, cmpNewChat, toggleMax, cmpAddMsg, cmpProvBusy, cmpAnyBusy, cmpQueueFor, cmpQueuedGroups, cmpCancelQueued, cmpValidProviders, cmpCurrentSession, cmpSetSessionTopic, cmpPatchThreadTitle, cmpSyncSessionThreadTitles, cmpScheduleSmartTitle, cmpEnsureSession, cmpMakeItem, cmpSyncSendUI, cmpSend, cmpDispatch, cmpUploadFiles, cmpRenderAttach, cmpRunNextFor, cmpMaybeFlush, cmpRun };
+export { cmpColUpload, cmpColRenderAttach, cmpColWithAttach, CMP, CMP_FORCE_MODEL, MODEL_VARIANTS, applyProviderModelCatalog, loadProviderModels, EFFORT_PROVIDERS, EFFORT_OPTS, EFFORT_OPTS_BY_PROV, effortOptsFor, initCompareNetenv, openCompare, closeCompare, cmpFindSession, cmpShowSessionError, openCompareWindow, restoreCompareSession, cmpLoadHistory, setCmpLayout, cmpSetModel, cmpSetEffort, renderCmpToggles, cmpApplyFlags, cmpToggleAuto, cmpToggleShell, renderCmpChips, cmpSwitchTab, renderCmpTabs, renderCmpCols, cmpSetProgress, cmpClearProgress, cmpSetRunning, cmpStop, cmpStopAll, cmpRunOne, cmpClearAllCols, cmpResetBackends, cmpNewChat, toggleMax, cmpAddMsg, cmpProvBusy, cmpAnyBusy, cmpQueueFor, cmpQueuedGroups, cmpCancelQueued, cmpValidProviders, cmpCurrentSession, cmpSetSessionTopic, cmpPatchThreadTitle, cmpSyncSessionThreadTitles, cmpScheduleSmartTitle, cmpEnsureSession, cmpMakeItem, cmpSyncSendUI, cmpSend, cmpDispatch, cmpUploadFiles, cmpRenderAttach, cmpRunNextFor, cmpMaybeFlush, cmpCopyAllReplies, cmpOneClickSummary, cmpRun };

@@ -114,7 +114,12 @@ def _openai_spec(kind, vals=None):
         "kimi": ("moonshot", "https://api.kimi.com/coding/v1", "kimi-for-coding", "KIMI_API_KEY"),
         "longcat": ("longcat", "https://api.longcat.chat/openai", "LongCat-2.0", "LONGCAT_API_KEY"),
         "volcengine": ("volcengine", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seed-2-1-pro-260628", "VOLCENGINE_API_KEY"),
-        "qwen": ("qwen", "https://ws-zazex2z3400vhsxs.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", "qwen3.7-max-2026-06-08", "DASHSCOPE_API_KEY"),
+        "qwen": (
+            "qwen",
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            "qwen3.8-max-preview",
+            "DASHSCOPE_API_KEY",
+        ),
     }
     provider, base0, model0, env_key = specs[kind]
     key, base, model = _codewhale_provider_config(provider, base0, model0)

@@ -693,6 +693,19 @@ body.sideresizing,body.previewresizing{cursor:col-resize;user-select:none}
   transition:opacity var(--t-fast);
 }
 .msg:hover .acts,.msg:focus-within .acts{opacity:1;pointer-events:auto}
+.msg.assistant .acts{
+  position:static;
+  justify-content:flex-start;
+  width:max-content;
+  margin-top:5px;
+  padding:0;
+  border:0;
+  background:transparent;
+  box-shadow:none;
+  opacity:.58;
+  pointer-events:auto;
+}
+.msg.assistant .acts:hover{opacity:1}
 .msg.user{flex-wrap:wrap;row-gap:4px}
 .msg.user .acts{
   position:static;
@@ -771,7 +784,9 @@ body.sideresizing,body.previewresizing{cursor:col-resize;user-select:none}
   position:fixed;
   z-index:1200;
   width:min(520px,calc(100vw - 24px));
+  max-width:calc(100vw - 24px);
   max-height:min(560px,72vh);
+  box-sizing:border-box;
   display:flex;
   flex-direction:column;
   border:1px solid var(--line);
@@ -782,6 +797,7 @@ body.sideresizing,body.previewresizing{cursor:col-resize;user-select:none}
 }
 #timelinePanel[hidden]{display:none}
 .tlhead{
+  min-width:0;
   min-height:50px;
   padding:0 14px;
   display:flex;
@@ -804,11 +820,14 @@ body.sideresizing,body.previewresizing{cursor:col-resize;user-select:none}
 }
 #timelineClose:hover{background:var(--ink-hover);color:var(--ink)}
 #timelineList{
+  min-width:0;
   padding:7px;
   overflow:auto;
   min-height:48px;
 }
 .tlitem{
+  box-sizing:border-box;
+  min-width:0;
   width:100%;
   border:0;
   background:transparent;
@@ -874,6 +893,9 @@ body.sideresizing,body.previewresizing{cursor:col-resize;user-select:none}
 .reason .rbody{display:none;margin-top:6px;padding:8px 12px;border-left:2px solid var(--line);color:var(--ink-2);font-size:12px;line-height:1.5;white-space:pre-wrap;max-height:200px;overflow-y:auto}
 .reason.open .rbody{display:block}
 .reason.interim .rbody{white-space:normal}   /* 中间过程消息是 markdown 渲染的 HTML,pre-wrap 会叠出多余空行 */
+.reason.leaked{margin-top:2px;margin-bottom:8px}
+.reason.leaked .reason-note{font-size:10px;color:var(--ink-3);font-weight:400}
+.reason.leaked .rbody{max-height:240px;background:var(--panel);border-radius:0 var(--r-s) var(--r-s) 0}
 .reason .caret{display:inline-block;transition:transform var(--t-fast)}
 .reason.open .head .caret{transform:rotate(90deg)}
 .runstatus,.tool,.df-result,.procgroup{
@@ -1677,6 +1699,15 @@ textarea.voice-listening{border-color:var(--accent)!important;box-shadow:var(--f
   line-height:1.25;
 }
 .update-mini-chip.on{border-color:var(--accent);background:var(--accent-tint);color:var(--accent-deep);font-weight:650}
+.update-mini-chip.new{
+  border-color:var(--warn);
+  background:var(--warn-tint);
+  color:var(--warn);
+  font-weight:700;
+}
+.update-mini-chip.on.new{
+  box-shadow:0 0 0 1px color-mix(in srgb,var(--warn) 42%,transparent);
+}
 .update-mini-chip.muted{color:var(--ink-3)}
 .update-action{flex:0 0 auto}
 .plugin-update-row{align-items:flex-start}

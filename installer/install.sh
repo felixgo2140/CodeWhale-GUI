@@ -6,7 +6,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 UID_N="$(id -u)"
 INSTALL_TEST="${CODEWHALE_INSTALL_TEST:-0}"
 SKIP_NETWORK="${CODEWHALE_SKIP_NETWORK:-0}"
-REQUIRED_CLI_VERSION="${CODEWHALE_CLI_VERSION:-0.9.1}"
+REQUIRED_CLI_VERSION="${CODEWHALE_CLI_VERSION:-0.9.2}"
 echo "════════ CodeWhale GUI 安装 ════════"
 echo "用户: ${USER:-$(id -un)}    家目录: $HOME"
 echo
@@ -154,6 +154,7 @@ if ! command -v uvx >/dev/null 2>&1 && [ "$SKIP_NETWORK" != "1" ]; then
 fi
 UVX="$(command -v uvx || echo "$HOME/.local/bin/uvx")"
 NPX2="$(command -v npx)"
+mkdir -p "$HOME/.local/bin"
 # Playwright 自愈启动器:每次启动先杀残留 mcp-chrome + 清过期锁,避免 "Browser is already in use" 卡死
 PWLAUNCH="$HOME/codewhale-gui/playwright-mcp-launch.sh"
 cat > "$PWLAUNCH" <<'PWL'
@@ -168,15 +169,28 @@ command -v "$NPX" >/dev/null 2>&1 || NPX="$(command -v npx || echo npx)"
 exec "$NPX" -y @playwright/mcp@latest "$@"
 PWL
 chmod +x "$PWLAUNCH"
+FETCHLAUNCH="$HOME/.local/bin/mcp-server-fetch-stable"
+cat > "$FETCHLAUNCH" <<'FETCH'
+#!/bin/zsh
+set -euo pipefail
+
+# mcp-server-fetch 2026.7.10 still imports the MCP 1.x exception name.
+cd "${HOME}"
+exec "${HOME}/.local/bin/uvx" \
+  --from "mcp-server-fetch==2026.7.10" \
+  --with "mcp==1.25.0" \
+  mcp-server-fetch "$@"
+FETCH
+chmod +x "$FETCHLAUNCH"
 # 只补齐 CodeWhale 自带 MCP,绝不覆盖用户已经配置的 Twitter/Tavily/插件。
-"$PY" - "$HOME/.codewhale/mcp.json" "$UVX" "$PWLAUNCH" "$NPX2" <<'PY'
+"$PY" - "$HOME/.codewhale/mcp.json" "$FETCHLAUNCH" "$UVX" "$PWLAUNCH" "$NPX2" <<'PY'
 import json
 import os
 import shutil
 import sys
 import time
 
-path, uvx, launcher, npx = sys.argv[1:]
+path, fetch_launcher, uvx, launcher, npx = sys.argv[1:]
 data = {}
 if os.path.exists(path):
     try:
@@ -192,12 +206,20 @@ timeouts = data.setdefault("timeouts", {})
 for name, value in (("connect_timeout", 60), ("execute_timeout", 120), ("read_timeout", 180)):
     timeouts.setdefault(name, value)
 servers = data.setdefault("servers", {})
-servers.setdefault("fetch", {
-    "command": uvx, "args": ["mcp-server-fetch"], "env": {}, "url": None,
+fetch_config = {
+    "command": fetch_launcher, "args": [], "env": {}, "url": None,
     "connect_timeout": None, "execute_timeout": None, "read_timeout": None,
     "disabled": False, "enabled": True, "required": False,
     "enabled_tools": [], "disabled_tools": [],
-})
+}
+existing_fetch = servers.get("fetch")
+legacy_default_fetch = (
+    isinstance(existing_fetch, dict)
+    and existing_fetch.get("command") == uvx
+    and existing_fetch.get("args") == ["mcp-server-fetch"]
+)
+if existing_fetch is None or legacy_default_fetch:
+    servers["fetch"] = fetch_config
 servers.setdefault("playwright", {
     "command": launcher, "args": [], "env": {"CW_NPX": npx}, "url": None,
     "connect_timeout": None, "execute_timeout": None, "read_timeout": None,
@@ -214,7 +236,11 @@ os.replace(temp, path)
 PY
 chmod 600 "$HOME/.codewhale/mcp.json"
 if [ "$SKIP_NETWORK" != "1" ]; then
-  echo "  下载 fetch 组件…"; "$UVX" mcp-server-fetch --help >/dev/null 2>&1 || echo "  ⚠ fetch 预热失败,首次使用时会重试"
+  echo "  下载 fetch 组件…"; "$FETCHLAUNCH" </dev/null >/dev/null 2>&1 &
+  FETCH_PID=$!
+  sleep 3
+  kill "$FETCH_PID" >/dev/null 2>&1 || true
+  wait "$FETCH_PID" 2>/dev/null || true
   echo "  下载 playwright…"; "$NPX2" -y @playwright/mcp@latest --help >/dev/null 2>&1 || echo "  ⚠ playwright 预热失败,首次使用时会重试"
   echo "  下载 Chromium 浏览器(最久)…"; "$NPX2" -y playwright install chromium >/dev/null 2>&1 || echo "  ⚠ Chromium 没下完,首次用浏览器时会自动补"
 fi
@@ -230,7 +256,11 @@ cat > "$LA/com.codewhale.appserver.plist" <<PLIST
 <plist version="1.0"><dict>
   <key>Label</key><string>com.codewhale.appserver</string>
   <key>ProgramArguments</key><array>
-    <string>$CW</string><string>app-server</string><string>--http</string>
+    <string>$CW</string>
+    <string>--sandbox-mode</string><string>danger-full-access</string>
+    <string>--approval-policy</string><string>on-request</string>
+    <string>-C</string><string>$HOME</string>
+    <string>app-server</string><string>--http</string>
     <string>--host</string><string>127.0.0.1</string>
     <string>--port</string><string>7878</string><string>--insecure-no-auth</string>
   </array>

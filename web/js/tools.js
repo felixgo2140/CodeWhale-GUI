@@ -281,22 +281,39 @@ function timelineAnchor(scope=timelineCurrentScope()){
 function timelinePlace(scope=timelineCurrentScope()){
   const panel=$("#timelinePanel"), anchor=timelineAnchor(scope);
   if(!panel || !anchor) return;
-  const r=anchor.getBoundingClientRect();
-  const gap=8, pad=12;
-  const w=Math.min(520, window.innerWidth - pad*2);
-  panel.style.width=w+"px";
-  let left=Math.min(window.innerWidth - w - pad, Math.max(pad, r.right - w));
-  let top=r.bottom + gap;
-  const h=Math.min(panel.offsetHeight || 360, window.innerHeight - pad*2);
-  if(top + h > window.innerHeight - pad) top=Math.max(pad, r.top - h - gap);
-  panel.style.left=left+"px";
-  panel.style.top=top+"px";
+  const gap=8,pad=12,vv=window.visualViewport;
+  panel.style.left="0px";
+  panel.style.top="0px";
+  const probe=panel.getBoundingClientRect(),offsetWidth=panel.offsetWidth;
+  const measured=offsetWidth>0?probe.width/offsetWidth:0;
+  const scale=Number.isFinite(measured)&&measured>.05?measured:(parseFloat(getComputedStyle(document.documentElement).zoom)||1);
+  const viewLeft=Number(vv?.offsetLeft)||0,viewTop=Number(vv?.offsetTop)||0;
+  const docWidth=document.documentElement.clientWidth||window.innerWidth;
+  const docHeight=document.documentElement.clientHeight||window.innerHeight;
+  const width=Math.min(Number(vv?.width)||window.innerWidth,docWidth);
+  const height=Math.min(Number(vv?.height)||window.innerHeight,docHeight);
+  const viewRight=viewLeft+width,viewBottom=viewTop+height;
+  const availableWidth=Math.max(180,(width-pad*2)/scale);
+  const availableHeight=Math.max(100,(height-pad*2)/scale);
+  panel.style.width=Math.min(520,availableWidth)+"px";
+  panel.style.maxWidth=availableWidth+"px";
+  panel.style.maxHeight=Math.min(560,availableHeight)+"px";
+  const rect=panel.getBoundingClientRect(),r=anchor.getBoundingClientRect();
+  let left=r.right-rect.width;
+  let top=r.bottom+gap;
+  if(top+rect.height>viewBottom-pad) top=r.top-rect.height-gap;
+  const clampedLeft=Math.max(viewLeft+pad,Math.min(left,viewRight-rect.width-pad));
+  const clampedTop=Math.max(viewTop+pad,Math.min(top,viewBottom-rect.height-pad));
+  panel.style.left=(clampedLeft/scale)+"px";
+  panel.style.top=(clampedTop/scale)+"px";
   panel.style.right="auto";
+  panel.style.visibility="visible";
 }
 function timelineOpen(scope=timelineCurrentScope()){
   state.timelineScope=scope;
   const panel=$("#timelinePanel");
   if(!panel) return;
+  panel.style.visibility="hidden";
   panel.hidden=false;
   try{ timelineCollectVisible(scope); }
   catch(e){ console.warn("timeline collect failed", e); }
@@ -307,6 +324,7 @@ function timelineOpen(scope=timelineCurrentScope()){
     if(list) list.innerHTML='<div class="tlempty">时间线暂时无法渲染,请刷新窗口重试</div>';
   }
   timelinePlace(scope);
+  requestAnimationFrame(()=>{ if(!panel.hidden) timelinePlace(scope); });
 }
 function timelineClose(){
   const panel=$("#timelinePanel"); if(panel) panel.hidden=true;
@@ -352,7 +370,10 @@ function initTimelineControls(){
     else if(b.id==="cmpTimelineBtn") timelineToggle("compare");
     else timelineClose();
   });
-  window.addEventListener("resize",()=>{ const p=$("#timelinePanel"); if(p && !p.hidden) timelinePlace(state.timelineScope||timelineCurrentScope()); });
+  const replace=()=>{ const p=$("#timelinePanel"); if(p && !p.hidden) timelinePlace(state.timelineScope||timelineCurrentScope()); };
+  window.addEventListener("resize",replace);
+  window.visualViewport?.addEventListener("resize",replace);
+  window.visualViewport?.addEventListener("scroll",replace);
 }
 function cleanTitleSeed(text){
   let s=String(text||"").replace(/\r/g,"\n").trim();
@@ -590,7 +611,8 @@ function approvalResolved(m,p,ev){
 /* ---------- ui bits ---------- */
 function row(role,who){ const d=document.createElement("div"); d.className="msg "+role;
   const edit = role==="user" ? `<button class="mact edit" title="编辑:调回输入框,改完重发">${icon("edit")}</button>` : "";
-  d.innerHTML=`<div class="av">${role==="user"?"你":"🐳"}</div><div class="body"><div class="who">${who}</div><div class="content"></div><div class="acts"><button class="mact copy" title="复制">${icon("copy")}</button>${edit}</div></div>`; return d; }
+  const continueTask = role==="assistant" ? `<button class="mact continue-task" data-aact="continue-task" title="在新任务中继续" aria-label="在新任务中继续">${icon("repeat")}</button>` : "";
+  d.innerHTML=`<div class="av">${role==="user"?"你":"🐳"}</div><div class="body"><div class="who">${who}</div><div class="content"></div><div class="acts"><button class="mact copy" data-aact="${role==="assistant"?"copy":""}" title="复制">${icon("copy")}</button>${continueTask}${edit}</div></div>`; return d; }
 function sysnote(txt){ const d=document.createElement("div"); d.className="sysnote"; d.textContent=txt; $("#mwrap").appendChild(d); }
 function execCopy(t){ return new Promise((res,rej)=>{ try{ const ta=document.createElement("textarea"); ta.value=t; ta.style.cssText="position:fixed;opacity:0;top:0;left:0"; document.body.appendChild(ta); ta.focus(); ta.select(); const ok=document.execCommand("copy"); ta.remove(); ok?res():rej(new Error("execCommand copy failed")); }catch(e){ rej(e); } }); }
 function clipCopy(t){ if(navigator.clipboard && window.isSecureContext){ return navigator.clipboard.writeText(t).catch(()=>execCopy(t)); } return execCopy(t); }   // 优先 clipboard API;不存在(手机/LAN 非 HTTPS)或被拒(失焦/权限)都退回 execCommand

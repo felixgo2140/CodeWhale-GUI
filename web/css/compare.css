@@ -57,8 +57,9 @@
   flex:0 0 auto;
 }
 
-#cmpLayout,#cmpFswrap{display:inline-flex;align-items:center;flex:0 0 auto}
+#cmpLayout,#cmpFswrap,#cmpGlobalActions{display:inline-flex;align-items:center;flex:0 0 auto}
 #cmpLayout{gap:2px;margin-left:auto}
+#cmpGlobalActions{gap:5px}
 .laybtn{
   width:28px;
   height:24px;
@@ -98,6 +99,21 @@
 #cmpTimelineBtn:hover,#cmpTimelineBtn.on,#cmpNewBtn:hover,#cmpResetBtn:hover,#cmpClose:hover{border-color:var(--line-strong);color:var(--ink)}
 #cmpResetBtn:disabled{opacity:.5;cursor:default}
 #cmpHead .tgl{flex:0 0 auto}
+.cmp-summary-action{
+  min-height:26px;
+  padding:4px 9px;
+  border:1px solid var(--line);
+  border-radius:var(--r-s);
+  background:var(--panel);
+  color:var(--ink-2);
+  font:600 11.5px/1 var(--font);
+  white-space:nowrap;
+  cursor:pointer;
+}
+.cmp-summary-action.primary{border-color:var(--accent);background:var(--accent);color:var(--panel)}
+.cmp-summary-action:hover:not(:disabled){border-color:var(--line-strong);color:var(--ink)}
+.cmp-summary-action.primary:hover:not(:disabled){border-color:var(--accent-deep);background:var(--accent-deep);color:var(--panel)}
+.cmp-summary-action:disabled{opacity:.42;cursor:default}
 
 #cmpInputRow{display:flex;gap:8px;align-items:stretch;position:relative}
 #cmpInput{
@@ -473,10 +489,6 @@ input.cmpmodelinput:focus{border-color:var(--accent);box-shadow:var(--focus-ring
 .cmpsum-head-main{display:flex;align-items:baseline;gap:8px;min-width:0}
 .cmpsum-head h2{margin:0;color:var(--ink);font-size:18px;letter-spacing:0}
 .cmpsum-head span{color:var(--ink-3);font-size:12px}
-.cmpsum-copy-all{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:32px;padding:5px 10px;border:1px solid var(--line);border-radius:var(--r-s);background:var(--panel);color:var(--ink-2);font:600 12px/1 var(--font);white-space:nowrap;cursor:pointer}
-.cmpsum-copy-all svg{width:15px;height:15px}
-.cmpsum-copy-all:hover:not(:disabled){border-color:var(--line-strong);background:var(--surface-muted);color:var(--ink)}
-.cmpsum-copy-all:disabled{opacity:.45;cursor:default}
 .cmpsum-question{
   margin-bottom:14px;
   padding:14px 16px;
@@ -589,6 +601,7 @@ input.cmpmodelinput:focus{border-color:var(--accent);box-shadow:var(--focus-ring
   #cmpHead{gap:6px}
   #cmpInputRow{gap:6px}
   #cmpLayout{margin-left:0}
+  #cmpGlobalActions{order:8}
   #cmpCols.lay-grid{grid-template-columns:1fr}
   #cmpCols.lay-stack .cmpcol{flex-basis:68vh;min-height:360px}
   #cmpSummary{padding:10px}

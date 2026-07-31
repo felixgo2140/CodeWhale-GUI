@@ -25,8 +25,8 @@ done
 
 CLI="$(command -v codewhale || true)"
 [ -x "$CLI" ] || { echo "Error: release verification needs a local CodeWhale CLI" >&2; exit 1; }
-[ "$("$CLI" --version 2>/dev/null | sed -nE 's/^codewhale ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -1)" = "0.9.1" ] || {
-  echo "Error: release verification requires CodeWhale CLI 0.9.1" >&2
+[ "$("$CLI" --version 2>/dev/null | sed -nE 's/^codewhale ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -1)" = "0.9.2" ] || {
+  echo "Error: release verification requires CodeWhale CLI 0.9.2" >&2
   exit 1
 }
 

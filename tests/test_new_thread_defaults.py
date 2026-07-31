@@ -14,6 +14,7 @@ class NewThreadDefaultTests(unittest.TestCase):
 
         self.assertIn("auto_approve:true", create)
         self.assertIn("allow_shell:true", create)
+        self.assertIn("trust_mode:true", create)
         self.assertIn('method:"PATCH"', create)
 
     def test_existing_single_threads_keep_their_saved_flags(self):
@@ -34,6 +35,13 @@ class NewThreadDefaultTests(unittest.TestCase):
         self.assertIn("CMP.autoApprove=true", new_chat)
         self.assertIn("CMP.allowShell=true", new_chat)
         self.assertIn("renderCmpToggles()", new_chat)
+
+    def test_access_toggle_controls_shell_and_runtime_trust_together(self):
+        single = (ROOT / "web/js/threads.js").read_text(encoding="utf-8")
+        compare = (ROOT / "web/js/compare.js").read_text(encoding="utf-8")
+
+        self.assertIn("allow_shell:on,trust_mode:on", single)
+        self.assertIn("trust_mode:CMP.allowShell", compare)
 
 
 if __name__ == "__main__":
