@@ -93,7 +93,17 @@ ARCHS="$(lipo -archs "$TEST_HOME/Applications/CodeWhale.app/Contents/MacOS/CodeW
   exit 1
 }
 
-if rg -q '/Users/(macpro|test)|tvly-[A-Za-z0-9_-]{12,}|BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY' "$STAGE"; then
+# 泄漏扫描是硬闸门:扫描工具缺失必须报错退出,绝不能因 rg 不存在被静默跳过。
+LEAK_PATTERN='/Users/(macpro|test)|tvly-[A-Za-z0-9_-]{12,}|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'
+if command -v rg >/dev/null 2>&1; then
+  leak_scan() { rg -q "$LEAK_PATTERN" "$STAGE"; }
+elif [ -x /usr/bin/grep ]; then
+  leak_scan() { /usr/bin/grep -RIEq "$LEAK_PATTERN" "$STAGE"; }
+else
+  echo "Error: leak scan needs rg or /usr/bin/grep" >&2
+  exit 1
+fi
+if leak_scan; then
   echo "Error: installer contains a developer path or secret-like value" >&2
   exit 1
 fi
