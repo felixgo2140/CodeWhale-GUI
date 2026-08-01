@@ -269,6 +269,30 @@ function cmpSelectedModelId(prov){
   const vars=MODEL_VARIANTS[prov]||[];
   return (CMP.modelPrefs&&CMP.modelPrefs[prov])||CMP_FORCE_MODEL[prov]||(vars[0]&&vars[0].id)||"";
 }
+function cmpRefreshModelControls(providers=null){   // 异步偏好/模型目录到达后只同步表头控件,不重建列(否则会丢正在显示的消息)
+  const box=$("#cmpCols"); if(!box) return;
+  const wanted=providers ? new Set(Array.isArray(providers)?providers:[providers]) : null;
+  PROVIDERS.forEach(p=>{
+    if(wanted&&!wanted.has(p.id)) return;
+    const col=box.querySelector('.cmpcol[data-p="'+p.id+'"]'); if(!col) return;
+    const model=cmpSelectedModelId(p.id)||"auto";
+    const sel=col.querySelector(".cmpmodelsel");
+    if(sel){
+      if(![...sel.options].some(o=>o.value===model)){
+        const opt=document.createElement("option"), found=(MODEL_VARIANTS[p.id]||[]).find(v=>v.id===model);
+        opt.value=model; opt.textContent=(found&&found.name)||model; sel.appendChild(opt);
+      }
+      sel.value=model;
+    }
+    const input=col.querySelector(".cmpmodelinput");
+    if(input&&document.activeElement!==input) input.value=model;
+    const label=col.querySelector(".cmpmodel:not(.cmpmodelsel):not(.cmpmodelinput):not(.cmpeffortsel)");
+    if(label) label.textContent=model;
+    const effort=col.querySelector(".cmpeffortsel");
+    if(effort) effort.value=(CMP.modelEffort&&CMP.modelEffort[p.id])||"";
+  });
+  cmpScheduleSummaryRender();
+}
 async function cmpEnsureProviderThread(prov){
   if(CMP.threads[prov]) return CMP.threads[prov];
   const t=await (await fetch(url(`/cmp/${prov}/v1/threads`),{
@@ -411,14 +435,14 @@ async function openCompare(){
     if(CMP.sel.size===0){ CMP.sel.add("deepseek"); CMP.sel.add("openai-codex"); }   // keyed 还没到 → 先默认两栏,保证有列
   }
   renderCmpChips(); renderCmpCols(); renderCmpToggles(); cmpSyncSendUI(); cmpRenderAttach();
-  loadProviderModels().then(()=>{ renderCmpChips(); renderCmpCols(); }).catch(()=>{});
+  loadProviderModels().then(()=>{ renderCmpChips(); renderCmpCols(); cmpRefreshModelControls(); }).catch(()=>{});
   initCompareLitellm();
   setCmpLayout(_cmpLay);   // 应用上次的排列方式(横/标签/田)+ 点亮按钮
   document.querySelectorAll("#cmpLayout .laybtn").forEach(b=>b.onclick=()=>setCmpLayout(b.dataset.l));
   setTimeout(()=>{ const i=$("#cmpInput"); if(i) i.focus(); },60);
   // ② 后端准备放后台(不挡渲染):取配置/偏好(到了刷新 chips 的"已配置"标记/下拉默认)+ 没会话时重置陈旧后端 + 预热
   try{ const d=await api("/api/model"); CMP.keyed=d.keyed||{}; renderCmpChips(); }catch(e){}
-  try{ const mp=await api("/api/model-pref"); CMP.modelPrefs=mp.prefs||{}; CMP.modelEffort=mp.effort||{}; renderCmpChips(); }catch(e){}   // 各列当前所选模型变体 + claude effort
+  try{ const mp=await api("/api/model-pref"); CMP.modelPrefs=mp.prefs||{}; CMP.modelEffort=mp.effort||{}; renderCmpChips(); cmpRefreshModelControls(); }catch(e){}   // 各列当前所选模型变体 + claude effort
   // 打开/刷新对比窗口不能全局 reset provider 后端：这些进程也承载单模型线程，
   // 自动清理会把其它窗口正在运行的 turn 硬中断。显式“重启后端”按钮仍可按需 reset。
   api("/api/compare/ensure",{method:"POST",body:JSON.stringify({providers:[...CMP.sel]})}).catch(()=>{});   // 预热选中栏后端
@@ -676,7 +700,7 @@ function cmpSummaryPair(prov){
 }
 function cmpSummaryModelName(prov){
   const vars=MODEL_VARIANTS[prov]||[];
-  const id=(CMP.modelPrefs&&CMP.modelPrefs[prov])||CMP_FORCE_MODEL[prov]||(vars[0]&&vars[0].id)||"";
+  const id=cmpSelectedModelId(prov);
   const found=vars.find(v=>v.id===id);
   return (found&&found.name)||id;
 }
@@ -988,6 +1012,7 @@ function setCmpLayout(l){   // 横/标签/田/纵/汇总。汇总只呈现各模
 }
 async function cmpSetModel(prov, model){   // 选了某栏的模型变体:存 pref(单窗口也共用)+ 该栏开新 thread(模型 thread-locked)
   CMP.modelPrefs=CMP.modelPrefs||{}; CMP.modelPrefs[prov]=model;
+  cmpRefreshModelControls(prov);
   try{ await api("/api/model-pref",{method:"POST",body:JSON.stringify({provider:prov,model})}); }catch(e){}
   delete CMP.threads[prov]; delete CMP.history[prov]; delete CMP.historyLoading[prov]; delete CMP.historyFull[prov]; delete CMP.brief[prov]; delete CMP.briefLoading[prov]; delete CMP.latestPrompt[prov]; CMP.seq[prov]=0;
   cmpDropView(prov,{clear:true});
@@ -1066,7 +1091,7 @@ function renderCmpCols(){   // diff:保留已有栏内容,只增删变化的
     const d=document.createElement("div"); d.className="cmpcol"; d.dataset.p=p.id;
     const nm=PROV_SHORT[p.id]||p.name;
     const vars=MODEL_VARIANTS[p.id]||[];
-    const cur=(CMP.modelPrefs&&CMP.modelPrefs[p.id])||CMP_FORCE_MODEL[p.id]||(vars[0]&&vars[0].id)||"auto";
+    const cur=cmpSelectedModelId(p.id)||"auto";
     // 模型选择:有预设变体用下拉;freeModel 且当前模型不在预设里时退回输入框
     const curKnown=vars.some(v=>v.id===cur);
     let modelEl = vars.length && (!p.freeModel || curKnown)
@@ -1549,4 +1574,4 @@ async function cmpRun(prov,text,ens){
 }
 
 
-export { cmpColUpload, cmpColRenderAttach, cmpColWithAttach, CMP, CMP_FORCE_MODEL, MODEL_VARIANTS, applyProviderModelCatalog, loadProviderModels, EFFORT_PROVIDERS, EFFORT_OPTS, EFFORT_OPTS_BY_PROV, effortOptsFor, initCompareNetenv, openCompare, closeCompare, cmpFindSession, cmpShowSessionError, openCompareWindow, restoreCompareSession, cmpLoadHistory, setCmpLayout, cmpSetModel, cmpSetEffort, renderCmpToggles, cmpApplyFlags, cmpToggleAuto, cmpToggleShell, renderCmpChips, cmpSwitchTab, renderCmpTabs, renderCmpCols, cmpSetProgress, cmpClearProgress, cmpSetRunning, cmpStop, cmpStopAll, cmpRunOne, cmpClearAllCols, cmpResetBackends, cmpNewChat, toggleMax, cmpAddMsg, cmpProvBusy, cmpAnyBusy, cmpQueueFor, cmpQueuedGroups, cmpCancelQueued, cmpValidProviders, cmpCurrentSession, cmpSetSessionTopic, cmpPatchThreadTitle, cmpSyncSessionThreadTitles, cmpScheduleSmartTitle, cmpEnsureSession, cmpMakeItem, cmpSyncSendUI, cmpSend, cmpDispatch, cmpUploadFiles, cmpRenderAttach, cmpRunNextFor, cmpMaybeFlush, cmpCopyAllReplies, cmpOneClickSummary, cmpRun };
+export { cmpColUpload, cmpColRenderAttach, cmpColWithAttach, CMP, CMP_FORCE_MODEL, MODEL_VARIANTS, applyProviderModelCatalog, loadProviderModels, EFFORT_PROVIDERS, EFFORT_OPTS, EFFORT_OPTS_BY_PROV, effortOptsFor, initCompareNetenv, openCompare, closeCompare, cmpFindSession, cmpShowSessionError, openCompareWindow, restoreCompareSession, cmpLoadHistory, setCmpLayout, cmpSelectedModelId, cmpRefreshModelControls, cmpSetModel, cmpSetEffort, renderCmpToggles, cmpApplyFlags, cmpToggleAuto, cmpToggleShell, renderCmpChips, cmpSwitchTab, renderCmpTabs, renderCmpCols, cmpSetProgress, cmpClearProgress, cmpSetRunning, cmpStop, cmpStopAll, cmpRunOne, cmpClearAllCols, cmpResetBackends, cmpNewChat, toggleMax, cmpAddMsg, cmpProvBusy, cmpAnyBusy, cmpQueueFor, cmpQueuedGroups, cmpCancelQueued, cmpValidProviders, cmpCurrentSession, cmpSetSessionTopic, cmpPatchThreadTitle, cmpSyncSessionThreadTitles, cmpScheduleSmartTitle, cmpEnsureSession, cmpMakeItem, cmpSyncSendUI, cmpSend, cmpDispatch, cmpUploadFiles, cmpRenderAttach, cmpRunNextFor, cmpMaybeFlush, cmpCopyAllReplies, cmpOneClickSummary, cmpRun };
