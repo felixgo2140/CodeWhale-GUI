@@ -17,11 +17,13 @@ CodeWhale GUI 正式发布指南
 --------
 
   • 私钥只保存在发布者电脑，绝不能提交、上传或写入文档。
-  • 默认从 ~/.codewhale-release/signing-key.pem 读取；也可显式设置：
+  • 默认从 ~/.codewhale-release/manifest-ed25519.pem 读取；也可显式设置：
 
       export CODEWHALE_SIGNING_KEY=/absolute/path/to/signing-key.pem
 
   • 公钥已内嵌在 server.py，客户端会验证 manifest.json.sig。
+  • 发布脚本会先核对签名私钥对应的公钥与 server.py 内置公钥；不一致时必须中止，
+    不能生成客户端无法验证的 Release。
   • 正式发布前工作树必须干净，发布脚本会主动拒绝脏工作树。
   • GUI/Harness 更新会校验 Ed25519 签名、SHA-256、版本只升不降和目标路径。
 

@@ -113,7 +113,8 @@ function boot(){
   previewSetSize(preview.size); previewApplySandbox(preview.url); previewBindFrameDiagnostics();
   if(preview.url){ const inp=$("#pvUrl"); if(inp) inp.value=preview.url; previewUpdateDownload(preview.url); }
   $("#updbtn").onclick=doUpdate;
-  $("#guiupdbtn").onclick=openUpdate;   // 顶栏「↑ 界面」直接打开更新中心(带下载/应用进度条),不再走旧的同步弹窗
+  $("#guiupdbtn").onclick=openGuiUpdate;   // 顶栏「↑ 界面」直接打开 GUI 更新详情与下载进度
+  const guiUpdateNoticeBtn=$("#guiUpdateNoticeBtn"); if(guiUpdateNoticeBtn) guiUpdateNoticeBtn.onclick=openGuiUpdate;
 
   initSidebarControls();
   initPreviewResize();

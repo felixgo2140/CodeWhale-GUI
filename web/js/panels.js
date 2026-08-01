@@ -24,15 +24,43 @@ async function doUpdate(){
   }catch(e){ btn.classList.remove("busy"); btn.textContent="✗ 重试"; alert("更新出错: "+e.message); }
 }
 let guiUpd=null;
+function renderGuiUpdateNotice(d={}){
+  const notice=$("#guiUpdateNotice"), title=$("#guiUpdateNoticeTitle"), meta=$("#guiUpdateNoticeMeta"), action=$("#guiUpdateNoticeBtn");
+  if(!notice||!title||!meta||!action) return;
+  const available=!!(d.available&&d.latest), error=String(d.error||"").trim();
+  notice.classList.toggle("update-error",!available&&!!error);
+  if(available){
+    notice.hidden=false;
+    title.textContent=`CodeWhale GUI ${d.latest} 可用`;
+    meta.textContent=d.notes||`当前版本 ${d.current||"未知"}`;
+    action.textContent="立即更新";
+    action.title="打开更新中心，下载、验签并安装新界面";
+  }else if(error){
+    notice.hidden=false;
+    title.textContent="GUI 更新检查失败";
+    meta.textContent=error;
+    action.textContent="查看更新";
+    action.title="打开更新中心查看错误详情";
+  }else{
+    notice.hidden=true;
+  }
+}
 async function checkGuiUpdate(){
   try{
     const d=await api("/api/update/gui/check");
     guiUpd=d; const btn=$("#guiupdbtn");
-    if(d.available && d.latest && !btn.classList.contains("busy")){
+    renderGuiUpdateNotice(d);
+    if(btn&&d.available && d.latest && !btn.classList.contains("busy")){
       btn.style.display="inline-block"; btn.textContent="↑ 界面 "+d.latest;
       btn.title="界面有新版 "+d.latest+(d.notes?("\n"+d.notes):"")+"\n点击下载、验签后更新(会话不受影响)";
-    } else if(!btn.classList.contains("busy")) btn.style.display="none";
-  }catch(e){ console.warn(e); }
+    } else if(btn&&!btn.classList.contains("busy")) btn.style.display="none";
+    return d;
+  }catch(e){
+    const d={error:String(e&&e.message||e||"更新检查失败")};
+    renderGuiUpdateNotice(d);
+    console.warn(e);
+    return d;
+  }
 }
 async function doGuiUpdate(){
   const btn=$("#guiupdbtn");
@@ -1546,6 +1574,10 @@ async function openUpdate(){
   openModal("更新","refresh");
   renderUpdateCenter($("#modalBody"));
 }
+async function openGuiUpdate(){
+  openModal("界面更新","refresh");
+  renderUpdateCenter($("#modalBody"),"gui");
+}
 async function applyUpd(btn,endpoint){
   if(endpoint.indexOf("/gui/")>=0){   // 界面更新:异步 + 下载/校验/应用 进度条
     if(!(await cwConfirm("开始更新界面?会下载、校验数字签名 + SHA-256 后替换并重启(会话数据不丢)。"))) return;
@@ -1738,4 +1770,4 @@ async function checkSetup(){   // 当前 provider 还没配 key(且非 OAuth)→
   }catch(e){}
 }
 
-export { loadVersion, checkUpdate, doUpdate, checkGuiUpdate, doGuiUpdate, checkModelUpdates, openDeerFlow, closeDeerFlow, submitResearch, submitSkillResearch, submitDeerFlowFromInput, loadResearchSkills, renderDfSkills, renderDfEngines, applyDfEngine, renderDfTemplates, loadPlugins, renderPluginItemsInto, renderPlugins, renderCmpPlugins, fillCmpComposer, closeCmpPluginMenus, finishCmpPluginPick, researchModelKeyForEngine, researchFallbackForEngine, researchModelForCurrent, researchModelMetaText, researchStatsWithModel, dfModelForCurrent, researchApiForRecord, researchRecordTitle, appendResearchFileLinks, renderResearchRecord, restoreResearchRecords, saveResearchRecord, submitDeerFlow, initPanelDocumentHandlers, openModal, closeModal, openSettings, openSkills, openConnectors, PROVIDERS, PROV_SHORT, activeProviderOverride, setActiveProviderOverride, clearActiveProviderOverride, refreshActiveProviderChrome, switchActiveThreadProvider, loadModelLabel, openModelSwitch, openUpdate, applyUpd, guiUpdateWithProgress, restartGui, sidebarMobile, closeDrawer, syncSidebarToggle, setSidebarCollapsed, toggleSidebar, applySidebarWidth, initSidebarControls, applyZoom, applyFs, setFs, bumpFs, applyCmpFs, setCmpFs, bumpCmpFs, initZoomControls, checkSetup };
+export { loadVersion, checkUpdate, doUpdate, checkGuiUpdate, renderGuiUpdateNotice, doGuiUpdate, checkModelUpdates, openDeerFlow, closeDeerFlow, submitResearch, submitSkillResearch, submitDeerFlowFromInput, loadResearchSkills, renderDfSkills, renderDfEngines, applyDfEngine, renderDfTemplates, loadPlugins, renderPluginItemsInto, renderPlugins, renderCmpPlugins, fillCmpComposer, closeCmpPluginMenus, finishCmpPluginPick, researchModelKeyForEngine, researchFallbackForEngine, researchModelForCurrent, researchModelMetaText, researchStatsWithModel, dfModelForCurrent, researchApiForRecord, researchRecordTitle, appendResearchFileLinks, renderResearchRecord, restoreResearchRecords, saveResearchRecord, submitDeerFlow, initPanelDocumentHandlers, openModal, closeModal, openSettings, openSkills, openConnectors, PROVIDERS, PROV_SHORT, activeProviderOverride, setActiveProviderOverride, clearActiveProviderOverride, refreshActiveProviderChrome, switchActiveThreadProvider, loadModelLabel, openModelSwitch, openUpdate, openGuiUpdate, applyUpd, guiUpdateWithProgress, restartGui, sidebarMobile, closeDrawer, syncSidebarToggle, setSidebarCollapsed, toggleSidebar, applySidebarWidth, initSidebarControls, applyZoom, applyFs, setFs, bumpFs, applyCmpFs, setCmpFs, bumpCmpFs, initZoomControls, checkSetup };

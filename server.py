@@ -161,9 +161,12 @@ GUI_UPDATE_PUBKEY_B64 = "Eq+nqZig4I7r2oQPdrlp3dSpHTks4Hyk+ovAeFGOz/c="
 UPDATE_CFG = os.path.expanduser("~/.codewhale-gui/update.json")   # {"repo":"owner/repo","enabled":true,"base_url":可选覆盖}
 VERSION_FILE = os.path.join(ROOT, "VERSION")
 try:
+    from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
     _HAVE_CRYPTO = True
 except Exception:
+    class InvalidSignature(Exception):
+        pass
     _HAVE_CRYPTO = False   # 缺 cryptography → 更新功能失效保护(绝不退化成不验签)
 
 def read_token():
@@ -955,7 +958,12 @@ def gui_update_check():
         return {"enabled": True, "current": cur, "latest": m.get("version"),
                 "available": bool(avail), "notes": (m.get("notes") or "")[:600]}
     except Exception as e:
-        return {"enabled": True, "current": cur, "error": str(e)[:160]}
+        detail = str(e).strip()
+        if isinstance(e, InvalidSignature):
+            detail = "发布清单签名无效"
+        elif not detail:
+            detail = type(e).__name__ or "未知错误"
+        return {"enabled": True, "current": cur, "error": detail[:160]}
 
 # ── GUI 在线更新:异步 + 分块下载 + 进度(前端轮询 /api/update/gui/progress 画进度条)──
 _GUI_UPD = {"phase": "idle", "downloaded": 0, "total": 0, "pct": 0, "error": None, "done": False, "version": None}

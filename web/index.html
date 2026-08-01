@@ -52,6 +52,13 @@
       <button id="previewbtn" title="打开/关闭应用内预览">预览</button>
       <button id="interruptbtn" title="停止当前任务（Esc）">停止</button>
     </div>
+    <div id="guiUpdateNotice" hidden role="status" aria-live="polite">
+      <div class="gui-update-copy">
+        <b id="guiUpdateNoticeTitle">CodeWhale GUI 有新版本</b>
+        <span id="guiUpdateNoticeMeta"></span>
+      </div>
+      <button id="guiUpdateNoticeBtn" type="button">立即更新</button>
+    </div>
   <div id="comboBar" hidden>
       <div class="combo-ident"><b>组合任务</b><span id="comboPhase">等待任务</span></div>
     <div id="comboRoles" aria-label="组合模型角色">

@@ -8,13 +8,15 @@ NOTES="${2:-}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SRC="${CODEWHALE_SOURCE_DIR:-$HERE}"
 OUT="${CODEWHALE_RELEASE_OUT:-$HERE/dist/$VERSION}"
-KEY="${CODEWHALE_SIGNING_KEY:-$HOME/.codewhale-release/signing-key.pem}"
+KEY="${CODEWHALE_SIGNING_KEY:-$HOME/.codewhale-release/manifest-ed25519.pem}"
 
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
   echo "Error: invalid version: $VERSION" >&2
   exit 1
 fi
-if [ ! -f "$KEY" ] && [ -f "$HOME/Desktop/work/signing-key.pem" ]; then
+if [ ! -f "$KEY" ] && [ -f "$HOME/.codewhale-release/signing-key.pem" ]; then
+  KEY="$HOME/.codewhale-release/signing-key.pem"
+elif [ ! -f "$KEY" ] && [ -f "$HOME/Desktop/work/signing-key.pem" ]; then
   KEY="$HOME/Desktop/work/signing-key.pem"
 elif [ ! -f "$KEY" ] && [ -f "$HOME/codewhale-release/signing-key.pem" ]; then
   KEY="$HOME/codewhale-release/signing-key.pem"
@@ -23,6 +25,32 @@ fi
 for path in "$SRC/web" "$SRC/server.py" "$SRC/VERSION" "$SRC/harness"; do
   [ -e "$path" ] || { echo "Error: missing release input: $path" >&2; exit 1; }
 done
+
+# The release must be verifiable by already-installed clients. A signature that
+# only verifies against its own private key is insufficient if server.py trusts
+# a different public key, so fail before building or uploading any asset.
+python3 - "$KEY" "$SRC/server.py" <<'PY'
+import base64
+import re
+import sys
+
+from cryptography.hazmat.primitives import serialization
+
+key_path, server_path = sys.argv[1:]
+source = open(server_path, encoding="utf-8").read()
+match = re.search(r'GUI_UPDATE_PUBKEY_B64\s*=\s*["\']([^"\']+)', source)
+if not match:
+    raise SystemExit("Error: GUI_UPDATE_PUBKEY_B64 not found in server.py")
+private_key = serialization.load_pem_private_key(open(key_path, "rb").read(), password=None)
+actual = private_key.public_key().public_bytes(
+    serialization.Encoding.Raw,
+    serialization.PublicFormat.Raw,
+)
+trusted = base64.b64decode(match.group(1))
+if actual != trusted:
+    raise SystemExit("Error: signing public key does not match GUI_UPDATE_PUBKEY_B64")
+print("   Release signing key matches embedded GUI trust anchor")
+PY
 
 mkdir -p "$OUT"
 rm -f "$OUT"/gui-*.tar.gz "$OUT"/harness-*.tar.gz \

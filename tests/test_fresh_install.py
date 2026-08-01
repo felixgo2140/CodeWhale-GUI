@@ -44,6 +44,16 @@ class FreshInstallTests(unittest.TestCase):
         self.assertIn("codesign --verify --deep --strict", verify)
         self.assertIn("CODEWHALE_RELEASE_VERIFY=1", verify)
 
+    def test_release_signer_must_match_the_embedded_gui_trust_anchor(self):
+        build = (ROOT / "make-release.sh").read_text(encoding="utf-8")
+        guide = (ROOT / "RELEASE-GUIDE.txt").read_text(encoding="utf-8")
+
+        self.assertIn(".codewhale-release/manifest-ed25519.pem", build)
+        self.assertIn("GUI_UPDATE_PUBKEY_B64", build)
+        self.assertIn("if actual != trusted", build)
+        self.assertIn("signing public key does not match", build)
+        self.assertIn("内置公钥", guide)
+
 
 if __name__ == "__main__":
     unittest.main()
