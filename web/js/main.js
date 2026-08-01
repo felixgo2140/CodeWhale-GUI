@@ -144,7 +144,7 @@ function boot(){
   }else if(IS_COMBO_WIN){
     loadComboSessions().then(()=>initComboWindow(params.get("session")||""));
   }else{
-    const initialThreads=loadThreads(); loadBalance(); loadPins(); loadCronJobs(); loadCmp(); loadCmpSessions(); loadComboSessions(); loadModelLabel(); checkSetup(); loadPlugins(); loadResearchSkills();   // pins/Cron:服务端拉跨窗口标签;loadCmp:对比 thread 分组;loadComboSessions:组合会话归集;loadModelLabel:侧栏显当前模型
+    const initialThreads=loadThreads(); loadPins(); loadCronJobs(); loadCmp(); loadCmpSessions(); loadComboSessions(); loadModelLabel(); checkSetup(); loadPlugins(); loadResearchSkills();   // pins/Cron:服务端拉跨窗口标签;loadCmp:对比 thread 分组;loadComboSessions:组合会话归集;loadModelLabel:侧栏显当前模型
     const deepThread=params.get("thread");
     if(/^thr_[A-Za-z0-9_-]+$/.test(deepThread||"")) Promise.resolve(initialThreads).then(()=>openThread(deepThread)).then(()=>{ if(typeof consumeTaskPrefill==="function") consumeTaskPrefill(deepThread); }).catch(e=>cwToast(e?.message||"任务链接打开失败"));
   }
@@ -157,7 +157,6 @@ function boot(){
     setTimeout(async()=>{ for(let i=0;i<5;i++){ try{ const s=await api("/api/app-refresh-status"); if(s&&s.updated){ cwToast("✅ CodeWhale 原生 App 已更新 — 退出(⌘Q)再打开即生效"); break; } }catch(e){} await new Promise(r=>setTimeout(r,4000)); } }, 5000);
     setInterval(()=>{ loadThreads(); loadCmpSessions(); loadComboSessions(); }, 4000);   // 轮询刷新侧栏状态点 + 组合/对比会话收编
     setInterval(syncActiveTurn, 4000);   // 单聊兜底:不依赖侧栏 stale cache,直接查当前 thread 收尾,避免 SSE 漏完成事件后输入框卡住
-    setInterval(loadBalance, 60000);  // 每分钟刷新当前 provider 余额/额度/用量
     loadVersion(); checkUpdate(); setInterval(checkUpdate, 3600000);   // CodeWhale 后端版本号 + 启动/每小时查新版
     checkGuiUpdate(); setInterval(checkGuiUpdate, 3600000);            // GUI 界面:启动 + 每小时查新版(签名验证)
     setTimeout(()=>checkModelUpdates({startup:true,force:true}).catch(()=>{}),1200); // 大模型:每次新开主窗口强制同步一次目录,不阻塞首屏

@@ -4220,29 +4220,6 @@ _CLAUDE_MODELS = {
     "sonnet": ("Claude Sonnet 4.6", "claude-sonnet-4-6"), "claude-sonnet-4-6": ("Claude Sonnet 4.6", "claude-sonnet-4-6"),
     "haiku": ("Claude Haiku 4.5", "claude-haiku-4-5"), "claude-haiku-4-5": ("Claude Haiku 4.5", "claude-haiku-4-5"),
 }
-# 单模型“简单问题快答”必须留在用户当前选择的 provider 内，不能为了快答
-# 把 DeepSeek/GLM/Kimi/GPT 等线程偷偷改成 Qwen。这里仅列入已经通过各
-# provider /models 实测存在的模型；复杂任务始终恢复用户原先选择的模型。
-_SMART_FAST_MODEL_ROUTES = {
-    "deepseek": {"model": "deepseek-v4-flash", "display": "DeepSeek V4 Flash"},
-    "zai": {"model": "glm-5-turbo", "display": "GLM-5 Turbo"},
-    # Moonshot 的 coding/highspeed 变体会在收到 CodeWhale 完整工具
-    # schema 时因 MFJS 关键字校验失败；K3 已实测可正常携带同一套工具。
-    "moonshot": {"model": "k3", "display": "K3"},
-    "custom": {"model": "hy3", "display": "混元 HY3"},
-    "volcengine": {"model": "doubao-seed-2-1-turbo-260628", "display": "豆包 Seed 2.1 Turbo"},
-    "openai-codex": {"model": "gpt-5.6-luna", "display": "GPT-5.6 Luna"},
-}
-_SMART_FIXED_MODEL_PROVIDERS = {
-    # LongCat 的当前账户目录只有一个模型；没有可切换的快速变体。
-    "longcat": "LongCat 2.0",
-    # Claude CLI 的实际模型由 provider 进程环境变量决定，线程级 model 只是
-    # `sonnet` 路由键。自动改它会显示成 Haiku、实际仍跑 Fable，故保持所选。
-    "claude-code": "Claude（保持所选模型）",
-    # Token Plan 目录由 /models 动态发现。简单问题继续使用用户选中的
-    # 对话型号，避免模型目录变化时静默改写已有会话。
-    "qwen": "Qwen / QwQ（保持所选模型）",
-}
 def _claude_identity(model):                                          # 身份串跟着所选模型走(否则切 sonnet 还自报 Opus)
     name, model_id = _CLAUDE_MODELS.get(model, ("Claude (Anthropic)", model))
     return (f"You are {name} (model id `{model_id}`), running via the official Claude CLI. "
@@ -6280,60 +6257,6 @@ def _switch_single_thread_provider(tid, prov, model=None, persist_pref=True):
         pass
     return {"ok": True, "thread_id": tid, "provider": prov, "model": fm or model or ""}
 
-_SIMPLE_TURN_COMPLEX_RE = re.compile(
-    r"(https?://|www\.|读取|打开|搜索|搜一下|查询|查一下|调研|研究|分析|规划|审计|"
-    r"修改|改文件|写代码|代码|运行|执行|测试|部署|发布|安装|配置|命令|终端|shell|"
-    r"文件|附件|图片|截图|视频|报告|表格|数据|财报|股票|投资|交易|法律|合同|"
-    r"医疗|诊断|药物|最新|今天|现在|当前|实时|新闻|价格|汇率|天气|行程|推荐|"
-    r"证明|推导|论证|排查|调试|故障|优化|架构|重构|性能|安全|漏洞|"
-    r"\b(search|research|browse|open|read|inspect|analy[sz]e|plan|audit|review|"
-    r"edit|modify|code|run|test|deploy|install|configure|file|attachment|image|"
-    r"prove|derive|debug|troubleshoot|optimi[sz]e|architect|refactor|performance|"
-    r"security|vulnerability|latest|current|today|price|weather|recommend)\b)",
-    re.I,
-)
-_SIMPLE_TURN_HINT_RE = re.compile(
-    r"(多少|等于|换算|是什么|什么意思|怎么读|怎么写|翻译|哪一天|星期几|周几|"
-    r"你好|您好|谢谢|hi|hello|thanks|"
-    r"\b(convert|calculate|what is|what's|define|translate)\b|"
-    r"\d+(?:\.\d+)?\s*(?:oz|ml|l|kg|g|lb|lbs|cm|mm|m|km|ft|in|inch|"
-    r"°c|°f|celsius|fahrenheit|美元|人民币|毫升|升|克|千克|斤|磅|英寸|厘米))",
-    re.I,
-)
-
-def classify_single_turn(prompt, has_attachments=False):
-    """Conservative preflight: only obvious, self-contained questions use a fast model."""
-    text = str(prompt or "").strip()
-    if not text:
-        return {"complexity": "standard", "reason": "empty"}
-    if has_attachments:
-        return {"complexity": "standard", "reason": "attachment"}
-    if len(text) > 180 or text.count("\n") > 1:
-        return {"complexity": "standard", "reason": "long_or_structured"}
-    if _SIMPLE_TURN_COMPLEX_RE.search(text):
-        return {"complexity": "standard", "reason": "tools_or_reasoning"}
-    if _SIMPLE_TURN_HINT_RE.search(text):
-        return {"complexity": "simple", "reason": "short_self_contained"}
-    # Very short conversational turns are safe for the fast model. Unknown
-    # task-like prompts remain on the user-selected model.
-    if len(text) <= 24 and not re.search(r"(帮我|请你|需要|如何|怎么|为什么|是否|能否|对比|设计|方案)", text):
-        return {"complexity": "simple", "reason": "brief_conversation"}
-    return {"complexity": "standard", "reason": "default"}
-
-def _smart_fast_route(prov):
-    """Return a verified same-provider fast route, never a cross-provider fallback."""
-    route = _SMART_FAST_MODEL_ROUTES.get(str(prov or "").strip())
-    if not route:
-        return None
-    if prov == "qwen":
-        cfg = _provider_cfg("qwen") or {}
-        if not (
-            str(cfg.get("api_key") or "").strip()
-            and _qwen_credential_profile(cfg.get("model"), cfg.get("base_url")) == "token_plan"
-        ):
-            return None
-    return dict(route)
-
 def _thread_current_route(tid):
     th = _runtime_json("threads", tid) or {}
     prov = _thread_route_provider(tid) or _runtime_provider_from_thread(th) or (_cfg_get("provider") or "deepseek")
@@ -6367,7 +6290,7 @@ def _enforce_single_route_compatibility(tid, route):
     return current
 
 _COMPAT_TOOL_TASK_RE = re.compile(
-    r"(https?://|www\.|读取|打开|搜索|搜一下|查询|查一下|调研|下载|上传|"
+    r"(https?://|www\.|读取|打开|搜索|搜一下|搜下|搜一搜|查询|查一下|查下|查一查|查查|调研|下载|上传|"
     r"文件|目录|附件|图片|截图|视频|网页|链接|插件|skill|mcp|"
     r"运行|执行|命令|终端|shell|改文件|写代码|修改代码|跑测试|部署|安装|"
     r"\b(?:browse|search|open|read|download|upload|file|directory|attachment|"
@@ -6424,68 +6347,34 @@ def restore_single_turn_route(tid):
         "compatibility_mode": _compatible_single_route(preferred).get("compatibility_mode") or "",
     }
 
+def restore_retired_fast_routes():
+    """Restore and remove persisted routes created by the retired fast-answer feature."""
+    with _auto_turn_routes_lock:
+        tids = [
+            tid for tid, saved in _auto_turn_routes.items()
+            if isinstance(saved, dict)
+            and saved.get("active")
+            and saved.get("kind") != "compat_tool_delegate"
+        ]
+    restored = 0
+    for tid in tids:
+        try:
+            if restore_single_turn_route(tid).get("restored"):
+                restored += 1
+        except Exception as exc:
+            print(f"[route] warning: 恢复旧快答路由失败 {tid}: {exc}", flush=True)
+    return restored
+
 def prepare_single_turn_route(tid, prompt, has_attachments=False):
-    decision = classify_single_turn(prompt, has_attachments)
+    restored_preferred = False
     with _auto_turn_routes_lock:
         saved = dict(_auto_turn_routes.get(tid) or {})
-
-    if decision["complexity"] == "simple":
-        raw_current = _thread_current_route(tid)
-        current = _compatible_single_route(raw_current)
-        if current.get("compatibility_mode"):
-            if raw_current.get("model") != current.get("model"):
-                _switch_single_thread_provider(
-                    tid, current["provider"], current["model"], persist_pref=False
-                )
-            current = _enforce_single_route_compatibility(tid, current)
-        prov = str(current.get("provider") or "").strip()
-        route = _smart_fast_route(prov)
-        if not route:
-            return {
-                "ok": True,
-                "mode": "standard",
-                "provider": prov,
-                "model": current.get("model") or "",
-                "display": current.get("model") or _SMART_FIXED_MODEL_PROVIDERS.get(prov) or prov,
-                "fast_unavailable": True,
-                "reason": decision["reason"],
-            }
-        fast_model = route["model"]
-        preferred = saved.get("preferred") if isinstance(saved.get("preferred"), dict) else current
-        preferred = _compatible_single_route(preferred)
-        if raw_current.get("model") != fast_model:
-            switched = _switch_single_thread_provider(
-                tid, prov, fast_model, persist_pref=False
-            )
-        else:
-            switched = {"provider": prov, "model": fast_model}
-        with _auto_turn_routes_lock:
-            _auto_turn_routes[tid] = {
-                "preferred": preferred,
-                "active": True,
-                "updated_at": int(time.time()),
-            }
-            _save_auto_turn_routes()
-        result = {
-            "ok": True,
-            "mode": "fast",
-            "provider": switched.get("provider") or prov,
-            "model": switched.get("model") or fast_model,
-            "display": route["display"],
-            "reason": decision["reason"],
-        }
-        if current.get("compatibility_mode"):
-            result.update({
-                "compatibility_mode": current["compatibility_mode"],
-                "fallback_from_model": current.get("fallback_from_model") or "",
-                "auto_approve_disabled": current.get("auto_approve_disabled", False),
-                "shell_disabled": current.get("shell_disabled", False),
-                "plugin_tools_enabled": current.get("plugin_tools_enabled", False),
-            })
-        return result
-
+    # Remove any route left by the retired fast-answer feature, or restore a
+    # provider temporarily delegated for the previous tool turn. New turns
+    # always begin from the model explicitly selected for this task.
     if saved.get("active"):
-        restore_single_turn_route(tid)
+        restored = restore_single_turn_route(tid)
+        restored_preferred = bool(restored.get("restored"))
     raw_current = _thread_current_route(tid)
     current = _compatible_single_route(raw_current)
     if current.get("compatibility_mode"):
@@ -6532,7 +6421,8 @@ def prepare_single_turn_route(tid, prompt, has_attachments=False):
             "auto_approve_disabled": current.get("auto_approve_disabled", False),
             "shell_disabled": current.get("shell_disabled", False),
             "plugin_tools_enabled": current.get("plugin_tools_enabled", False),
-            "reason": decision["reason"],
+            "restored": restored_preferred,
+            "reason": "text_compatibility",
         }
     return {
         "ok": True,
@@ -6540,7 +6430,8 @@ def prepare_single_turn_route(tid, prompt, has_attachments=False):
         "provider": current.get("provider") or "",
         "model": current.get("model") or "",
         "display": current.get("model") or current.get("provider") or "",
-        "reason": decision["reason"],
+        "restored": restored_preferred,
+        "reason": "selected_model",
     }
 def _model_to_provider(model):   # 从会话真实 model 反推 provider(thread.model 已被钉准,比 _tprov 锁定表可靠)→ 侧栏标签必和模型一致
     m = (model or "").lower()
@@ -7010,7 +6901,7 @@ def _provider_chat_config(prov):
         }
     return _provider_chat_config("deepseek")
 
-def _text_chat_once(provider, model, messages, max_tokens=6000):
+def _text_chat_once(provider, model, messages, max_tokens=6000, request_timeout=240):
     """Call an OpenAI-compatible provider without registering any tools."""
     provider = re.sub(r"[^A-Za-z0-9._-]", "", str(provider or ""))[:80]
     allowed = {"deepseek", "zai", "moonshot", "custom", "volcengine", "longcat", "qwen"}
@@ -7037,13 +6928,19 @@ def _text_chat_once(provider, model, messages, max_tokens=6000):
         budget = max(512, min(int(max_tokens or 6000), 12000))
     except Exception:
         budget = 6000
+    try:
+        request_timeout = max(1, min(float(request_timeout or 240), 240))
+    except Exception:
+        request_timeout = 240
     payload = {
         "model": cfg["model"],
         "messages": clean_messages,
         "max_tokens": budget,
         "stream": False,
     }
-    attempts = 3 if provider == "moonshot" else 1
+    # Interactive chat can afford retries. Short utility calls (voice prompt
+    # cleanup, title helpers, etc.) must stay inside their caller's deadline.
+    attempts = 3 if provider == "moonshot" and request_timeout >= 60 else 1
     data = None
     for attempt in range(attempts):
         if provider == "qwen":
@@ -7051,7 +6948,7 @@ def _text_chat_once(provider, model, messages, max_tokens=6000):
                 cfg["base"].rstrip("/") + "/chat/completions",
                 payload,
                 cfg["key"],
-                timeout=240,
+                timeout=request_timeout,
             )
             if status >= 400:
                 err = data.get("error") if isinstance(data, dict) else {}
@@ -7067,7 +6964,7 @@ def _text_chat_once(provider, model, messages, max_tokens=6000):
             headers={"Authorization": "Bearer " + cfg["key"], "Content-Type": "application/json"},
         )
         try:
-            with _open_url(request, 240) as response:
+            with _open_url(request, request_timeout) as response:
                 data = json.loads(response.read().decode("utf-8", "replace"))
             break
         except urllib.error.HTTPError as exc:
@@ -7302,7 +7199,8 @@ def refine_voice_prompt(transcript, draft="", provider=""):
         except Exception:
             continue
     if not configs:
-        return {"ok": True, "prompt": fallback, "refined": False, "warning": "没有可用的直连模型,已做本地整理"}
+        return {"ok": True, "prompt": fallback, "refined": False,
+                "fallback_reason": "no_direct_provider"}
     source = ("输入框已有内容:\n" + draft + "\n\n" if draft else "") + "本次口述:\n" + transcript
     messages = [
         {"role": "system", "content": (
@@ -7314,35 +7212,33 @@ def refine_voice_prompt(transcript, draft="", provider=""):
         {"role": "user", "content": source},
     ]
     errors = []
-    deadline = time.monotonic() + 12
+    # The transcript is already placed in the input immediately by the UI, so
+    # allow the selected model enough time to produce a useful rewrite. The old
+    # 8-second per-provider limit frequently timed out Qwen 3.8 just before it
+    # returned, even though normal Qwen chat was healthy.
+    deadline = time.monotonic() + 32
     for cfg in configs[:2]:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        payload = json.dumps({
-            "model": cfg["model"],
-            "messages": messages,
-            "temperature": 0.05,
-            "max_tokens": 1200,
-            "stream": False,
-        }, ensure_ascii=False).encode()
-        req = urllib.request.Request(cfg["base"].rstrip("/") + "/chat/completions",
-                                     data=payload, method="POST",
-                                     headers={"Authorization": "Bearer " + cfg["key"],
-                                              "Content-Type": "application/json"})
         try:
-            with _open_url(req, max(1, min(8, remaining))) as r:
-                data = json.loads(r.read().decode("utf-8", "replace"))
-            prompt = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+            # Reuse the same provider path as normal text chat. In particular,
+            # Qwen Token Plan must use its IPv4 curl transport and normalized
+            # error handling instead of the former one-off urllib request.
+            result = _text_chat_once(
+                cfg.get("provider"), cfg.get("model"), messages, 1200,
+                request_timeout=max(1, min(24, remaining)),
+            )
+            prompt = str(result.get("text") or "").strip()
             prompt = re.sub(r'^```(?:markdown|text)?\s*|\s*```$', '', prompt, flags=re.I).strip()
             if not prompt:
                 raise RuntimeError("模型返回空内容")
             return {"ok": True, "prompt": prompt[:16000], "refined": True,
-                    "provider": cfg.get("provider", ""), "model": cfg.get("model", "")}
+                    "provider": result.get("provider", ""), "model": result.get("model", "")}
         except Exception as e:
             errors.append(f"{cfg.get('provider', 'unknown')}/{cfg.get('model', 'unknown')}: {e}")
     return {"ok": True, "prompt": fallback, "refined": False,
-            "warning": "模型整理失败,已保留并本地整理口述", "detail": "; ".join(errors)[:300]}
+            "fallback_reason": "model_unavailable", "detail": "; ".join(errors)[:300]}
 
 def _title_provider(fallback=""):
     """Use a stable Chinese-capable model for naming instead of whatever model ran the thread."""
@@ -8490,7 +8386,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json(out)
             except Exception as e:
                 return self._json({"error": str(e)[:200]}, 502)
-        if p == "/api/turn-route":   # 单模型发送前轻量分流:简单问答走 3.7 Plus 快答,复杂任务恢复用户所选模型
+        if p == "/api/turn-route":   # 始终保持所选模型；只处理旧路由恢复与 Qwen/Kimi 工具兼容委派
             if not self._authed():
                 return self._deny()
             try:
@@ -8517,18 +8413,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json(restore_single_turn_route(tid))
             except Exception as e:
                 return self._json({"error": str(e)[:240]}, 502)
-        if p == "/api/turn-complexity":   # 对比窗口只读预检:不切模型、不改会话
-            if not self._authed():
-                return self._deny()
-            try:
-                length = int(self.headers.get("Content-Length", 0) or 0)
-                data = json.loads(self.rfile.read(min(length, 50000)) or b"{}") if length else {}
-                return self._json(classify_single_turn(
-                    str(data.get("prompt") or "")[:16000],
-                    bool(data.get("has_attachments")),
-                ))
-            except Exception as e:
-                return self._json({"error": str(e)[:240]}, 400)
         if p == "/api/voice/refine":   # ⌘D/麦克风语音转写 → 精练、连贯、可执行 prompt;只填输入框,不自动发送
             if not self._authed():
                 return self._deny()
@@ -9307,6 +9191,9 @@ if __name__ == "__main__":
     # GUI 本身重启不应杀 provider 后端:它们可能仍承载正在运行的 turn。接管健康实例,
     # 只有更新 runtime、显式重置或 provider 配置变化时才走 _kill_cmp_backends/_cmp_reset。
     if not release_verify:
+        retired_routes = restore_retired_fast_routes()
+        if retired_routes:
+            print(f"[route] 已恢复并清除 {retired_routes} 个旧快答路由", flush=True)
         try:
             _adopt_cmp_backends()
         except Exception as exc:

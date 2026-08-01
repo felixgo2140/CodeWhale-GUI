@@ -48,20 +48,43 @@ class VoicePromptTests(unittest.TestCase):
                 return configs[provider]
             raise RuntimeError("unavailable")
 
-        response = mock.MagicMock()
-        response.__enter__.return_value.read.return_value = (
-            b'{"choices":[{"message":{"content":"\\u8bf7\\u6574\\u7406\\u62a5\\u544a\\uff0c\\u4fdd\\u7559\\u6240\\u6709\\u6570\\u5b57\\u3002"}}]}'
-        )
+        answers = [
+            RuntimeError("HTTP 400"),
+            {"ok": True, "provider": "deepseek", "model": "deepseek-chat",
+             "text": "请整理报告，保留所有数字。"},
+        ]
         with mock.patch.object(SERVER, "_cfg_get", return_value="moonshot"), \
              mock.patch.object(SERVER, "_provider_chat_config", side_effect=config_for), \
-             mock.patch.object(SERVER, "_open_url", side_effect=[RuntimeError("HTTP 400"), response]) as open_url:
+             mock.patch.object(SERVER, "_text_chat_once", side_effect=answers) as chat_once:
             result = SERVER.refine_voice_prompt("整理这份报告，保留所有数字。", provider="moonshot")
 
         self.assertTrue(result["refined"])
         self.assertEqual(result["provider"], "deepseek")
         self.assertEqual(result["model"], "deepseek-chat")
-        self.assertEqual(open_url.call_count, 2)
-        self.assertTrue(all(call.args[1] <= 8 for call in open_url.call_args_list))
+        self.assertEqual(chat_once.call_count, 2)
+        self.assertTrue(all(call.kwargs["request_timeout"] <= 24 for call in chat_once.call_args_list))
+
+    def test_refine_reuses_qwen_ipv4_text_transport_and_avoids_failure_toast(self):
+        qwen = {
+            "provider": "qwen", "key": "configured", "base": "https://token-plan.invalid/v1",
+            "model": "qwen3.8-max-preview",
+        }
+        with mock.patch.object(SERVER, "_cfg_get", return_value="qwen"), \
+             mock.patch.object(SERVER, "_provider_chat_config", return_value=qwen), \
+             mock.patch.object(SERVER, "_text_chat_once", return_value={
+                 "ok": True, "provider": "qwen", "model": "qwen3.8-max-preview", "text": "整理后的口述"
+             }) as chat_once:
+            result = SERVER.refine_voice_prompt("嗯整理一下这个口述", provider="qwen")
+
+        self.assertTrue(result["refined"])
+        self.assertEqual(result["prompt"], "整理后的口述")
+        chat_once.assert_called_once()
+        self.assertEqual(chat_once.call_args.args[:2], ("qwen", "qwen3.8-max-preview"))
+        self.assertLessEqual(chat_once.call_args.kwargs["request_timeout"], 24)
+
+        frontend = (ROOT / "web" / "js" / "voice.js").read_text()
+        self.assertNotIn('window.cwToast(result.warning)', frontend)
+        self.assertIn('"已转写 · 本地整理"', frontend)
 
     def test_browser_voice_fill_recovers_live_input_and_preserves_new_typing(self):
         voice_url = (ROOT / "web" / "js" / "voice.js").as_uri()

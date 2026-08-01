@@ -12,43 +12,6 @@ import server
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class SmartTurnClassifierTests(unittest.TestCase):
-    def test_unit_conversion_is_simple(self):
-        result = server.classify_single_turn("6oz是多少毫升")
-        self.assertEqual(result["complexity"], "simple")
-
-    def test_greeting_is_simple(self):
-        self.assertEqual(server.classify_single_turn("你好")["complexity"], "simple")
-
-    def test_short_but_difficult_requests_keep_the_selected_model(self):
-        prompts = [
-            "证明黎曼猜想",
-            "排查这个性能故障",
-            "优化数据库架构",
-        ]
-        for prompt in prompts:
-            with self.subTest(prompt=prompt):
-                self.assertEqual(
-                    server.classify_single_turn(prompt)["complexity"], "standard"
-                )
-
-    def test_tools_urls_and_attachments_stay_on_selected_model(self):
-        prompts = [
-            "帮我修改这个文件并运行测试",
-            "研究一下 https://example.com",
-            "分析腾讯股票",
-        ]
-        for prompt in prompts:
-            with self.subTest(prompt=prompt):
-                self.assertEqual(
-                    server.classify_single_turn(prompt)["complexity"], "standard"
-                )
-        self.assertEqual(
-            server.classify_single_turn("这是什么", has_attachments=True)["complexity"],
-            "standard",
-        )
-
-
 class SmartTurnRouteTests(unittest.TestCase):
     def setUp(self):
         self.old_routes = dict(server._auto_turn_routes)
@@ -58,109 +21,83 @@ class SmartTurnRouteTests(unittest.TestCase):
         server._auto_turn_routes.clear()
         server._auto_turn_routes.update(self.old_routes)
 
+    def test_query_phrases_require_external_tools(self):
+        self.assertTrue(server._turn_requires_external_tools("越早越好，你先查下票"))
+
+    def test_fast_answer_feature_is_removed(self):
+        source = (ROOT / "server.py").read_text(encoding="utf-8")
+
+        self.assertNotIn("_SMART_FAST_MODEL_ROUTES", source)
+        self.assertNotIn("classify_single_turn", source)
+        self.assertNotIn("/api/turn-complexity", source)
+
     @mock.patch.object(server, "_save_auto_turn_routes")
     @mock.patch.object(server, "_switch_single_thread_provider")
     @mock.patch.object(server, "_thread_current_route")
-    def test_simple_qwen_turn_keeps_selected_qwen38_model(
+    def test_plain_turn_keeps_selected_model(
         self, current, switch, _save
     ):
-        current.return_value = {"provider": "qwen", "model": "qwen3.8-max-preview"}
+        current.return_value = {"provider": "deepseek", "model": "deepseek-v4-pro"}
 
-        result = server.prepare_single_turn_route("thr_test", "6oz是多少毫升")
+        result = server.prepare_single_turn_route("thr_test", "你好")
 
         self.assertEqual(result["mode"], "standard")
-        self.assertTrue(result["fast_unavailable"])
-        self.assertEqual(result["provider"], "qwen")
-        self.assertEqual(result["model"], "qwen3.8-max-preview")
-        self.assertEqual(result["display"], "qwen3.8-max-preview")
+        self.assertEqual(result["provider"], "deepseek")
+        self.assertEqual(result["model"], "deepseek-v4-pro")
+        self.assertEqual(result["reason"], "selected_model")
         switch.assert_not_called()
         self.assertNotIn("thr_test", server._auto_turn_routes)
 
     @mock.patch.object(server, "_save_auto_turn_routes")
     @mock.patch.object(server, "_switch_single_thread_provider")
     @mock.patch.object(server, "_thread_current_route")
-    def test_simple_turn_stays_inside_current_provider(self, current, switch, _save):
-        current.return_value = {"provider": "deepseek", "model": "deepseek-v4-pro"}
-        switch.return_value = {
-            "provider": "deepseek",
-            "model": "deepseek-v4-flash",
-        }
-
-        result = server.prepare_single_turn_route("thr_ds", "你好")
-
-        self.assertEqual(result["mode"], "fast")
-        self.assertEqual(result["provider"], "deepseek")
-        self.assertEqual(result["display"], "DeepSeek V4 Flash")
-        switch.assert_called_once_with(
-            "thr_ds", "deepseek", "deepseek-v4-flash", persist_pref=False
-        )
-        self.assertEqual(
-            server._auto_turn_routes["thr_ds"]["preferred"],
-            {"provider": "deepseek", "model": "deepseek-v4-pro"},
-        )
-
-    @mock.patch.object(server, "_switch_single_thread_provider")
-    @mock.patch.object(server, "_thread_current_route")
-    def test_provider_without_fast_variant_keeps_selected_model(self, current, switch):
-        current.return_value = {"provider": "longcat", "model": "LongCat-2.0"}
-
-        result = server.prepare_single_turn_route("thr_lc", "你好")
-
-        self.assertEqual(result["mode"], "standard")
-        self.assertTrue(result["fast_unavailable"])
-        self.assertEqual(result["provider"], "longcat")
-        switch.assert_not_called()
-        self.assertNotIn("thr_lc", server._auto_turn_routes)
-
-    def test_verified_fast_catalog_covers_switchable_providers(self):
-        expected = {
-            "deepseek": "deepseek-v4-flash",
-            "zai": "glm-5-turbo",
-            "moonshot": "k3",
-            "custom": "hy3",
-            "volcengine": "doubao-seed-2-1-turbo-260628",
-            "openai-codex": "gpt-5.6-luna",
-        }
-        self.assertEqual(
-            {
-                provider: route["model"]
-                for provider, route in server._SMART_FAST_MODEL_ROUTES.items()
-            },
-            expected,
-        )
-
-    @mock.patch.object(server, "_save_auto_turn_routes")
-    @mock.patch.object(server, "_enforce_single_route_compatibility")
-    @mock.patch.object(server, "_switch_single_thread_provider")
-    @mock.patch.object(server, "_thread_current_route")
-    def test_repeated_simple_turn_keeps_original_reasoning_model(
-        self, current, switch, enforce, _save
+    def test_legacy_fast_route_restores_saved_reasoning_model(
+        self, current, switch, _save
     ):
-        server._auto_turn_routes["thr_repeat"] = {
-            "preferred": {
-                "provider": "moonshot",
-                "model": "k3",
-            },
+        server._auto_turn_routes["thr_qwen_legacy"] = {
+            "preferred": {"provider": "qwen", "model": "qwen3.8-max-preview"},
             "active": True,
         }
-        current.return_value = {"provider": "moonshot", "model": "k3"}
-        enforce.side_effect = lambda _tid, route: {
-            **route,
-            "auto_approve_disabled": True,
-            "shell_disabled": True,
-            "plugin_tools_enabled": True,
+        current.return_value = {
+            "provider": "qwen",
+            "model": "qwen3.8-max-preview",
+        }
+        switch.return_value = {
+            "provider": "qwen",
+            "model": "qwen3.8-max-preview",
         }
 
-        result = server.prepare_single_turn_route("thr_repeat", "谢谢")
+        result = server.prepare_single_turn_route("thr_qwen_legacy", "你好")
 
-        self.assertEqual(result["mode"], "fast")
-        switch.assert_not_called()
-        self.assertEqual(
-            server._auto_turn_routes["thr_repeat"]["preferred"]["model"],
-            "k3",
+        self.assertEqual(result["mode"], "standard")
+        self.assertTrue(result["restored"])
+        self.assertEqual(result["provider"], "qwen")
+        self.assertEqual(result["model"], "qwen3.8-max-preview")
+        self.assertEqual(result["compatibility_mode"], "qwen_text")
+        switch.assert_called_once_with(
+            "thr_qwen_legacy", "qwen", "qwen3.8-max-preview", persist_pref=False
         )
-        enforce.assert_called_once()
-        self.assertNotIn("deny_all_tools", result)
+        self.assertNotIn("thr_qwen_legacy", server._auto_turn_routes)
+
+    @mock.patch.object(server, "restore_single_turn_route")
+    def test_startup_cleanup_targets_only_retired_fast_routes(self, restore):
+        server._auto_turn_routes.update({
+            "thr_legacy_fast": {
+                "preferred": {"provider": "deepseek", "model": "deepseek-v4-pro"},
+                "active": True,
+            },
+            "thr_tool_delegate": {
+                "preferred": {"provider": "qwen", "model": "qwen3.8-max-preview"},
+                "active": True,
+                "kind": "compat_tool_delegate",
+            },
+        })
+        restore.return_value = {"restored": True}
+
+        count = server.restore_retired_fast_routes()
+
+        self.assertEqual(count, 1)
+        restore.assert_called_once_with("thr_legacy_fast")
 
     @mock.patch.object(server, "_save_auto_turn_routes")
     @mock.patch.object(server, "_enforce_single_route_compatibility")
@@ -311,8 +248,9 @@ class SmartTurnFrontendTests(unittest.TestCase):
         route = source.index('api("/api/turn-route"')
         turn = source.index("`/v1/threads/${state.activeId}/turns`", route)
         self.assertLess(route, turn)
-        self.assertIn('简单问题 · ${route.display||route.model||"快速模型"} 快答', source)
-        self.assertNotIn("简单问题 · Qwen 3.7 Plus 快答", source)
+        self.assertIn('runStatusUpdate("准备模型","使用当前任务所选模型")', source)
+        self.assertNotIn('route.mode==="fast"', source)
+        self.assertNotIn("快速模型", source)
 
     def test_single_kimi_and_qwen_use_shared_persistent_text_route(self):
         source = (ROOT / "web/js/stream.js").read_text(encoding="utf-8")

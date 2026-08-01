@@ -1,59 +1,3 @@
-let balanceSeq=0;
-async function loadBalance(providerOverride){
-  const el=$("#balance");
-  if(!el) return;
-  const fmtMoney=(x)=>{
-    const sym=x.currency==="CNY"?"¥":(x.currency==="USD"?"$":(x.currency||""));
-    return x.amount!=null ? `${sym}${(+x.amount).toFixed(2)}` : "—";
-  };
-  const oneLine=(x)=>{
-    if(!x) return "余额 —";
-    const name=(typeof PROV_SHORT!=="undefined"&&(PROV_SHORT[x.provider]||x.label))||x.label||x.provider||"余额";
-    if(x.kind==="money") return `${name} ${fmtMoney(x)}`;
-    if(x.kind==="quota"){
-      const pct=x.percent!=null?Math.round(x.percent):null;
-      return pct!=null ? `${name} ${x.window||""} ${pct}%`.replace(/\s+/g," ").trim() : `${name} —`;
-    }
-    if(x.kind==="error"||x.error) return `${name} ⚠`;
-    if(x.litellm&&x.litellm.spend!=null) return `${name} spend $${(+x.litellm.spend).toFixed(2)}`;
-    return `${name} —`;
-  };
-  const tipLine=(x)=>{
-    if(!x) return "";
-    const name=(typeof PROV_SHORT!=="undefined"&&(PROV_SHORT[x.provider]||x.label))||x.label||x.provider||"provider";
-    if(x.kind==="money") return `${name}: 官方余额 ${fmtMoney(x)}`;
-    if(x.kind==="quota") return `${name}: ${x.window||""} 用量 ${x.percent!=null?Math.round(x.percent)+"%":"?"}${x.limit?` (${x.used||0}/${x.limit})`:""}`;
-    if(x.kind==="error"||x.error) return `${name}: 读取失败 ${x.error||""}`;
-    if(x.litellm&&x.litellm.spend!=null) return `${name}: 无官方余额接口; LiteLLM spend $${(+x.litellm.spend).toFixed(2)}${x.litellm.max_budget?` / budget $${(+x.litellm.max_budget).toFixed(2)}`:""}`;
-    return `${name}: ${x.hint||x.reason||"暂无已接入余额接口"}`;
-  };
-  const prov=providerOverride||window._activeChatProv||window._newchatProv||"";
-  const seq=++balanceSeq;
-  const expectedProvider=()=>window._activeChatProv||window._newchatProv||"";
-  if(prov){
-    const name=(typeof PROV_SHORT!=="undefined"&&(PROV_SHORT[prov]||prov))||prov;
-    el.textContent=`${name} …`;
-  }
-  try{
-    const d=await api("/api/balance"+(prov?`?provider=${encodeURIComponent(prov)}`:""));
-    if(seq!==balanceSeq || (prov||"")!==(expectedProvider()||"")) return;
-    const cur=d.current||d;
-    el.textContent=oneLine(cur);
-    const lines=[];
-    if(d.items&&Array.isArray(d.items)) d.items.forEach(x=>{ const line=tipLine(x); if(line) lines.push(line); });
-    else lines.push(tipLine(cur));
-    if(d.litellm){
-      const l=d.litellm;
-      lines.push(l.running
-        ? `LiteLLM: proxy 已运行${l.spend!=null?`, 近似 spend $${(+l.spend).toFixed(2)}`:""}`
-        : `LiteLLM: ${l.installed?"已安装但 proxy 未运行/未配置":"未安装或未在 PATH"}${l.error?` (${l.error})`:""}`);
-    }
-    el.title=lines.filter(Boolean).join("\n");
-  }catch(e){
-    if(seq!==balanceSeq || (prov||"")!==(expectedProvider()||"")) return;
-    el.textContent="余额 ⚠"; el.title="前端拿余额失败:"+(e&&e.message||e);
-  }
-}
 let updInfo=null;
 async function loadVersion(){
   try{ const d=await api("/v1/runtime/info"); if(d.codewhale_version) $("#version").textContent="v"+d.codewhale_version; }catch{}
@@ -1194,7 +1138,6 @@ function refreshActiveProviderChrome(provider){
   const nm=$("#modelname"); if(nm) nm.textContent=disp;
   const chip=$("#modelchip");
   if(chip) chip.title=`当前对话:${disp}${override?.model&&override.model!=="auto"?` · ${override.model}`:""}; 新对话默认:${PROV_SHORT[window._newchatProv||window._mainModelProv]||window._newchatProv||window._mainModelProv||""} — 点击切换`;
-  loadBalance(prov);
 }
 async function switchActiveThreadProvider(provider, model){
   if(!state.activeId) return null;
@@ -1230,7 +1173,6 @@ async function loadModelLabel(){ const seq=++modelLabelSeq, activeId=state.activ
   const disp=PROV_SHORT[prov]||prov;
   const nm=$("#modelname"); if(nm) nm.textContent=disp;
   const chip=$("#modelchip"); if(chip) chip.title=`当前对话:${disp}${override?.model&&override.model!=="auto"?` · ${override.model}`:""}; 新对话默认:${PROV_SHORT[newProv]||newProv}${nc&&nc!==c.provider?`(主后端 ${PROV_SHORT[c.provider]||c.provider})`:""} — 点击切换`;
-  loadBalance(prov);
 }catch(e){} }
 async function openModelSwitch(preselect){
   openModal("切换模型","brain");
@@ -1375,7 +1317,7 @@ async function openModelSwitch(preselect){
       if(body.model||"effort" in body){ try{ await api("/api/model-pref",{method:"POST",body:JSON.stringify(body)}); }catch(e){} }
       if(state.activeId) await switchActiveThreadProvider(provider, variant||p.model||"");
       b.textContent="✓ "+(state.activeId?"当前对话下一条用 ":"已设为默认 ")+(PROV_SHORT[provider]||provider)+(variant?(" · "+variant):"");
-      setTimeout(()=>{ const a=state.activeId, r=state.running; closeModal(); if(!r){ closeStream(); if(a) openThread(a); } loadThreads(); loadModelLabel(); loadBalance(); }, 700);   // 空闲时重连当前会话到新 provider;正在跑则不断流,下一条自然走新模型
+      setTimeout(()=>{ const a=state.activeId, r=state.running; closeModal(); if(!r){ closeStream(); if(a) openThread(a); } loadThreads(); loadModelLabel(); }, 700);   // 空闲时重连当前会话到新 provider;正在跑则不断流,下一条自然走新模型
     }catch(e){ alert("切换失败: "+e.message); b.textContent="切换并重启后端"; b.disabled=false; }
   };
 }
@@ -1796,4 +1738,4 @@ async function checkSetup(){   // 当前 provider 还没配 key(且非 OAuth)→
   }catch(e){}
 }
 
-export { loadBalance, loadVersion, checkUpdate, doUpdate, checkGuiUpdate, doGuiUpdate, checkModelUpdates, openDeerFlow, closeDeerFlow, submitResearch, submitSkillResearch, submitDeerFlowFromInput, loadResearchSkills, renderDfSkills, renderDfEngines, applyDfEngine, renderDfTemplates, loadPlugins, renderPluginItemsInto, renderPlugins, renderCmpPlugins, fillCmpComposer, closeCmpPluginMenus, finishCmpPluginPick, researchModelKeyForEngine, researchFallbackForEngine, researchModelForCurrent, researchModelMetaText, researchStatsWithModel, dfModelForCurrent, researchApiForRecord, researchRecordTitle, appendResearchFileLinks, renderResearchRecord, restoreResearchRecords, saveResearchRecord, submitDeerFlow, initPanelDocumentHandlers, openModal, closeModal, openSettings, openSkills, openConnectors, PROVIDERS, PROV_SHORT, activeProviderOverride, setActiveProviderOverride, clearActiveProviderOverride, refreshActiveProviderChrome, switchActiveThreadProvider, loadModelLabel, openModelSwitch, openUpdate, applyUpd, guiUpdateWithProgress, restartGui, sidebarMobile, closeDrawer, syncSidebarToggle, setSidebarCollapsed, toggleSidebar, applySidebarWidth, initSidebarControls, applyZoom, applyFs, setFs, bumpFs, applyCmpFs, setCmpFs, bumpCmpFs, initZoomControls, checkSetup };
+export { loadVersion, checkUpdate, doUpdate, checkGuiUpdate, doGuiUpdate, checkModelUpdates, openDeerFlow, closeDeerFlow, submitResearch, submitSkillResearch, submitDeerFlowFromInput, loadResearchSkills, renderDfSkills, renderDfEngines, applyDfEngine, renderDfTemplates, loadPlugins, renderPluginItemsInto, renderPlugins, renderCmpPlugins, fillCmpComposer, closeCmpPluginMenus, finishCmpPluginPick, researchModelKeyForEngine, researchFallbackForEngine, researchModelForCurrent, researchModelMetaText, researchStatsWithModel, dfModelForCurrent, researchApiForRecord, researchRecordTitle, appendResearchFileLinks, renderResearchRecord, restoreResearchRecords, saveResearchRecord, submitDeerFlow, initPanelDocumentHandlers, openModal, closeModal, openSettings, openSkills, openConnectors, PROVIDERS, PROV_SHORT, activeProviderOverride, setActiveProviderOverride, clearActiveProviderOverride, refreshActiveProviderChrome, switchActiveThreadProvider, loadModelLabel, openModelSwitch, openUpdate, applyUpd, guiUpdateWithProgress, restartGui, sidebarMobile, closeDrawer, syncSidebarToggle, setSidebarCollapsed, toggleSidebar, applySidebarWidth, initSidebarControls, applyZoom, applyFs, setFs, bumpFs, applyCmpFs, setCmpFs, bumpCmpFs, initZoomControls, checkSetup };

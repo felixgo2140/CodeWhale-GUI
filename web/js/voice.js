@@ -256,14 +256,14 @@ async function refineVoiceTranscript(text,target){
   setVoiceStatus("processing","正在整理",text,target);
   let result;
   const controller=typeof AbortController!=="undefined" ? new AbortController() : null;
-  const timeout=controller ? setTimeout(()=>controller.abort(),15000) : null;
+  const timeout=controller ? setTimeout(()=>controller.abort(),38000) : null;
   try{
     result=await api("/api/voice/refine",{method:"POST",body:JSON.stringify({
       transcript:text,draft,provider:voiceProvider(target)
     }),...(controller?{signal:controller.signal}:{})});
   }catch(e){
     const timedOut=e?.name==="AbortError" || /abort/i.test(String(e?.message||""));
-    result={ok:true,prompt:provisional,refined:false,warning:timedOut?"模型整理超时,已保留转写":"模型整理失败,已保留转写"};
+    result={ok:true,prompt:provisional,refined:false,fallback_reason:timedOut?"request_timeout":"request_failed"};
   }finally{
     if(timeout) clearTimeout(timeout);
   }
@@ -276,8 +276,7 @@ async function refineVoiceTranscript(text,target){
   voiceTarget=target;
   voiceLastTranscript="";
   setVoiceControlState("idle",target);
-  setVoiceStatus("done",result?.refined===false?"已转写":"已整理",finalWrite.applied?prompt:"检测到你已继续编辑,未覆盖",target);
-  if(result?.warning && typeof window.cwToast==="function") window.cwToast(result.warning);
+  setVoiceStatus("done",result?.refined===false?"已转写 · 本地整理":"已整理",finalWrite.applied?prompt:"检测到你已继续编辑,未覆盖",target);
   hideVoiceStatus(1600,target);
 }
 

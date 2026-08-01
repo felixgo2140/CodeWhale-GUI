@@ -20,6 +20,15 @@ class ProviderLifecycleTests(unittest.TestCase):
 
         self.assertIn('AbandonProcessGroup', frontend)
 
+    def test_installer_forces_frontend_reload_and_waits_for_gui(self):
+        installer = (ROOT / "installer/install.sh").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'launchctl kickstart -k "gui/$UID_N/com.codewhale.frontend"', installer
+        )
+        self.assertIn("http://127.0.0.1:3000/", installer)
+        self.assertIn('gui_ready=1', installer)
+
     def test_sidebar_uses_one_overflow_button_per_thread(self):
         source = (ROOT / "web/js/threads.js").read_text(encoding="utf-8")
 
@@ -106,6 +115,16 @@ class ProviderLifecycleTests(unittest.TestCase):
         self.assertIn("const providerOverride=typeof activeProviderOverride", threads)
         self.assertIn("clearActiveProviderOverride(providerOverride.threadId)", threads)
         self.assertIn("clearActiveProviderOverride(previousThreadId)", stream)
+
+    def test_sidebar_has_one_authoritative_model_indicator(self):
+        index = (ROOT / "web/index.html").read_text(encoding="utf-8")
+        panels = (ROOT / "web/js/panels.js").read_text(encoding="utf-8")
+        main = (ROOT / "web/js/main.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="modelchip"', index)
+        self.assertNotIn('id="balance"', index)
+        self.assertNotIn("loadBalance", panels)
+        self.assertNotIn("loadBalance", main)
 
 
 if __name__ == "__main__":

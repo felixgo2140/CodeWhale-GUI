@@ -747,7 +747,7 @@ async function send(queuedText){
     if(!state.activeId){ const t=await createThread(); implicitNewTitle=roughThreadTitle(text); _addOptimisticThread(t.id, implicitNewTitle); await openThread(t.id); loadThreads(); }   // 乐观立刻把新 thread 加进侧栏(否则慢 SWR 缓存下首条消息不生成可见 thread,要发第二条才出现);loadThreads 后台刷,不阻塞
     await ensureContextCapacityBeforeSend();
     try{
-      runStatusUpdate("判断任务","简单问题优先使用快速模型");
+      runStatusUpdate("准备模型","使用当前任务所选模型");
       const route=await api("/api/turn-route",{
         method:"POST",
         body:JSON.stringify({tid:state.activeId,prompt:text,has_attachments:hadAttachments})
@@ -773,8 +773,8 @@ async function send(queuedText){
         }
         if(route.compatibility_mode==="moonshot_text") runStatusStep("Kimi 文本兼容模式 · 不发送 Moonshot 不支持的函数 Schema");
         else if(route.compatibility_mode==="qwen_text") runStatusStep("Qwen 文本兼容模式 · 不发送函数工具参数");
-        else if(route.mode==="fast") runStatusStep(`简单问题 · ${route.display||route.model||"快速模型"} 快答`);
-        else if(route.restored) runStatusStep("复杂任务 · 已恢复所选模型");
+        else if(route.restored) runStatusStep(`已恢复所选模型 · ${route.display||route.model||""}`);
+        else if(route.display||route.model) runStatusStep(`使用所选模型 · ${route.display||route.model}`);
       }
     }catch(routeError){
       console.warn("smart turn routing unavailable; keep selected model",routeError);

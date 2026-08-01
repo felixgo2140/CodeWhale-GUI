@@ -291,6 +291,9 @@ if [ "$INSTALL_TEST" != "1" ]; then
   : > "$HOME/codewhale-gui/app-server.err.log"
   launchctl bootstrap "gui/$UID_N" "$LA/com.codewhale.appserver.plist" 2>/dev/null || launchctl load -w "$LA/com.codewhale.appserver.plist"
   launchctl bootstrap "gui/$UID_N" "$LA/com.codewhale.frontend.plist" 2>/dev/null || launchctl load -w "$LA/com.codewhale.frontend.plist"
+  # 即使旧服务的 bootout 因 launchd 瞬时状态失败，也必须强制重建前端进程。
+  # 否则磁盘上的 server.py/web 已更新，常驻 Python 仍可能执行旧模型路由。
+  launchctl kickstart -k "gui/$UID_N/com.codewhale.frontend"
 else
   plutil -lint "$LA/com.codewhale.appserver.plist" "$LA/com.codewhale.frontend.plist" >/dev/null
   echo "  ✓ 隔离安装测试:launchd 配置有效(未注册服务)"
@@ -317,6 +320,15 @@ if [ "$INSTALL_TEST" != "1" ]; then
   done
   [ "$ready" = "1" ] || {
     echo "✗ CodeWhale 后端未能启动。日志:$HOME/codewhale-gui/app-server.err.log"
+    exit 1
+  }
+  gui_ready=0
+  for _ in $(seq 1 40); do
+    if curl -fsS -m2 http://127.0.0.1:3000/ >/dev/null 2>&1; then gui_ready=1; break; fi
+    sleep 0.5
+  done
+  [ "$gui_ready" = "1" ] || {
+    echo "✗ CodeWhale GUI 未能加载本次安装的前端代码。日志:$HOME/codewhale-gui/webserver.log"
     exit 1
   }
 fi
