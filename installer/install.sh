@@ -293,7 +293,7 @@ if [ "$INSTALL_TEST" != "1" ]; then
   launchctl bootstrap "gui/$UID_N" "$LA/com.codewhale.frontend.plist" 2>/dev/null || launchctl load -w "$LA/com.codewhale.frontend.plist"
   # 即使旧服务的 bootout 因 launchd 瞬时状态失败，也必须强制重建前端进程。
   # 否则磁盘上的 server.py/web 已更新，常驻 Python 仍可能执行旧模型路由。
-  launchctl kickstart -k "gui/$UID_N/com.codewhale.frontend"
+  launchctl kickstart -k "gui/$UID_N/com.codewhale.frontend" || true
 else
   plutil -lint "$LA/com.codewhale.appserver.plist" "$LA/com.codewhale.frontend.plist" >/dev/null
   echo "  ✓ 隔离安装测试:launchd 配置有效(未注册服务)"
@@ -322,9 +322,19 @@ if [ "$INSTALL_TEST" != "1" ]; then
     echo "✗ CodeWhale 后端未能启动。日志:$HOME/codewhale-gui/app-server.err.log"
     exit 1
   }
+  expected_gui_version="$(tr -d '\r\n' < "$HOME/codewhale-gui/VERSION")"
   gui_ready=0
   for _ in $(seq 1 40); do
-    if curl -fsS -m2 http://127.0.0.1:3000/ >/dev/null 2>&1; then gui_ready=1; break; fi
+    gui_payload=""
+    if gui_payload="$(curl -fsS -m2 http://127.0.0.1:3000/healthz 2>/dev/null)"; then
+      reported_gui_version="$(
+        printf '%s' "$gui_payload" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("version", ""))' 2>/dev/null || true
+      )"
+      if [ -n "$expected_gui_version" ] && [ "$reported_gui_version" = "$expected_gui_version" ]; then
+        gui_ready=1
+        break
+      fi
+    fi
     sleep 0.5
   done
   [ "$gui_ready" = "1" ] || {

@@ -191,6 +191,15 @@ function setVoiceStatus(kind,label,preview="",target=voiceTarget){
   if(p) p.textContent=preview||"";
 }
 
+function voiceFallbackReason(reason){
+  return ({
+    request_timeout:"整理超时",
+    model_unavailable:"模型不可用",
+    no_direct_provider:"无直连模型",
+    request_failed:"请求失败",
+  })[String(reason||"")]||"整理未完成";
+}
+
 function hideVoiceStatus(delay=0,target=voiceTarget){
   clearTimeout(voiceHideTimer);
   const box=voiceStatusFor(target);
@@ -276,7 +285,11 @@ async function refineVoiceTranscript(text,target){
   voiceTarget=target;
   voiceLastTranscript="";
   setVoiceControlState("idle",target);
-  setVoiceStatus("done",result?.refined===false?"已转写 · 本地整理":"已整理",finalWrite.applied?prompt:"检测到你已继续编辑,未覆盖",target);
+  const fallbackReason=result?.refined===false&&result?.fallback_reason
+    ? voiceFallbackReason(result.fallback_reason) : "";
+  const doneLabel=result?.refined===false
+    ? `已转写 · 本地整理${fallbackReason?" · "+fallbackReason:""}` : "已整理";
+  setVoiceStatus("done",doneLabel,finalWrite.applied?prompt:"检测到你已继续编辑,未覆盖",target);
   hideVoiceStatus(1600,target);
 }
 

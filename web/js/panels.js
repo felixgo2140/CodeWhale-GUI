@@ -28,14 +28,16 @@ function renderGuiUpdateNotice(d={}){
   const notice=$("#guiUpdateNotice"), title=$("#guiUpdateNoticeTitle"), meta=$("#guiUpdateNoticeMeta"), action=$("#guiUpdateNoticeBtn");
   if(!notice||!title||!meta||!action) return;
   const available=!!(d.available&&d.latest), error=String(d.error||"").trim();
-  notice.classList.toggle("update-error",!available&&!!error);
+  const errorKind=String(d.error_kind||"").trim();
+  const visibleError=!!error && (errorKind==="signature" || errorKind==="other");
+  notice.classList.toggle("update-error",!available&&visibleError);
   if(available){
     notice.hidden=false;
     title.textContent=`CodeWhale GUI ${d.latest} 可用`;
     meta.textContent=d.notes||`当前版本 ${d.current||"未知"}`;
     action.textContent="立即更新";
     action.title="打开更新中心，下载、验签并安装新界面";
-  }else if(error){
+  }else if(visibleError){
     notice.hidden=false;
     title.textContent="GUI 更新检查失败";
     meta.textContent=error;

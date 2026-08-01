@@ -16,10 +16,6 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
 fi
 if [ ! -f "$KEY" ] && [ -f "$HOME/.codewhale-release/signing-key.pem" ]; then
   KEY="$HOME/.codewhale-release/signing-key.pem"
-elif [ ! -f "$KEY" ] && [ -f "$HOME/Desktop/work/signing-key.pem" ]; then
-  KEY="$HOME/Desktop/work/signing-key.pem"
-elif [ ! -f "$KEY" ] && [ -f "$HOME/codewhale-release/signing-key.pem" ]; then
-  KEY="$HOME/codewhale-release/signing-key.pem"
 fi
 [ -f "$KEY" ] || { echo "Error: signing key not found. Set CODEWHALE_SIGNING_KEY." >&2; exit 1; }
 for path in "$SRC/web" "$SRC/server.py" "$SRC/VERSION" "$SRC/harness"; do

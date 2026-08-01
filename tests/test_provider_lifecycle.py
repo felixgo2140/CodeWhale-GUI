@@ -24,9 +24,12 @@ class ProviderLifecycleTests(unittest.TestCase):
         installer = (ROOT / "installer/install.sh").read_text(encoding="utf-8")
 
         self.assertIn(
-            'launchctl kickstart -k "gui/$UID_N/com.codewhale.frontend"', installer
+            'launchctl kickstart -k "gui/$UID_N/com.codewhale.frontend" || true', installer
         )
-        self.assertIn("http://127.0.0.1:3000/", installer)
+        self.assertIn("http://127.0.0.1:3000/healthz", installer)
+        self.assertIn('expected_gui_version="$(tr -d', installer)
+        self.assertIn('reported_gui_version=', installer)
+        self.assertNotIn("curl -fsS -m2 http://127.0.0.1:3000/ >/dev/null", installer)
         self.assertIn('gui_ready=1', installer)
 
     def test_sidebar_uses_one_overflow_button_per_thread(self):

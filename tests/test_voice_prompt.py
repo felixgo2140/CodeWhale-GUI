@@ -84,7 +84,19 @@ class VoicePromptTests(unittest.TestCase):
 
         frontend = (ROOT / "web" / "js" / "voice.js").read_text()
         self.assertNotIn('window.cwToast(result.warning)', frontend)
-        self.assertIn('"已转写 · 本地整理"', frontend)
+        self.assertIn("已转写 · 本地整理", frontend)
+
+    def test_fallback_reason_is_consumed_in_the_voice_status_label(self):
+        frontend = (ROOT / "web" / "js" / "voice.js").read_text()
+        for code, phrase in (
+            ("request_timeout", "整理超时"),
+            ("model_unavailable", "模型不可用"),
+            ("no_direct_provider", "无直连模型"),
+            ("request_failed", "请求失败"),
+        ):
+            self.assertIn(f'{code}:"{phrase}"', frontend)
+        self.assertIn("result?.refined===false&&result?.fallback_reason", frontend)
+        self.assertIn("fallbackReason?\" · \"+fallbackReason:\"\"", frontend)
 
     def test_browser_voice_fill_recovers_live_input_and_preserves_new_typing(self):
         voice_url = (ROOT / "web" / "js" / "voice.js").as_uri()

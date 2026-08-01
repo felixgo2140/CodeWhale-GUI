@@ -2,7 +2,6 @@
 """CodeWhale GUI server.
 
 - Serves the static web app.
-- /api/balance: provider balance/quota proxy (reads codewhale config key).
 - /v1/* and /health: token-gated reverse proxy (incl. SSE streaming) to the
   loopback-only codewhale app-server. The phone (PWA) talks ONLY to this server
   (same-origin, no CORS); codewhale itself never leaves 127.0.0.1.
@@ -11,7 +10,7 @@ Security: when bound to a non-loopback host (LAN), a token is REQUIRED. Without
 one it fails closed to 127.0.0.1, so the agent API is never exposed unprotected.
 """
 import http.server, http.client, socketserver, json, re, os, time, subprocess, shutil, urllib.request, urllib.error, urllib.parse, mimetypes, secrets, shlex, datetime, glob
-import base64, hashlib, tarfile, tempfile, io, threading, ssl, socket, ipaddress, signal, tomllib, plistlib
+import base64, errno, hashlib, tarfile, tempfile, io, threading, ssl, socket, ipaddress, signal, tomllib, plistlib
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
@@ -386,7 +385,6 @@ def _open_url(req, timeout):
             urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
         return opener.open(req, timeout=timeout)
 
-_bal = {"t": 0.0, "d": None}
 # qwen 这类 GUI 自创的 [providers.<x>] 段不在 codewhale CLI 的 schema 里,CLI 任何写配置操作
 # (config set / auth set / login)按类型化 schema 重新序列化 TOML 时会把未知段整段丢掉 →
 # 「qwen key 经常掉」的根因(2026-07-11 已在副本上复现)。修复:GUI 保存 key 时镜像一份到
@@ -453,60 +451,6 @@ def _provider_cfg(prov):
 def _json_get(url, headers=None, timeout=15):
     req = urllib.request.Request(url, headers=headers or {})
     return json.load(_open_url(req, timeout))
-def _balance_money(provider, label, amount, currency="", raw=None, source="official", note=""):
-    try:
-        val = float(amount)
-    except Exception:
-        val = None
-    return {"provider": provider, "label": label, "kind": "money", "amount": val,
-            "currency": currency or "", "raw_amount": amount, "source": source,
-            "note": note, "raw": raw or {}}
-def _balance_quota(provider, label, used=None, limit=None, percent=None, window="", note="", raw=None):
-    try:
-        pct = float(percent) if percent is not None else None
-    except Exception:
-        pct = None
-    return {"provider": provider, "label": label, "kind": "quota", "used": used,
-            "limit": limit, "percent": pct, "window": window, "note": note,
-            "raw": raw or {}}
-def _balance_unavailable(provider, label, reason, hint="", litellm=None):
-    d = {"provider": provider, "label": label, "kind": "unavailable",
-         "unavailable": True, "reason": reason, "hint": hint}
-    if litellm:
-        d["litellm"] = litellm
-    return d
-def _deepseek_balance(key):
-    d = _json_get("https://api.deepseek.com/user/balance",
-                  {"Authorization": "Bearer " + key}, 15)
-    b = (d.get("balance_infos") or [{}])[0]
-    return _balance_money("deepseek", "DeepSeek", b.get("total_balance"),
-                          b.get("currency") or "", raw=d)
-def _moonshot_balance(key):
-    cfg = _provider_cfg("moonshot")
-    base = (cfg.get("base_url") or "https://api.moonshot.cn/v1").rstrip("/")
-    bases = [base]
-    if re.search(r"/coding/v1/?$", base):
-        bases.append(re.sub(r"/coding/v1/?$", "/v1", base))
-    bases += ["https://api.moonshot.cn/v1", "https://api.moonshot.ai/v1", "https://api.kimi.com/v1"]
-    last = None
-    d = None
-    for b in list(dict.fromkeys(x.rstrip("/") for x in bases if x)):
-        try:
-            d = _json_get(b + "/users/me/balance", {"Authorization": "Bearer " + key}, 15)
-            break
-        except Exception as e:
-            last = str(e)[:120]
-    if d is None:
-        return _balance_unavailable(
-            "moonshot", "Kimi", "balance_endpoint_unavailable",
-            "当前 Kimi key/base_url 不能读取余额;Kimi Code 订阅通常需到平台查看额度,或通过 LiteLLM 统计已花费。"
-            + (f" 最近错误:{last}" if last else "")
-        )
-    data = d.get("data") if isinstance(d.get("data"), dict) else d
-    amount = (data.get("available_balance") or data.get("balance")
-              or data.get("total_balance") or data.get("cash_balance"))
-    currency = data.get("currency") or "CNY"
-    return _balance_money("moonshot", "Kimi", amount, currency, raw=d)
 def _tokenhub_key_probe(key, model):
     # 保存混元前做一次轻量校验:只把 "invalid api key" 当硬失败;402 说明 key 有效但套餐/额度不可用。
     key = (key or "").strip()
@@ -539,35 +483,7 @@ def _tokenhub_key_probe(key, model):
         return {"ok": True, "warning": "混元 key 已保存;在线探测返回 " + msg}
     except Exception as e:
         return {"ok": True, "warning": "未能在线校验混元 key:" + str(e)[:120]}
-def _zai_usage(key):
-    # z.ai GLM Coding Plan 用量(prompts/tokens 每 5 小时窗口,非美元余额)。仅 Coding Plan 用户可读。
-    url = "https://api.z.ai/api/monitor/usage/quota/limit"
-    last = None
-    for authval in (key, "Bearer " + key):   # 官方扩展先裸 key 再 Bearer
-        try:
-            req = urllib.request.Request(url, headers={
-                "Authorization": authval, "Accept-Language": "en-US,en", "Content-Type": "application/json"})
-            body = json.load(_open_url(req, 15))
-            if not body.get("success", True):
-                msg = body.get("msg") or "zai error"
-                if "coding plan" in msg:                       # 没订阅 Coding Plan
-                    return {"provider": "zai", "label": "GLM", "glm": True, "no_plan": True,
-                            "kind": "unavailable", "reason": "no_coding_plan",
-                            "hint": "此 z.ai key 未订阅 GLM Coding Plan"}
-                last = msg; continue
-            data = body.get("data") or body
-            limits = (data.get("limits") if isinstance(data, dict) else None) or body.get("limits") or []
-            tok = next((l for l in limits if l.get("type") == "TOKENS_LIMIT"), (limits[0] if limits else None))
-            if tok:
-                d = _balance_quota("zai", "GLM", tok.get("currentValue"), tok.get("usage"),
-                                   tok.get("percentage"), "5h", raw=body)
-                d["glm"] = True
-                return d
-            last = "无 limits 字段"
-        except Exception as e:
-            last = str(e)[:120]
-    return {"provider": "zai", "label": "GLM", "glm": True, "kind": "error", "error": last or "zai 用量读取失败"}
-def _litellm_config():
+def _litellm_route_config():
     cfg = _provider_cfg("litellm")
     url = (os.environ.get("LITELLM_PROXY_URL") or os.environ.get("LITELLM_BASE_URL")
            or cfg.get("base_url") or cfg.get("proxy_url") or "http://127.0.0.1:4000").rstrip("/")
@@ -575,14 +491,8 @@ def _litellm_config():
            or cfg.get("api_key") or cfg.get("master_key") or "")
     installed = bool(shutil.which("litellm") or os.path.exists(os.path.expanduser("~/agent-harnesses/litellm-venv/bin/litellm")))
     return url, key, installed
-def _litellm_spend_probe_enabled():
-    cfg = _provider_cfg("litellm")
-    raw = os.environ.get("LITELLM_SPEND_PROBE")
-    if raw is None:
-        raw = cfg.get("spend_probe")
-    return str(raw or "").strip().lower() in ("1", "true", "yes", "on")
-def _litellm_proxy_summary(provider=""):
-    url, key, installed = _litellm_config()
+def _litellm_proxy_status():
+    url, key, installed = _litellm_route_config()
     headers = {"Authorization": "Bearer " + key} if key else {}
     out = {"installed": installed, "proxy_url": url, "running": False}
     try:
@@ -596,116 +506,7 @@ def _litellm_proxy_summary(provider=""):
         return out
     if not key:
         out["note"] = "LiteLLM proxy 已运行,但未配置 master key,只能显示运行状态"
-        return out
-    if not _litellm_spend_probe_enabled():
-        out["spend_note"] = "spend_probe_disabled"
-        return out
-    # 不同 LiteLLM 版本/配置暴露的 spend endpoint 略有差异;逐个尝试,拿到 spend/max_budget 就显示。
-    candidates = [
-        "/global/spend",
-        "/global/spend/report",
-        "/spend/logs?start_date=" + time.strftime("%Y-%m-%d", time.gmtime(time.time() - 30 * 86400)) +
-        "&end_date=" + time.strftime("%Y-%m-%d", time.gmtime(time.time() + 86400)),
-        "/spend/keys",
-    ]
-    last = None
-    for suffix in candidates:
-        try:
-            data = _json_get(url + suffix, headers, 1.5)
-        except Exception as e:
-            last = str(e)[:120]
-            continue
-        total = _litellm_extract_spend(data)
-        budget = _litellm_extract_budget(data)
-        out.update({"spend": total, "max_budget": budget, "spend_endpoint": suffix})
-        return out
-    if last:
-        out["spend_error"] = last
     return out
-def _litellm_extract_spend(data):
-    vals = []
-    def walk(x, depth=0):
-        if depth > 4:
-            return
-        if isinstance(x, dict):
-            for k, v in x.items():
-                lk = str(k).lower()
-                if lk in {"spend", "total_spend", "cost", "total_cost"}:
-                    try: vals.append(float(v))
-                    except Exception: pass
-                elif isinstance(v, (dict, list)):
-                    walk(v, depth + 1)
-        elif isinstance(x, list):
-            for v in x:
-                walk(v, depth + 1)
-    walk(data)
-    return round(max(vals), 6) if vals else None
-def _litellm_extract_budget(data):
-    vals = []
-    def walk(x, depth=0):
-        if depth > 4:
-            return
-        if isinstance(x, dict):
-            for k, v in x.items():
-                lk = str(k).lower()
-                if lk in {"max_budget", "budget", "soft_budget"}:
-                    try: vals.append(float(v))
-                    except Exception: pass
-                elif isinstance(v, (dict, list)):
-                    walk(v, depth + 1)
-        elif isinstance(x, list):
-            for v in x:
-                walk(v, depth + 1)
-    walk(data)
-    return round(max(vals), 6) if vals else None
-def _provider_balance(prov):
-    label = {"deepseek": "DeepSeek", "zai": "GLM", "moonshot": "Kimi",
-             "custom": "混元", "volcengine": "火山", "longcat": "LongCat", "qwen": "千问",
-             "openai-codex": "ChatGPT", "claude-code": "Claude"}.get(prov, prov or "provider")
-    try:
-        if prov == "deepseek":
-            key = deepseek_key()
-            return _deepseek_balance(key) if key else {"provider": prov, "label": label, "kind": "error", "error": "no deepseek key"}
-        if prov == "zai":
-            key = _provider_key("zai")
-            return _zai_usage(key) if key else {"provider": prov, "label": label, "kind": "error", "error": "no zai key"}
-        if prov == "moonshot":
-            key = _provider_key("moonshot")
-            return _moonshot_balance(key) if key else {"provider": prov, "label": label, "kind": "error", "error": "no moonshot key"}
-    except Exception as e:
-        return {"provider": prov, "label": label, "kind": "error", "error": str(e)[:120]}
-
-    litellm = _litellm_proxy_summary(prov)
-    hints = {
-        "custom": "TokenHub/混元暂未接到简单余额 API;可在腾讯控制台看账户余额,或通过 LiteLLM 统计已花费。",
-        "volcengine": "火山 Ark API key 不能直接查询账户余额;余额通常需火山控制台/云账号 AKSK,或通过 LiteLLM 统计已花费。",
-        "longcat": "LongCat OpenAI 兼容接口暂未接到公开余额 API;可用 LiteLLM 统计已花费。",
-        "qwen": "阿里云百炼/千问暂未接到简单余额 API;可在阿里云控制台查看,或通过 LiteLLM 统计已花费。",
-        "openai-codex": "OAuth/订阅通道没有 API key 余额概念;可显示 LiteLLM 代理统计或在官方账户页查看。",
-        "claude-code": "Claude 订阅通道没有 API key 余额概念;可显示 LiteLLM 代理统计或在官方账户页查看。",
-    }
-    return _balance_unavailable(prov, label, "no_direct_balance_api", hints.get(prov, "该 provider 暂无已接入余额接口"), litellm)
-def balance(provider=None, include_all=False):
-    now = time.time()
-    prov = re.sub(r'[^A-Za-z0-9._-]', '', provider or "") or _cfg_get("provider") or "deepseek"
-    cache_key = prov + ("|all" if include_all else "")
-    if _bal["d"] and _bal.get("key") == cache_key and now - _bal["t"] < 60:
-        return _bal["d"]
-
-    current = _provider_balance(prov)
-    d = current
-    if include_all:
-        providers = ["deepseek", "zai", "moonshot", "custom", "volcengine", "longcat", "qwen", "openai-codex", "claude-code"]
-        keyed = provider_key_status()
-        items = []
-        for p in providers:
-            if p == prov:
-                items.append(current)
-            elif p in ("openai-codex", "claude-code") or keyed.get(p) or p in ("deepseek", "zai", "moonshot"):
-                items.append(_provider_balance(p))
-        d = {"provider": prov, "current": current, "items": items, "litellm": _litellm_proxy_summary(prov)}
-    _bal.update(t=now, d=d, key=cache_key)
-    return d
 
 def _find_codewhale():   # Apple Silicon=/opt/homebrew, Intel=/usr/local, 直装=~/.local/bin
     for p in ("/opt/homebrew/bin/codewhale", "/usr/local/bin/codewhale", os.path.expanduser("~/.local/bin/codewhale")):
@@ -883,6 +684,34 @@ def _strict_vtuple(v):
         return None
     nums = [int(x) for x in re.findall(r"\d+", s)][:4]
     return tuple(nums) if nums else None
+
+_RUNNING_GUI_VERSION = _gui_version()
+
+def gui_healthz():
+    """Return only the version served by this frontend process."""
+    return {"version": _RUNNING_GUI_VERSION}
+
+_GUI_NETWORK_ERRNOS = frozenset(
+    value for value in (
+        errno.ECONNABORTED, errno.ECONNREFUSED, errno.ECONNRESET,
+        errno.EHOSTDOWN, errno.EHOSTUNREACH, errno.ENETDOWN,
+        errno.ENETUNREACH, errno.EPIPE, errno.ETIMEDOUT,
+        getattr(socket, "EAI_AGAIN", None), getattr(socket, "EAI_FAIL", None),
+        getattr(socket, "EAI_NONAME", None),
+    ) if value is not None
+)
+
+def _gui_update_error_kind(exc):
+    if isinstance(exc, InvalidSignature):
+        return "signature"
+    if isinstance(exc, (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError)):
+        return "network"
+    if isinstance(exc, OSError) and (
+        isinstance(exc, socket.gaierror) or getattr(exc, "errno", None) in _GUI_NETWORK_ERRNOS
+    ):
+        return "network"
+    return "other"
+
 def _update_cfg():
     d = _raw_update_cfg()
     return d if d.get("enabled", True) else {}
@@ -951,7 +780,8 @@ def gui_update_check():
     if not (cfg.get("repo") or cfg.get("base_url")):
         return {"enabled": False, "current": cur}
     if not _HAVE_CRYPTO:
-        return {"enabled": True, "current": cur, "error": "本机缺 cryptography,更新已禁用(装上即恢复)"}
+        return {"enabled": True, "current": cur, "error": "本机缺 cryptography,更新已禁用(装上即恢复)",
+                "error_kind": "other"}
     try:
         m = _get_manifest(cfg)
         avail = _vtuple(m.get("version", "0")) > _vtuple(cur)
@@ -963,7 +793,8 @@ def gui_update_check():
             detail = "发布清单签名无效"
         elif not detail:
             detail = type(e).__name__ or "未知错误"
-        return {"enabled": True, "current": cur, "error": detail[:160]}
+        return {"enabled": True, "current": cur, "error": detail[:160],
+                "error_kind": _gui_update_error_kind(e)}
 
 # ── GUI 在线更新:异步 + 分块下载 + 进度(前端轮询 /api/update/gui/progress 画进度条)──
 _GUI_UPD = {"phase": "idle", "downloaded": 0, "total": 0, "pct": 0, "error": None, "done": False, "version": None}
@@ -4590,7 +4421,7 @@ def _litellm_compare_alias(prov):
         return "qwen-max" if "max" in (_model_pref("qwen") or "").lower() else "qwen"
     return _LITELLM_COMPARE_ALIASES.get(prov or "", "")
 def _litellm_openai_base_and_key():
-    url, key, _installed = _litellm_config()
+    url, key, _installed = _litellm_route_config()
     if not key:
         raise RuntimeError("LiteLLM master key 未配置")
     base = url.rstrip("/")
@@ -4613,7 +4444,7 @@ def litellm_routing_status():
         "routing": routing,
         "compare_enabled": bool(routing.get("compare")),
         "compare_aliases": dict(_LITELLM_COMPARE_ALIASES),
-        "proxy": _litellm_proxy_summary("compare"),
+        "proxy": _litellm_proxy_status(),
     }
 def _qwen_model_for_chat():
     cfg_model = ((_provider_cfg("qwen") or {}).get("model") or "").strip()
@@ -6356,7 +6187,9 @@ def restore_single_turn_route(tid):
     }
 
 def restore_retired_fast_routes():
-    """Restore and remove persisted routes created by the retired fast-answer feature."""
+    """Restore and remove persisted routes created by the retired fast-answer feature.
+    迁移逻辑：v2.11 可删除
+    """
     with _auto_turn_routes_lock:
         tids = [
             tid for tid, saved in _auto_turn_routes.items()
@@ -7794,6 +7627,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         p = urllib.parse.urlparse(self.path).path
+        if p == "/healthz":
+            return self._json(gui_healthz())
         if p.startswith("/internal/qwen/v1/"):
             return self._qwen_model_proxy("GET")
         if p.startswith("/preview/static/"):
@@ -7895,22 +7730,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json(netenv())
             except Exception:
                 return self._json({"fakeip": False, "ip": None})
-        if p.startswith("/api/balance"):
-            if not self._authed():
-                return self._deny()
-            try:
-                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                out = balance(q.get("provider", [""])[0], q.get("all", [""])[0] == "1")
-            except Exception as e:
-                out = {"error": str(e)[:200]}
-            b = json.dumps(out).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(b)))
-            self.end_headers()
-            self.wfile.write(b)
-            return
         if p == "/api/litellm-routing":
             if not self._authed():
                 return self._deny()
@@ -7940,7 +7759,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             try:
                 out = gui_update_check()
             except Exception as e:
-                out = {"error": str(e)[:200]}
+                out = {"error": str(e)[:200], "error_kind": "other"}
             b = json.dumps(out, ensure_ascii=False).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
